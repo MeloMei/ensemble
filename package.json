@@ -1,0 +1,60 @@
+{
+  "name": "ensemble",
+  "version": "0.6.1",
+  "private": true,
+  "description": "A local desktop workspace for independent agent providers",
+  "type": "module",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && node scripts/build.mjs",
+    "start": "electron .",
+    "test:core": "tsx --test src/main/engine.test.ts src/main/providers/plugins.test.ts src/main/providers/codex.test.ts",
+    "package:mac": "npm run build && node scripts/package-mac.mjs"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "1.9.0",
+    "@codemirror/commands": "6.11.1",
+    "@codemirror/state": "6.7.6",
+    "@codemirror/view": "6.43.14",
+    "@lydell/node-pty": "^1.1.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "@xyflow/react": "12.12.0",
+    "elkjs": "0.12.0",
+    "framer-motion": "11.18.2",
+    "lucide-react": "^0.468.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "@types/node": "^22.18.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "electron": "^44.9.0",
+    "esbuild": "^0.25.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vite": "^7.1.0"
+  },
+  "productName": "Ensemble",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.22.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MeloMei/ensemble.git"
+  },
+  "homepage": "https://github.com/MeloMei/ensemble#readme",
+  "bugs": {
+    "url": "https://github.com/MeloMei/ensemble/issues"
+  }
+}

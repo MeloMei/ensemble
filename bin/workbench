@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+workbench_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+workbench_runtime="$workbench_root/../../MacOS/Ensemble"
+if [ ! -x "$workbench_runtime" ]; then
+  workbench_runtime="$workbench_root/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
+fi
+exec env ELECTRON_RUN_AS_NODE=1 "$workbench_runtime" "$workbench_root/dist/main/cli.js" "$@"
