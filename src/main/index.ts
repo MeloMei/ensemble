@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,10 +17,44 @@ const root = dirname(fileURLToPath(import.meta.url));
 let window: BrowserWindow | null = null;
 let backend: BackendClient;
 let notifications: WorkbenchNotifications;
+interface CloseRequest {
+  id: string;
+  window: BrowserWindow;
+  phase: 'saving' | 'confirming';
+  timer?: ReturnType<typeof setTimeout>;
+}
+let closeRequest: CloseRequest | undefined;
+let allowWindowClose = false;
 const subscription = new AbortController();
 const cwdSchema = z.string().min(1).max(4096);
+const closeReplySchema = z.object({ requestId: z.string().uuid(), error: z.string().nullable() }).strict();
+
+function finishCloseRequest(request: CloseRequest, error: string | null): void {
+  if (closeRequest !== request || request.phase !== 'saving' || request.window.isDestroyed()) return;
+  if (request.timer) clearTimeout(request.timer);
+  request.timer = undefined;
+  request.phase = 'confirming';
+  const decide = (close: boolean) => {
+    if (closeRequest !== request || request.window.isDestroyed()) return;
+    closeRequest = undefined;
+    if (close) { allowWindowClose = true; request.window.close(); }
+  };
+  if (error === null) { decide(true); return; }
+  void dialog.showMessageBox(request.window, {
+    type: 'warning', title: `关闭 ${PRODUCT_NAME}`, message: '草稿尚未确认保存',
+    detail: `${error}\n\n选择“仍然退出”可能丢失尚未保存的文字和附件。保留窗口后可以再次尝试关闭。`,
+    buttons: ['保留窗口', '仍然退出'], defaultId: 0, cancelId: 0, noLink: true,
+  }).then(result => decide(result.response === 1), () => decide(false));
+}
 
 function registerIPC(commands: string[]): void {
+  ipcMain.on('workbench:close-ready', (event, input: unknown) => {
+    const reply = closeReplySchema.safeParse(input);
+    const request = closeRequest;
+    if (!reply.success || !request || window !== request.window
+      || event.sender.id !== request.window.webContents.id || reply.data.requestId !== request.id) return;
+    finishCloseRequest(request, reply.data.error);
+  });
   const handle = (channel: string, handler: (...args: unknown[]) => unknown) => {
     ipcMain.handle(channel, (event, ...args: unknown[]) => {
       if (!window || event.sender.id !== window.webContents.id) throw new Error('请求不属于当前工作台窗口。');
@@ -54,7 +89,29 @@ async function createWindow(): Promise<void> {
     backgroundColor: '#faf9f7', show: false, titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 18, y: 18 },
     webPreferences: { preload: join(root, '../preload/index.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true, backgroundThrottling: false },
   });
-  window.once('ready-to-show', () => window?.show());
+  const currentWindow = window;
+  let rendererFailure: string | undefined;
+  allowWindowClose = false;
+  currentWindow.on('close', event => {
+    if (allowWindowClose) return;
+    event.preventDefault();
+    if (closeRequest) return;
+    const request: CloseRequest = { id: randomUUID(), window: currentWindow, phase: 'saving' };
+    closeRequest = request;
+    if (rendererFailure || currentWindow.webContents.isDestroyed()) {
+      finishCloseRequest(request, rendererFailure ?? '界面已停止，无法确认草稿是否保存。');
+      return;
+    }
+    request.timer = setTimeout(() => finishCloseRequest(request, '等待草稿保存超过 10 秒，尚未收到确认。'), 10_000);
+    try { currentWindow.webContents.send('workbench:prepare-close', request.id); }
+    catch (error) { finishCloseRequest(request, error instanceof Error ? error.message : String(error)); }
+  });
+  currentWindow.webContents.on('render-process-gone', (_event, details) => {
+    rendererFailure = `界面进程已停止（${details.reason}），无法确认草稿是否保存。`;
+    if (closeRequest?.window === currentWindow) finishCloseRequest(closeRequest, rendererFailure);
+  });
+  currentWindow.webContents.on('did-finish-load', () => { rendererFailure = undefined; });
+  currentWindow.once('ready-to-show', () => currentWindow.show());
   window.webContents.setWindowOpenHandler(({ url }) => {
     try {
       const link = new URL(url);
@@ -63,7 +120,13 @@ async function createWindow(): Promise<void> {
     return { action: 'deny' };
   });
   window.webContents.on('will-navigate', event => event.preventDefault());
-  window.on('closed', () => { window = null; });
+  currentWindow.on('closed', () => {
+    if (closeRequest?.window === currentWindow) {
+      if (closeRequest.timer) clearTimeout(closeRequest.timer);
+      closeRequest = undefined;
+    }
+    if (window === currentWindow) window = null;
+  });
   if (process.env.WORKBENCH_DEV_URL) await window.loadURL(process.env.WORKBENCH_DEV_URL);
   else await window.loadFile(join(root, '../renderer/index.html'));
 }
@@ -100,4 +163,4 @@ if (gotLock) void app.whenReady().then(async () => {
 app.on('second-instance', () => { if (window?.isMinimized()) window.restore(); window?.focus(); });
 app.on('activate', () => { if (backend && !window) void createWindow(); });
 app.on('window-all-closed', () => app.quit());
-app.on('before-quit', () => { subscription.abort(); notifications?.dispose(); });
+app.on('will-quit', () => { subscription.abort(); notifications?.dispose(); });

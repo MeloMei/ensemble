@@ -6,6 +6,23 @@ Ensemble launches local agent runtimes for the project directory selected in eac
 
 The current desktop workflow targets macOS. These adapters use native runtime protocols; availability and supported features depend on the installed version. A detected executable or model catalog does not prove successful authentication, available quota, or model access.
 
+## Install and configure
+
+Use the official guides for the current installation and sign-in steps. The same links are available under **接入与插件**, and from **接入与登录帮助** while setting up a collaboration.
+
+| Runtime | Installation | Authentication and configuration |
+| --- | --- | --- |
+| Codex | [Codex CLI](https://learn.chatgpt.com/docs/codex/cli) | [Authentication](https://learn.chatgpt.com/docs/auth) |
+| Claude Code | [Quickstart](https://code.claude.com/docs/en/quickstart) | [Authentication](https://code.claude.com/docs/en/authentication) |
+| OpenCode V2 | [OpenCode 2](https://opencode.ai/v2/docs/) | [V2 providers](https://opencode.ai/v2/docs/providers/) |
+| DeepSeek Harness | [Official application and source](https://www.deepseek.com/en/harness/) | [Configure models](https://deepseek-harness.github.io/deepseek-harness/en/guide/providers) |
+
+Follow the OpenCode **V2** guide: V1 uses the same executable name and can replace a V2 installation. Ensemble uses its own free-model profile; the provider guide is supplementary and does not mean you need a paid OpenCode provider.
+
+DeepSeek Harness must provide a locally discoverable `dsh` CLI. Ensemble uses its [official ACP profile](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/bundle/acp-app/README.md). It cannot act as the read-only reviewer in the implement-and-review template.
+
+After setup, return to Ensemble and choose **刷新检测**. A discovered entry still requires a real task to confirm authentication and model access.
+
 ## Discovery
 
 Open **接入与插件 → 刷新检测** after installing a runtime. The following environment variables override the usual discovery order when they point to a usable executable:

@@ -1,36 +1,43 @@
 # Ensemble
 
-A local desktop workbench for working with multiple AI agents in the same project.
+**Your agents. In concert.**
 
-English | [简体中文](README.zh-CN.md)
+Assign tasks, follow progress, and review changes in one local workspace.
 
-Keep conversations, collaboration, files, terminals, and local previews together. Ensemble manages agent processes and task records on your machine. You choose the runtime, model, project directory, and permissions.
+[See it in action](#see-it-in-action) · [Get started](#get-started) · [First collaboration](docs/first-collaboration.md) · [简体中文](README.zh-CN.md)
 
-## Interface
-
-Light and dark themes, compact navigation, readable conversations, and short transitions that respect reduced-motion preferences. The current interface uses Simplified Chinese labels.
+macOS desktop · Light and dark themes · Bring your own agent runtimes
 
 ![Ensemble in light mode](docs/images/ensemble-light.png)
 
 <details>
-<summary>Dark mode</summary>
+<summary>Dark appearance</summary>
 
 ![Ensemble in dark mode](docs/images/ensemble-dark.png)
 
 </details>
 
-Screenshots use isolated local sample data.
+## From a task to a reviewed change
 
-## What you can do
+- **Arrange the work.** Start with an implement-and-review template, or define your own participants, permissions, and dependencies.
+- **Follow each step.** See which task is running, waiting for approval, waiting for another task, or finished. Open its session and execution record for details.
+- **Inspect the result.** Read the review, compare the actual file changes, edit with undo history, and keep a terminal or local preview beside the conversation.
 
-- Run Codex, Claude Code, OpenCode V2, or DeepSeek Harness sessions, with the capabilities supported by each runtime.
-- Assign participants, define task dependencies, exchange messages, and inspect versioned artifacts and execution records.
-- Review files and diffs, edit with undo history, add line comments, and use a real terminal or a local preview beside the conversation.
-- Connect external agents through MCP or add a local provider through the plugin protocol.
+One runtime can fill both roles. Within a collaboration, tasks in the same project run in order; independent, non-overlapping project directories can execute concurrently. Custom collaboration also supports messages, versioned artifacts, and external agents connected through MCP.
 
-## Run from source
+## See it in action
 
-The current supported desktop target is macOS. Install Node.js 22.22 or newer and at least one supported agent runtime. Runtime CLIs and their authentication are configured separately; they are not bundled with Ensemble.
+[![Implementation, read-only review, and file changes in Ensemble](docs/images/ensemble-demo.gif)](docs/media/ensemble-demo.mp4)
+
+[Open the video](docs/media/ensemble-demo.mp4) · [Try the same search example](docs/first-collaboration.md)
+
+The walkthrough combines captured views from two independent Codex sessions in the actual Ensemble app. The implementer changes one line in a local search example and passes the focused checks; a read-only reviewer then inspects the diff and test file, using the recorded result without rerunning the checks or modifying files. The video is edited, so its length does not represent actual execution time.
+
+The current application interface uses Simplified Chinese; the English guide includes the matching button labels.
+
+## Get started
+
+You need macOS, Node.js 22.22 or newer, and at least one supported local agent runtime. Install and authenticate the runtime separately using the [official setup links](docs/runtimes.md#install-and-configure). One Codex or Claude Code installation can serve both roles in the first-collaboration tutorial.
 
 ```sh
 git clone https://github.com/MeloMei/ensemble.git
@@ -39,7 +46,12 @@ npm ci
 npm run dev
 ```
 
-Create a workspace for a local project, then use **＋** to add an agent, terminal, or local preview. Provider availability reports the local runtime entry point; authentication and model access are confirmed by the actual request.
+1. Open **接入与插件** and choose **刷新检测** to find installed runtimes.
+2. Create a workspace for your project, then open **协作 → 实现与审阅**.
+3. Describe the goal, choose the runtimes, and select **检查分工**.
+4. Review the tasks and permissions, choose **保存并查看协作**, then **开始协作** when ready.
+
+Detected means the local entry point was found. Authentication and model access are confirmed by the actual task. Model usage follows your runtime configuration and provider account.
 
 For a production build:
 
@@ -48,19 +60,35 @@ npm run build
 npm start
 ```
 
-See [Getting started](docs/getting-started.md) for setup and [Runtime support](docs/runtimes.md) for provider-specific behavior and limits.
+See [Getting started](docs/getting-started.md) for individual sessions, local packaging, and backend controls.
 
-## Local execution
+## Runtime support
 
-The desktop app, command line, and MCP connections share one local backend. Closing the window leaves that backend running. After quitting the desktop app, use `bin/workbench stop` to stop it explicitly.
+| Runtime | Model selection in Ensemble | Read-only execution | Native continuation |
+| --- | --- | --- | --- |
+| Codex | Native model catalog and CLI configuration | Native read-only sandbox | Supported |
+| Claude Code | CLI defaults and configured model mappings | Plan mode with restricted tools | Supported |
+| OpenCode V2 | Declared-free models in an isolated profile | Plan mode with restricted tools | Depends on native ACP support |
+| DeepSeek Harness | DeepSeek Flash route | Not supported | Depends on native ACP support |
 
-Agent tasks may edit files, run commands, and use remote model services under their configured permissions. Project authorization and runtime permissions control different operations. Read-only behavior depends on the runtime. The file editor and terminal have their own access to the machine; an agent read-only setting does not restrict them. Model access and charges follow the selected provider and your account.
+OpenCode V2 uses an independent configuration rather than your personal provider setup. DeepSeek Harness cannot fill the read-only reviewer role. Native capabilities and model availability depend on the installed runtime. See [Runtime support](docs/runtimes.md) for exact behavior and limits, or [Provider plugins](docs/provider-plugins.md) to add a local adapter.
+
+## Your project, your controls
+
+Ensemble keeps task records and manages agent processes on your machine. The selected runtime may send requests to remote model services. You choose the project directory, model, and permissions before execution.
+
+Unsent session text and attachments are saved as drafts. Closing the window waits for pending draft saves; if saving cannot be confirmed, the app offers to keep the window open.
+
+The desktop app, CLI, and MCP connections share one local backend. Closing the window leaves that backend and its tasks running. After quitting the desktop app, use `bin/workbench stop` to stop it explicitly.
+
+Runtime permissions and collaboration permissions govern different operations. The file editor and terminal have their own access to the machine; an agent read-only setting does not restrict them.
 
 ## Documentation
 
 | Topic | English | 简体中文 |
 | --- | --- | --- |
 | Setup and first session | [Getting started](docs/getting-started.md) | [入门指南](docs/getting-started.zh-CN.md) |
+| Implement, review, inspect | [First collaboration](docs/first-collaboration.md) | [第一次协作](docs/first-collaboration.zh-CN.md) |
 | Runtime behavior and limits | [Runtime support](docs/runtimes.md) | [运行时支持](docs/runtimes.zh-CN.md) |
 | Development and packaging | [Development](docs/development.md) | [开发指南](docs/development.zh-CN.md) |
 | Components and execution flow | [Architecture](docs/architecture.md) | [架构说明](docs/architecture.zh-CN.md) |

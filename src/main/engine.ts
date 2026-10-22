@@ -258,6 +258,16 @@ export class WorkbenchEngine {
     this.openSessionTab(workspace.id, session.id); this.changed(); return session.id;
   }
 
+  saveSessionDraft(id: string, input: PromptInput): void {
+    this.assertOpen();
+    const session = this.session(id);
+    this.store.atomic(() => {
+      if (input.text || input.attachments?.length) session.draft = structuredClone(input);
+      else delete session.draft;
+    });
+    this.publish(this.snapshot());
+  }
+
   updateSession(id: string, input: { title?: string; archived?: boolean; settings?: SessionSettings; modelId?: string | null }): void {
     const session = this.session(id);
     if (this.active.has(id)) throw new Error('请等当前任务结束后修改会话。');
@@ -438,7 +448,9 @@ export class WorkbenchEngine {
     const done = new Promise<void>(accept => { resolve = accept; });
     const task: LogicalTask = { sessionId: id, attempt, owner, controller: new AbortController(), done, resolve,
       children: new Set(), workersCreated: 0, executing: false, queued: false, rounds: 0, maxPhysicalTurns: options.maxPhysicalTurns };
-    this.active.set(id, task); session.error = undefined; delete session.draft;
+    this.active.set(id, task); session.error = undefined;
+    if (session.draft?.text.trim() === input.text.trim()
+      && JSON.stringify(session.draft.attachments ?? []) === JSON.stringify(input.attachments ?? [])) delete session.draft;
     const handle = { sessionId: id, attemptId: attempt.id, done };
     try { options.accepted?.(handle); }
     catch (error) { this.active.delete(id); session.attempts.pop(); this.releaseProject(session.cwd, owner); throw error; }

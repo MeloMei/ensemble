@@ -270,6 +270,7 @@ a { color: var(--accent); text-underline-offset: 3px; }
 .modal-backdrop[open] { display: flex; align-items: center; justify-content: center; }
 .modal-backdrop::backdrop { background: var(--overlay); backdrop-filter: blur(4px); }
 .modal { width: 500px; max-width: 100%; max-height: calc(100dvh - 50px); overflow: auto; background: var(--surface-overlay); backdrop-filter: blur(12px); border: 1px solid var(--border-strong); border-radius: var(--radius-overlay); box-shadow: var(--shadow-popover); padding: 22px; }
+.modal-wide { width: 940px; }
 .modal-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; margin-bottom: 20px; }
 .modal-heading h2 { font-size: 19px; font-weight: 550; color: var(--text); letter-spacing: -.3px; }
 .modal-heading p { font-size: 12px; line-height: 1.8; color: var(--muted); margin-top: 9px; }

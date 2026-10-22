@@ -7,7 +7,7 @@ import {
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { useAppearance, ThemeOptions } from './appearance';
 import { SPRING_SNAPPY, motionPopover } from './vendor/open-claude-ui/ClaudeMotionPresets';
-import type { ProviderInfo, Session, Snapshot, Workspace, WorkspaceTab } from '../shared/types';
+import type { PromptInput, ProviderInfo, Session, Snapshot, Workspace, WorkspaceTab } from '../shared/types';
 import { searchableMessageText } from '../shared/message-text';
 import { PRODUCT_NAME } from '../shared/app-identity';
 import { FileReviewPanel } from './FileReviewPanel';
@@ -15,11 +15,11 @@ import { WorkspaceTools } from './WorkspaceTools';
 import './features.css';
 import { SessionChat } from './SessionChat';
 import { TerminalPane } from './TerminalPane';
-import { ProvidersView, WorkflowEditor, WorkflowView } from './WorkflowViews';
+import { ProvidersDialog, ProvidersView, WorkflowEditor, WorkflowView } from './WorkflowViews';
 import { BusyIcon, DirectoryField, EmptyState, ErrorToast, IconButton, Modal, ModelField, ProviderSelect, Status, labels, defaultModelId, pathName, relativeTime, validModelSelection, type Perform } from './ui';
 
 type Page = 'workspace' | 'history' | 'workflows' | 'providers' | 'collaboration';
-type Dialog = 'workspace' | 'agent' | 'preview' | 'codex' | 'tools' | 'appearance' | null;
+type Dialog = 'workspace' | 'agent' | 'preview' | 'codex' | 'tools' | 'appearance' | 'providers' | null;
 const CollaborationViews = lazy(() => import('./CollaborationViews').then(module => ({ default: module.CollaborationViews })));
 
 function AgentIcon({ providerId, size = 16 }: { providerId: string; size?: number }) {
@@ -55,10 +55,22 @@ export function App() {
   const [rightPane, setRightPane] = useState(true);
   const [query, setQuery] = useState('');
   const [searching, setSearching] = useState(false);
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [drafts, setDrafts] = useState<Record<string, PromptInput>>({});
+  const currentDrafts = useRef<Record<string, PromptInput>>({});
+  const [draftErrors, setDraftErrors] = useState<Record<string, string>>({});
   const [pending, setPending] = useState<Set<string>>(new Set());
   const [toast, setToast] = useState('');
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  const updateDraft = useCallback((id: string, value: PromptInput) => {
+    currentDrafts.current[id] = value;
+    setDrafts(current => ({ ...current, [id]: value }));
+    setDraftErrors(current => ({ ...current, [id]: '' }));
+    void window.workbench.saveSessionDraft(id, value).catch(error => {
+      if (currentDrafts.current[id] !== value) return;
+      setDraftErrors(current => ({ ...current, [id]: error instanceof Error ? error.message : String(error) }));
+    });
+  }, []);
 
   const perform = useCallback<Perform>(async (key, action) => {
     setPending(current => new Set(current).add(key));
@@ -112,7 +124,7 @@ export function App() {
   const renderTab = (tab?: WorkspaceTab) => {
     const tabSession = tab?.kind === 'agent' ? sessions.find(item => item.id === tab.sessionId) : undefined;
     const tabTerminal = tab?.kind === 'terminal' ? snapshot?.terminals.find(item => item.id === tab.terminalId) : undefined;
-    if (tabSession && workspace) return <SessionChat key={tabSession.id} session={tabSession} workspaceId={workspace.id} sessions={sessions} openSession={openSession} provider={providers.find(item => item.id === tabSession.providerId)} perform={perform} pending={pending} draft={drafts[tabSession.id] ?? tabSession.draft?.text ?? ''} onDraftChange={value => setDrafts(current => ({ ...current, [tabSession.id]: value }))} />;
+    if (tabSession && workspace) return <SessionChat key={tabSession.id} session={tabSession} workspaceId={workspace.id} sessions={sessions} openSession={openSession} provider={providers.find(item => item.id === tabSession.providerId)} perform={perform} pending={pending} draft={drafts[tabSession.id] ?? tabSession.draft ?? { text: '' }} draftError={draftErrors[tabSession.id]} onDraftChange={value => updateDraft(tabSession.id, value)} />;
     if (tabTerminal && workspace) return <TerminalPane key={tabTerminal.id} info={tabTerminal} cwd={workspace.cwd} perform={perform} />;
     if (tab?.kind === 'preview') return <PreviewPane key={tab.id} tab={tab} />;
     return <EmptyState icon={<Layers2 size={28} />} title="这个项目准备好了" action={<div className="empty-actions"><button className="button" onClick={() => setDialog('agent')}><Plus size={14} />添加智能体</button><button className="button subtle" disabled={pending.has('create-terminal')} onClick={() => workspace && void perform('create-terminal', () => window.workbench.createTerminal(workspace.id))}><TerminalSquare size={14} />打开终端</button></div>}>在同一工作区打开 Codex、Claude、终端和本地预览。</EmptyState>;
@@ -170,14 +182,15 @@ export function App() {
             items[next]?.focus({ preventScroll: true });
           }}><IconButton label="添加 Agent、终端或预览" aria-haspopup="menu" aria-expanded={tabMenu} onClick={() => setTabMenu(value => !value)}><Plus size={17} /></IconButton><AnimatePresence>{tabMenu && <><button key="dismiss" className="menu-dismiss" tabIndex={-1} aria-label="关闭添加菜单" onClick={() => setTabMenu(false)} /><motion.div key="menu" className="tab-menu" role="menu" aria-label="添加标签" initial={reducedMotion ? false : "initial"} animate="animate" exit={reducedMotion ? undefined : "exit"} variants={motionPopover}><button role="menuitem" onClick={() => { setDialog('agent'); setTabMenu(false); }}><MessageSquare size={15} />新建 Agent 会话</button><button role="menuitem" disabled={pending.has('create-terminal')} onClick={() => { setTabMenu(false); void perform('create-terminal', () => window.workbench.createTerminal(workspace.id)); }}><TerminalSquare size={15} />打开本机终端</button><button role="menuitem" onClick={() => { setDialog('preview'); setTabMenu(false); }}><Globe size={15} />添加本地预览</button></motion.div></>}</AnimatePresence></div></div>
           <WorkspacePanes workspace={workspace} secondary={!!secondaryTab} perform={perform} primary={renderTab(activeTab)} other={renderTab(secondaryTab)} />
-        </div><motion.div className="file-panel-transition" initial={false} animate={{ width: rightPane ? 'var(--file-width)' : 0, opacity: rightPane ? 1 : 0 }} transition={reducedMotion ? { duration: 0 } : SPRING_SNAPPY} inert={!rightPane} aria-hidden={!rightPane}><FileReviewPanel key={workspace.id} workspace={workspace} refreshKey={refreshKey} perform={perform} sessions={sessions} onFeedback={activeSession ? text => { if (activeSession) setDrafts(current => ({ ...current, [activeSession.id]: [current[activeSession.id] ?? '', text].filter(Boolean).join('\n\n') })); } : undefined} /></motion.div></div> : <EmptyState icon={<Layers2 size={30} />} title="从一个本地项目开始" action={<button className="button primary" onClick={() => setDialog('workspace')}><Plus size={15} />新建工作区</button>}>把智能体、终端和预览放在一起。选择项目目录后开始工作。</EmptyState>)}
+        </div><motion.div className="file-panel-transition" initial={false} animate={{ width: rightPane ? 'var(--file-width)' : 0, opacity: rightPane ? 1 : 0 }} transition={reducedMotion ? { duration: 0 } : SPRING_SNAPPY} inert={!rightPane} aria-hidden={!rightPane}><FileReviewPanel key={workspace.id} workspace={workspace} refreshKey={refreshKey} perform={perform} sessions={sessions} onFeedback={activeSession ? text => { const draft = currentDrafts.current[activeSession.id] ?? activeSession.draft ?? { text: '' }; updateDraft(activeSession.id, { ...draft, text: [draft.text, text].filter(Boolean).join('\n\n') }); } : undefined} /></motion.div></div> : <EmptyState icon={<Layers2 size={30} />} title="从一个本地项目开始" action={<button className="button primary" onClick={() => setDialog('workspace')}><Plus size={15} />新建工作区</button>}>把智能体、终端和预览放在一起。选择项目目录后开始工作。</EmptyState>)}
         {page === 'history' && <HistoryView sessions={sessions} providers={providers} openSession={openSession} perform={perform} />}
-        {page === 'collaboration' && <Suspense fallback={<div className="loading-view"><LoaderCircle className="spin" size={23} /><p>正在打开协作视图</p></div>}><CollaborationViews snapshot={snapshot} perform={perform} pending={pending} openSession={openSession} initialCwd={workspace?.cwd} /></Suspense>}
+        {page === 'collaboration' && <Suspense fallback={<div className="loading-view"><LoaderCircle className="spin" size={23} /><p>正在打开协作视图</p></div>}><CollaborationViews snapshot={snapshot} perform={perform} pending={pending} openSession={openSession} initialCwd={workspace?.cwd} openProviderSettings={() => setDialog('providers')} /></Suspense>}
         {page === 'workflows' && <div className="split-page"><aside className="item-sidebar"><div className="sidebar-heading"><h2>编排</h2><IconButton label="新建编排" onClick={() => setNewWorkflow(true)}><Plus size={17} /></IconButton></div><p className="sidebar-subtitle">为多个步骤安排依赖</p><div className="item-list">{workflows.map(item => <button key={item.id} className={`list-item ${item.id === workflow?.id && !newWorkflow ? 'selected' : ''}`} onClick={() => { setWorkflowId(item.id); setNewWorkflow(false); }}><strong>{item.name}</strong><div><span>{item.steps.length} 个步骤</span><Status value={item.status} /></div></button>)}</div><button className="sidebar-action" onClick={() => setNewWorkflow(true)}><Plus size={14} />新建编排</button></aside>{newWorkflow ? <WorkflowEditor providers={providers} perform={perform} pending={pending} onClose={() => setNewWorkflow(false)} onCreated={id => { setWorkflowId(id); setNewWorkflow(false); }} /> : workflow ? <WorkflowView workflow={workflow} providers={providers} sessions={sessions} perform={perform} pending={pending} openSession={openSession} openWorkflow={id => { setWorkflowId(id); setNewWorkflow(false); }} /> : <EmptyState icon={<GitBranch size={28} />} title="让多个步骤接力完成" action={<button className="button" onClick={() => setNewWorkflow(true)}><Plus size={14} />新建编排</button>}>为每一步选择智能体和任务，保存后手动开始。前序结果会交给依赖它的步骤。</EmptyState>}</div>}
         {page === 'providers' && <ProvidersView snapshot={snapshot} perform={perform} pending={pending} />}
       </>}
     </main>
     {dialog === 'appearance' && <Modal title="外观" subtitle="让工作区适合你的阅读习惯。" onClose={() => setDialog(null)}><ThemeOptions /><p className="appearance-note">主题会保存在本机。动效遵循系统的“减少动态效果”设置。</p></Modal>}
+    {dialog === 'providers' && snapshot && <ProvidersDialog snapshot={snapshot} perform={perform} pending={pending} onClose={() => setDialog(null)} />}
     {dialog === 'tools' && workspace && <WorkspaceTools workspace={workspace} sessions={sessions} perform={perform} onClose={() => setDialog(null)} />}
     {dialog === 'workspace' && <NewWorkspaceDialog perform={perform} pending={pending} onClose={() => setDialog(null)} onCreated={id => { setDialog(null); selectWorkspace(id); }} />}
     {dialog === 'agent' && workspace && <NewAgentDialog workspace={workspace} providers={providers} pending={pending} perform={perform} onClose={() => setDialog(null)} />}

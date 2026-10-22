@@ -98,7 +98,7 @@ export function DirectoryField({ value, onChange, perform }: { value: string; on
   </div>;
 }
 
-export function Modal({ title, subtitle, busy, onClose, children }: { title: string; subtitle?: string; busy?: boolean; onClose: () => void; children: ReactNode }) {
+export function Modal({ title, subtitle, busy, size = 'default', onClose, children }: { title: string; subtitle?: string; busy?: boolean; size?: 'default' | 'wide'; onClose: () => void; children: ReactNode }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const reduced = useReducedMotion();
   const { register } = useContext(OverlayContext);
@@ -111,7 +111,7 @@ export function Modal({ title, subtitle, busy, onClose, children }: { title: str
     return () => { unregister(); element.close(); if (previous?.isConnected) previous.focus({ preventScroll: true }); };
   }, [register]);
   return <dialog ref={dialog} className="modal-backdrop" aria-label={title} onCancel={event => { event.preventDefault(); if (!busy) onClose(); }} onMouseDown={event => { if (event.target === event.currentTarget && !busy) onClose(); }}>
-    <motion.section className="modal" initial={reduced ? false : { opacity: 0, scale: .99, y: 4 }} animate={{ opacity: 1, scale: 1, y: 0 }} transition={SPRING_SNAPPY}>
+    <motion.section className={`modal${size === 'wide' ? ' modal-wide' : ''}`} initial={reduced ? false : { opacity: 0, scale: .99, y: 4 }} animate={{ opacity: 1, scale: 1, y: 0 }} transition={SPRING_SNAPPY}>
       <div className="modal-heading"><div><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div><IconButton label="关闭" disabled={busy} onClick={onClose}><X size={18} /></IconButton></div>
       {children}
     </motion.section>

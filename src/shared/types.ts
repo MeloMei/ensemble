@@ -186,6 +186,7 @@ export interface WorkbenchAPI {
   fileDiff(workspaceId: string, relativePath: string): Promise<FileDiff>;
   chooseAttachments(): Promise<PromptAttachment[]>;
   sendPrompt(sessionId: string, input: PromptInput): Promise<void>;
+  saveSessionDraft(sessionId: string, input: PromptInput): Promise<void>;
   updateSession(sessionId: string, input: { title?: string; archived?: boolean; settings?: SessionSettings; modelId?: string | null }): Promise<void>;
   forkSession(sessionId: string, beforeMessageId?: string): Promise<string>;
   rewindSession(sessionId: string, userMessageId: string): Promise<PromptInput>;

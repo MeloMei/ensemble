@@ -11,7 +11,7 @@ Ensemble is a macOS desktop workspace for local agent runtimes. It keeps agent s
 - At least one supported local runtime to execute agent tasks: Codex, Claude Code, OpenCode V2, or DeepSeek Harness.
 - The authentication and network access required by that runtime.
 
-Install the runtimes yourself. Ensemble does not bundle the Codex, Claude Code, OpenCode, or DeepSeek Harness CLIs. It can discover CLIs included in separately installed applications as well as command-line installations. See [Runtimes](runtimes.md) for discovery paths, authentication, and provider limits.
+Use the [official installation and configuration guides](runtimes.md#install-and-configure) for your runtime. Ensemble does not bundle the Codex, Claude Code, OpenCode, or DeepSeek Harness CLIs. It can discover CLIs included in separately installed applications as well as command-line installations. Installation, authentication, and model access are separate checks.
 
 ## Run from source
 
@@ -39,11 +39,24 @@ npm run package:mac
 
 The packaging script builds for the host architecture and writes to `release/<version>/`. It applies an ad hoc signature and verifies it. It does not perform Developer ID signing or notarization.
 
-## Open your first session
+## Start your first collaboration
 
-The current interface uses Chinese labels.
+The current interface uses Simplified Chinese labels.
 
-1. Open **接入与插件** and choose **刷新检测**. An available entry means the local runtime was detected; it does not prove authentication, account quota, or a successful model request.
+1. Choose **新建工作区** and select your project directory.
+2. Open **协作** and choose **实现与审阅**. Enter a concrete goal in **任务目标**.
+3. Select a runtime and model for the implementer and reviewer. The same runtime can fill both roles. The reviewer must support read-only execution.
+4. If a required runtime is missing, open **接入与登录帮助**, follow its official guide, and choose **刷新检测**. Close the help dialog to continue with your configuration.
+5. Choose **检查分工**. Review the two tasks, their dependency, the directory, and file permissions. The implementer can modify the project; the reviewer waits for implementation and reads the result.
+6. Choose **保存并查看协作**. The configuration is saved without starting tasks. Select **开始协作** when you are ready to use the configured model accounts.
+
+For a copyable example with a focused completion check, follow [First collaboration](first-collaboration.md). Choose **自定义协作** when you want to define participants, permissions, and tasks yourself.
+
+Within a collaboration, tasks in the same project run in order. Independent, non-overlapping directories can execute concurrently. A separate individual session cannot start while another owner is executing in its project.
+
+## Open an individual session
+
+1. Open **接入与插件** and choose **刷新检测**. **已发现入口** means the local runtime was detected; it does not prove authentication, account quota, or a successful model request. Each built-in runtime links to its official installation and configuration help.
 2. Choose **新建工作区** and select a local project, such as `/absolute/project`.
 3. Use **＋ → 新建 Agent 会话**. Choose an available runtime and a model when offered.
 4. Review the session's permission setting before sending a task. Read-only support differs by runtime; DeepSeek Harness currently rejects it.
@@ -52,6 +65,12 @@ The current interface uses Chinese labels.
 The **＋** menu also opens a real local terminal or adds an HTTP/HTTPS preview at `localhost`, `127.0.0.1`, or `[::1]`. Start your project's service before adding its preview. Terminal sessions are not restored after a backend restart.
 
 The **文件 (Files)** panel edits real project files. **改动 (Changes)** supports local Git operations. **PR / CI** displays remote pull request and check information through a read-only interface. The terminal and file editor have their own access to the machine; an agent's read-only setting does not restrict them.
+
+## Session drafts
+
+Unsent text and selected attachments are saved with their session. Closing the window waits for pending draft saves. If saving fails or cannot be confirmed, keep the window open and retry after resolving the error; choosing **仍然退出** can discard the unsaved changes.
+
+Sending an accepted task clears its submitted draft. This draft behavior applies to the session composer, not to unsaved file-editor content or terminal processes.
 
 ## Background process and data
 

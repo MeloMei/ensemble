@@ -26,6 +26,7 @@ const promptSchema = z.string().trim().min(1).max(200_000);
 const modelIdSchema = z.string().min(1).max(1000).optional();
 const settingsSchema = z.object({ effort: z.string().min(1).max(100).optional(), permission: z.enum(['review', 'read-only']).optional(), skillIds: z.array(idSchema).max(8).optional() }).strict();
 const attachmentSchema = z.object({ id: idSchema, name: z.string().min(1).max(300), kind: z.enum(['image', 'text']), mimeType: z.string().min(1).max(100), size: z.number().int().min(0).max(20_000_000), sha256: z.string().regex(/^[a-f0-9]{64}$/), ownedPath: cwdSchema }).strict();
+const promptInputSchema = z.object({ text: z.string().max(200_000), attachments: z.array(attachmentSchema).max(8).optional() }).strict();
 const sessionInputSchema = z.object({ title: z.string().max(200), providerId: idSchema, cwd: cwdSchema, modelId: modelIdSchema }).strict();
 const workflowSchema = z.object({
   name: z.string().trim().min(1).max(200), cwd: cwdSchema,
@@ -145,7 +146,8 @@ export async function createWorkbenchService(options: {
     handle('workbench:read-file', (_event, workspaceId: unknown, path: unknown) => workspaceFiles.read(engine.workspace(idSchema.parse(workspaceId)).cwd, z.string().min(1).max(4096).parse(path)));
     handle('workbench:git-state', (_event, workspaceId: unknown) => workspaceFiles.gitState(engine.workspace(idSchema.parse(workspaceId)).cwd));
     handle('workbench:file-diff', (_event, workspaceId: unknown, path: unknown) => workspaceFiles.diff(engine.workspace(idSchema.parse(workspaceId)).cwd, z.string().min(1).max(4096).parse(path)));
-    handle('workbench:send-prompt', (_event, id, input) => engine.sendPrompt(idSchema.parse(id), z.object({ text: z.string().max(200_000), attachments: z.array(attachmentSchema).max(8).optional() }).strict().parse(input)));
+    handle('workbench:send-prompt', (_event, id, input) => engine.sendPrompt(idSchema.parse(id), promptInputSchema.parse(input)));
+    handle('workbench:save-session-draft', (_event, id, input) => engine.saveSessionDraft(idSchema.parse(id), promptInputSchema.parse(input)));
     handle('workbench:update-session', (_event, id, input) => engine.updateSession(idSchema.parse(id), z.object({ title: z.string().trim().min(1).max(200).optional(), archived: z.boolean().optional(), modelId: modelIdSchema.nullable(), settings: settingsSchema.optional() }).strict().parse(input)));
     handle('workbench:fork-session', (_event, id, before) => engine.forkSession(idSchema.parse(id), idSchema.optional().parse(before)));
     handle('workbench:rewind-session', (_event, id, messageId) => engine.rewindSession(idSchema.parse(id), idSchema.parse(messageId)));

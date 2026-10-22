@@ -6,6 +6,23 @@ Ensemble 在会话选定的项目目录中启动本机 Agent 运行时。运行�
 
 当前桌面流程面向 macOS。适配器使用运行时的原生协议，可用性和功能取决于已安装版本。检测到程序或模型目录，不表示认证、账户额度或模型访问已成功。
 
+## 安装与配置
+
+安装和认证步骤以官方指南为准。**接入与插件** 页面提供相同入口，填写协作时也可以打开 **接入与登录帮助**。
+
+| 运行时 | 安装 | 认证与配置 |
+| --- | --- | --- |
+| Codex | [Codex CLI](https://learn.chatgpt.com/docs/codex/cli) | [认证说明](https://learn.chatgpt.com/docs/auth) |
+| Claude Code | [快速开始](https://code.claude.com/docs/en/quickstart) | [认证说明](https://code.claude.com/docs/en/authentication) |
+| OpenCode V2 | [OpenCode 2](https://opencode.ai/v2/docs/) | [V2 模型提供商](https://opencode.ai/v2/docs/providers/) |
+| DeepSeek Harness | [官方应用与源码](https://www.deepseek.com/en/harness/) | [配置模型](https://deepseek-harness.github.io/deepseek-harness/en/guide/providers) |
+
+OpenCode 请使用 **V2** 指南：V1 使用相同的程序名，可能替换已有 V2 安装。Ensemble 使用独立的免费模型配置，提供商指南属于补充资料，不代表需要购买付费 OpenCode Provider。
+
+DeepSeek Harness 需要提供本机可发现的 `dsh` CLI，Ensemble 使用其[官方 ACP profile](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/bundle/acp-app/README.md)。它不能担任“实现与审阅”模板中的只读审阅者。
+
+完成安装或配置后，回到 Ensemble 点击 **刷新检测**。发现入口后，仍需通过实际任务确认认证和模型访问。
+
 ## 查找运行时
 
 安装运行时后，打开 **接入与插件 → 刷新检测**。以下环境变量指向可用程序时，会优先于常规位置使用：

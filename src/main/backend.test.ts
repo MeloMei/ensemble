@@ -10,6 +10,42 @@ import type { Snapshot } from '../shared/types';
 import type { CollaborationArtifactVersion } from '../shared/collaboration';
 import type { LoadedPromptAttachment } from './providers/types';
 
+test('session drafts restore text and attachments, survive a rejected send and clear only on accepted input', async () => {
+  const dataPath = await realpath(await mkdtemp(join(tmpdir(), 'workbench-drafts-')));
+  let finish!: () => void;
+  const gate = new Promise<void>(resolve => { finish = resolve; });
+  const options = { dataPath, command: process.execPath, bridgePath: join(dataPath, 'bridge.cjs'), publish() {}, providers: [{
+    info: { id: 'controlled', name: 'Controlled', source: 'plugin' as const, available: true, detail: '', capabilities: { resume: true, approvals: false } },
+    async run() { await gate; },
+  }] };
+  let service = await createWorkbenchService(options);
+  try {
+    const file = join(dataPath, 'notes.txt'); await writeFile(file, 'attachment contents');
+    const attachments = await service.attachments.importFiles([file]);
+    const id = await service.call('workbench:create-session', [{ title: 'draft', providerId: 'controlled', cwd: dataPath }]) as string;
+    const input = { text: '  unfinished task\n', attachments };
+    await service.call('workbench:save-session-draft', [id, input]);
+    await assert.rejects(service.call('workbench:save-session-draft', [id, { text: 'x'.repeat(200_001) }]));
+    await service.shutdown();
+    service = await createWorkbenchService(options);
+    assert.deepEqual(service.engine.getSession(id).draft, input);
+    assert.equal((await service.attachments.load(service.engine.getSession(id).draft?.attachments))[0].text, 'attachment contents');
+    const release = service.engine.reserveProject(dataPath, 'other-session');
+    try { await assert.rejects(service.call('workbench:send-prompt', [id, input]), /已有会话/); }
+    finally { release(); }
+    assert.deepEqual(service.engine.getSession(id).draft, input);
+    await service.call('workbench:send-prompt', [id, { ...input, text: input.text.trim() }]);
+    assert.equal(service.engine.getSession(id).draft, undefined);
+    await service.call('workbench:save-session-draft', [id, { text: 'next task' }]);
+    finish(); await service.engine.waitSession(id);
+    assert.deepEqual(service.engine.getSession(id).draft, { text: 'next task' });
+    await service.call('workbench:save-session-draft', [id, { text: '' }]);
+    await service.shutdown();
+    service = await createWorkbenchService(options);
+    assert.equal(service.engine.getSession(id).draft, undefined);
+  } finally { finish(); await service.shutdown(); await rm(dataPath, { recursive: true, force: true }); }
+});
+
 test('one backend owns execution and persists results after a client disconnects', async () => {
   const dataPath = await mkdtemp(join(tmpdir(), 'workbench-backend-'));
   let finish!: () => void;

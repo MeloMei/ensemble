@@ -9,7 +9,7 @@ import {
   Paperclip, Search, Settings2, ShieldCheck, TerminalSquare, Users, X,
 } from 'lucide-react';
 import type {
-  Approval, Message, ProcessEvent, PromptAttachment, ProviderInfo, Session, SkillInfo, UsageRecord,
+  Approval, Message, ProcessEvent, PromptAttachment, PromptInput, ProviderInfo, Session, SkillInfo, UsageRecord,
 } from '../shared/types';
 import { searchableMessageText } from '../shared/message-text';
 import { IconButton, Modal, Status, modelName, pathName, type Perform } from './ui';
@@ -22,8 +22,9 @@ interface SessionChatProps {
   provider?: ProviderInfo;
   perform: Perform;
   pending: Set<string>;
-  draft: string;
-  onDraftChange: (value: string) => void;
+  draft: PromptInput;
+  draftError?: string;
+  onDraftChange: (value: PromptInput) => void;
   workspaceId: string;
   sessions?: Session[];
   openSession: (id: string) => void;
@@ -275,13 +276,13 @@ function UsageBadge({ usage }: { usage?: UsageRecord }) {
 }
 
 export function SessionChat({
-  session, provider, perform, pending, draft, onDraftChange, workspaceId, sessions = [], openSession,
+  session, provider, perform, pending, draft, draftError, onDraftChange, workspaceId, sessions = [], openSession,
 }: SessionChatProps) {
   const [showActivity, setShowActivity] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [find, setFind] = useState<string | null>(null);
   const [matchIndex, setMatchIndex] = useState(0);
-  const [attachments, setAttachments] = useState<PromptAttachment[]>(session.draft?.attachments ?? []);
+  const attachments = draft.attachments ?? [];
   const [rewindMessage, setRewindMessage] = useState<string>();
   const [nativeAgentId, setNativeAgentId] = useState<string>();
   const composing = useRef(false);
@@ -353,14 +354,13 @@ export function SessionChat({
   }, [find, matchIndex]);
 
   const send = () => {
-    const prompt = draft.trim();
+    const prompt = draft.text.trim();
     if ((!prompt && !attachments.length) || active || busy || sendLock.current || !provider?.available) return;
     sendLock.current = true;
     void perform(`send-${session.id}`, async () => {
       try {
         await window.workbench.sendPrompt(session.id, { text: prompt, attachments });
-        setAttachments([]);
-        if (currentDraft.current === draft) onDraftChange('');
+        if (currentDraft.current === draft) onDraftChange({ text: '' });
         scrollToBottom();
       } finally {
         sendLock.current = false;
@@ -514,9 +514,9 @@ export function SessionChat({
       <div className="composer-area">
         <div className={`composer${active ? ' composer-task-active' : ''}`}>
           <AttachmentChips attachments={attachments}
-            onRemove={id => setAttachments(current => current.filter(attachment => attachment.id !== id))} />
-          <textarea aria-label="任务内容" value={draft} rows={3}
-            onChange={event => onDraftChange(event.target.value)}
+            onRemove={busy ? undefined : id => onDraftChange({ ...currentDraft.current, attachments: attachments.filter(attachment => attachment.id !== id) })} />
+          <textarea aria-label="任务内容" value={draft.text} rows={3} maxLength={200_000} disabled={busy}
+            onChange={event => onDraftChange({ ...currentDraft.current, text: event.target.value })}
             placeholder={active ? '可以先写下一条消息，当前任务结束后再发送…' : '描述任务，或继续追问…'}
             onCompositionStart={() => { composing.current = true; }}
             onCompositionEnd={() => { composing.current = false; }}
@@ -528,10 +528,10 @@ export function SessionChat({
             }} />
           <div className="composer-bottom">
             <div className="composer-controls">
-              <IconButton label="添加图片或文件" disabled={active || attachments.length >= 8 || pending.has('attachments')}
+              <IconButton label="添加图片或文件" disabled={active || busy || attachments.length >= 8 || pending.has('attachments')}
                 onClick={() => void perform('attachments', async () => {
                   const selected = await window.workbench.chooseAttachments();
-                  setAttachments(current => [...current, ...selected].slice(0, 8));
+                  onDraftChange({ ...currentDraft.current, attachments: [...(currentDraft.current.attachments ?? []), ...selected].slice(0, 8) });
                 })}><Paperclip size={16} /></IconButton>
               <span className="composer-divider" />
               <button className="composer-model-button" title="模型与权限" aria-expanded={showSettings} aria-controls={settingsId}
@@ -543,7 +543,7 @@ export function SessionChat({
               {session.settings?.permission === 'read-only' && <span className="composer-permission"><ShieldCheck size={12} />只读</span>}
             </div>
             <motion.button className="send-button" aria-label="发送任务"
-              disabled={(!draft.trim() && !attachments.length) || active || busy || !provider?.available}
+              disabled={(!draft.text.trim() && !attachments.length) || active || busy || !provider?.available}
               whileTap={reducedMotion ? undefined : { scale: 0.98 }} transition={transition} onClick={send}>
               {busy ? <LoaderCircle className="spin" size={17} /> : <ArrowUp size={18} />}
             </motion.button>
@@ -554,6 +554,7 @@ export function SessionChat({
           <UsageBadge usage={session.usage?.at(-1)} />
           <span className="composer-shortcut"><CornerDownLeft size={11} />发送<span>·</span>Shift + Enter 换行</span>
         </div>
+        {draftError && <p className="composer-note" role="alert"><CircleAlert size={13} />草稿尚未保存：{draftError}<button className="text-button" onClick={() => onDraftChange(draft)}>重试保存</button></p>}
         {!provider?.available && <p className="composer-note"><CircleAlert size={13} />当前智能体不可用，请在「接入」检查本机环境。</p>}
       </div>
     </div>
@@ -564,8 +565,7 @@ export function SessionChat({
         <button className="button" onClick={() => setRewindMessage(undefined)}>取消</button>
         <button className="button primary" onClick={() => void perform('rewind', async () => {
           const restored = await window.workbench.rewindSession(session.id, rewindMessage);
-          onDraftChange(restored.text);
-          setAttachments(restored.attachments ?? []);
+          onDraftChange(restored);
           setRewindMessage(undefined);
         })}>确认回退对话</button>
       </div>

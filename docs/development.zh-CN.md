@@ -45,6 +45,8 @@ npm run dev
 
 打包输出位于 `release/<version>/Ensemble-darwin-<arch>/`。脚本执行 ad hoc 签名，再用 `codesign` 验证签名。产物是本机包，没有 Developer ID 签名和公证。脚本会拒绝非 macOS 主机。
 
+包内仅包含构建后的应用、CLI 入口、生产依赖、包信息和许可记录。源码、文档及历史 `release/` 产物不会进入安装包。新增顶层运行时资源时，需要同步更新打包输入清单。
+
 源码或构建配置变化时，GitHub Actions 执行类型检查和构建，也支持手动触发。CI 不执行 Agent 任务，也不调用模型服务。
 
 改动影响构建或打包产物时，再使用对应命令验收。不要求每次编辑都构建或打包。
@@ -72,7 +74,7 @@ CLI 依赖 `dist/main/` 内的构建文件。桌面应用和 CLI 都会连接已
 
 ## 验证改动
 
-测试通过 `tsx` 调用 Node test runner。现有 `*.test.ts` 与源码放在一起，分布在 `src/main/`、`src/main/providers/` 和 `src/renderer/`。
+测试通过 `tsx` 调用 Node test runner。现有 `*.test.ts` 与源码放在一起，分布在 `src/main/`、`src/main/providers/`、`src/shared/` 和 `src/renderer/`。
 
 按改动行为选择已有测试文件。例如，修改后台生命周期时可以运行：
 

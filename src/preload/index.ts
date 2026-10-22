@@ -1,5 +1,14 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { Snapshot, WorkbenchAPI } from '../shared/types';
+import { DraftWriter } from '../shared/draft-writer';
+
+const drafts = new DraftWriter((id, input) => ipcRenderer.invoke('workbench:save-session-draft', id, input));
+ipcRenderer.on('workbench:prepare-close', (_event, requestId: string) => {
+  void drafts.flush().then(
+    () => ipcRenderer.send('workbench:close-ready', { requestId, error: null }),
+    error => ipcRenderer.send('workbench:close-ready', { requestId, error: error instanceof Error ? error.message : String(error) }),
+  );
+});
 
 const api: WorkbenchAPI = {
   collaborationCall: (operation, input) => ipcRenderer.invoke('workbench:collaboration-call', operation, input),
@@ -37,10 +46,11 @@ const api: WorkbenchAPI = {
   gitState: workspaceId => ipcRenderer.invoke('workbench:git-state', workspaceId),
   fileDiff: (workspaceId, path) => ipcRenderer.invoke('workbench:file-diff', workspaceId, path),
   chooseAttachments: () => ipcRenderer.invoke('workbench:choose-attachments'),
-  sendPrompt: (id, input) => ipcRenderer.invoke('workbench:send-prompt', id, input),
+  sendPrompt: async (id, input) => { await drafts.flush(id); await ipcRenderer.invoke('workbench:send-prompt', id, input); },
+  saveSessionDraft: (id, input) => drafts.save(id, input),
   updateSession: (id, input) => ipcRenderer.invoke('workbench:update-session', id, input),
   forkSession: (id, before) => ipcRenderer.invoke('workbench:fork-session', id, before),
-  rewindSession: (id, messageId) => ipcRenderer.invoke('workbench:rewind-session', id, messageId),
+  rewindSession: async (id, messageId) => { await drafts.flush(id); return ipcRenderer.invoke('workbench:rewind-session', id, messageId); },
   retryWorkflowStep: (id, stepId) => ipcRenderer.invoke('workbench:retry-step', id, stepId),
   cloneWorkflow: id => ipcRenderer.invoke('workbench:clone-workflow', id),
   resumeWorkflow: id => ipcRenderer.invoke('workbench:resume-workflow', id),

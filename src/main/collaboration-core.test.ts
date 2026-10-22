@@ -7,6 +7,7 @@ import { StateStore } from './store';
 import { WorkbenchEngine } from './engine';
 import { CollaborationCore, type CollaborationPrincipal } from './collaboration-core';
 import { COLLABORATION_MCP_TOOLS, collaborationOperationSchemas } from './mcp-tool-catalog';
+import { createImplementationReviewDraft, participantPermissionIssue } from '../renderer/collaboration-template';
 import type { CollaborationParticipant } from '../shared/collaboration';
 import type { ProviderAdapter, TurnContext } from './providers/types';
 
@@ -230,6 +231,35 @@ test('immutable file artifacts preserve their bytes when the source changes', as
     const unrelated = await mkdtemp(join(tmpdir(), 'workbench-unrelated-'));
     try { const file = join(unrelated, 'outside.txt'); await writeFile(file, 'outside'); await assert.rejects(f.core.call(user, 'publish_artifact', { requestId: 'outside-file', runId, name: 'outside', path: file }), /授权目录/); }
     finally { await rm(unrelated, { recursive: true, force: true }); }
+  } finally { await f.close(); }
+});
+
+test('implementation-review starter waits for start and passes the goal and output to a read-only reviewer', async () => {
+  const turns: { prompt: string; permission?: string }[] = [];
+  const f = await fixture(async context => {
+    turns.push({ prompt: context.prompt, permission: context.session.settings?.permission });
+    context.emit({ type: 'text', itemId: 'result', text: turns.length === 1 ? 'Implemented the requested whitespace fix; focused check passed.' : 'Reviewed the actual change without modifying files.' });
+  });
+  try {
+    const provider = f.engine.snapshot().providers[0];
+    const goal = 'Trim surrounding search whitespace while keeping empty-query behavior.';
+    const definition = createImplementationReviewDraft({ cwd: f.cwd, implementer: provider, reviewer: provider, goal });
+    const unsupported = { ...provider, capabilities: { ...provider.capabilities, permissions: false } };
+    assert.match(participantPermissionIssue(definition.participants[1], unsupported) ?? '', /不支持.*只读/);
+    assert.equal(definition.participants[1].permissions.workspace?.access, 'read-only');
+    const { runId } = await f.core.call(user, 'create_run', { requestId: 'starter-draft', ...definition, start: false }) as { runId: string };
+    assert.equal(turns.length, 0);
+    assert.equal(f.store.state.collaboration.runs.find(run => run.id === runId)?.status, 'draft');
+    assert.ok(f.store.state.collaboration.tasks.every(task => task.status === 'pending'));
+    await f.core.call(user, 'control_run', { requestId: 'starter-start', runId, action: 'start' });
+    await until(() => f.store.state.collaboration.runs.find(run => run.id === runId)?.status === 'completed');
+    assert.equal(turns.length, 2);
+    assert.deepEqual(turns.map(turn => turn.permission), ['review', 'read-only']);
+    assert.ok(turns.every(turn => turn.prompt.includes(goal)));
+    assert.match(turns[1].prompt, /Implemented the requested whitespace fix/);
+    const tasks = f.store.state.collaboration.tasks.filter(task => task.runId === runId);
+    assert.deepEqual(tasks[1].dependsOn, [tasks[0].id]);
+    assert.deepEqual(tasks[1].attempts[0].inputArtifactIds, tasks[0].attempts[0].outputArtifactIds);
   } finally { await f.close(); }
 });
 

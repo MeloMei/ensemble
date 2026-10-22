@@ -45,6 +45,8 @@ Stop the backend after closing the desktop application. An open desktop client r
 
 The packaging script writes to `release/<version>/Ensemble-darwin-<arch>/`. It applies an ad hoc signature and verifies that signature with `codesign`. This is a local package, without Developer ID signing or notarization. The script rejects non-macOS hosts.
 
+The package includes only the built application, CLI entry point, production dependencies, package metadata, and license records. Source files, documentation, and previous `release/` outputs are excluded. Add any new top-level runtime resource to the packaging input list.
+
 GitHub Actions runs the type check and build when source or build configuration changes, or when started manually. It does not run agent tasks or call model services.
 
 Use build or packaging commands when the change affects their output. They are not required acceptance steps for every edit.
@@ -72,7 +74,7 @@ The CLI requires the built files in `dist/main/`. Both the desktop application a
 
 ## Verify the changed behavior
 
-Tests use Node's test runner through `tsx`. The existing `*.test.ts` files are beside the source they exercise, under `src/main/`, `src/main/providers/`, and `src/renderer/`.
+Tests use Node's test runner through `tsx`. The existing `*.test.ts` files are beside the source they exercise, under `src/main/`, `src/main/providers/`, `src/shared/`, and `src/renderer/`.
 
 Choose the existing test file that covers the behavior you changed. For example, a backend lifetime change can use:
 

@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
 import { ArrowUpRight, Check, Copy, CircleAlert, CircleStop, Folder, FolderOpen, GitBranch, LoaderCircle, MessageSquare, Plug, Plus, RefreshCw, ShieldCheck, TerminalSquare, Trash2, X } from 'lucide-react';
 import type { ProviderInfo, Session, Snapshot, Workflow, WorkflowInput, WorkflowStep, WorkflowStepInput } from '../shared/types';
-import { DirectoryField, IconButton, ModelField, ProviderSelect, Status, defaultModelId, labels, modelName, modelPolicy, validModelSelection, type Perform } from './ui';
+import { DirectoryField, IconButton, Modal, ModelField, ProviderSelect, Status, defaultModelId, labels, modelName, modelPolicy, validModelSelection, type Perform } from './ui';
 import { motionMessageFadeUp } from './vendor/open-claude-ui/ClaudeMotionPresets';
 import './WorkflowViews.css';
 
@@ -113,23 +113,67 @@ function ProviderModelSummary({ provider }: { provider: ProviderInfo }) {
   return <div className="provider-model-summary"><span>默认模型</span><div><strong title={provider.defaultModelId}>{model?.name ?? '暂无可用默认模型'}</strong>{model && <span className={`model-badge ${model.free ? 'free' : 'metered'}`}>{model.free ? '免费' : '按量计费'}</span>}</div>{policy && <p>{policy}</p>}</div>;
 }
 
-export function ProvidersView({ snapshot, perform, pending }: { snapshot: Snapshot; perform: Perform; pending: Set<string> }) {
+interface ProvidersProps { snapshot: Snapshot; perform: Perform; pending: Set<string> }
+
+const providerGuides: Record<string, { install: string; configure: string; configureLabel: string; note: string }> = {
+  codex: {
+    install: 'https://learn.chatgpt.com/docs/codex/cli', configure: 'https://learn.chatgpt.com/docs/auth', configureLabel: '登录与配置帮助',
+    note: '先安装并登录 Codex CLI。Ensemble 使用 CLI 的当前模型与认证配置。',
+  },
+  claude: {
+    install: 'https://code.claude.com/docs/en/quickstart', configure: 'https://code.claude.com/docs/en/authentication', configureLabel: '登录与配置帮助',
+    note: '先安装并登录 Claude Code。已有 CLI 配置可继续使用。',
+  },
+  opencode: {
+    install: 'https://opencode.ai/v2/docs/', configure: 'https://opencode.ai/v2/docs/providers/', configureLabel: '模型提供商资料（补充）',
+    note: '这里接入 OpenCode V2，使用 Ensemble 的独立配置与免费模型目录。提供商文档为补充资料，无需配置或购买付费 Provider。',
+  },
+  'deepseek-harness': {
+    install: 'https://www.deepseek.com/en/harness/', configure: 'https://deepseek-harness.github.io/deepseek-harness/en/guide/providers', configureLabel: '模型配置帮助',
+    note: '这里接入本机 dsh CLI。安装后按官方说明配置 DeepSeek API key，再返回刷新检测。',
+  },
+};
+
+function ProviderGuides({ provider }: { provider: ProviderInfo }) {
+  const guide = provider.source === 'builtin' ? providerGuides[provider.id] : undefined;
+  if (!guide) return null;
+  return <div className="provider-guides"><p>{guide.note}</p><nav className="provider-guide-links" aria-label={`${provider.name} 安装与配置`}>
+    <a href={guide.install} target="_blank" rel="noreferrer">安装指南<ArrowUpRight size={13} aria-hidden="true" /></a>
+    <a href={guide.configure} target="_blank" rel="noreferrer">{guide.configureLabel}<ArrowUpRight size={13} aria-hidden="true" /></a>
+  </nav></div>;
+}
+
+function ProvidersContent({ snapshot, perform, pending }: ProvidersProps) {
   const reducedMotion = useReducedMotion();
   const available = snapshot.providers.filter(provider => provider.available).length;
-  return <section className="providers-page scroll-content">
-    <div className="page-intro">
-      <div><span className="eyebrow">本地运行环境</span><h1>智能体接入</h1><p>检测确认本机运行入口，认证结果以实际请求为准。</p></div>
-      <div className="connections-heading-actions"><span className={`connections-status ${available ? 'ready' : ''}`}><span />{available} / {snapshot.providers.length} 个运行入口已就绪</span><button className="button" disabled={pending.has('refresh-providers')} onClick={() => void perform('refresh-providers', () => window.workbench.refreshProviders())}><RefreshCw className={pending.has('refresh-providers') ? 'spin' : ''} size={14} />刷新检测</button></div>
+  return <div className="providers-content">
+    <div className="provider-detection">
+      <div><span className={`connections-status ${available ? 'ready' : ''}`}><span />已发现 {available} 个运行入口</span><p>检测只确认本机入口，认证和模型访问以实际任务为准。</p></div>
+      <button className="button" disabled={pending.has('refresh-providers')} onClick={() => void perform('refresh-providers', () => window.workbench.refreshProviders())}><RefreshCw className={pending.has('refresh-providers') ? 'spin' : ''} size={14} />刷新检测</button>
     </div>
     <div className="provider-cards">{snapshot.providers.map(provider => <motion.article className={`provider-card ${!provider.available ? 'unavailable' : ''}`} key={provider.id} variants={motionMessageFadeUp} initial={reducedMotion ? false : 'initial'} animate="animate">
-      <div className="provider-card-heading"><div className="provider-icon"><TerminalSquare size={18} /></div><div><h2>{provider.name}</h2><span>{provider.source === 'plugin' ? '本地插件' : '内置接入'}</span></div><span className={`availability ${provider.available ? 'available' : ''}`}><span />{provider.available ? '可用' : '未就绪'}</span></div>
+      <div className="provider-card-heading"><div className="provider-icon"><TerminalSquare size={18} /></div><div><h2>{provider.name}</h2><span>{provider.source === 'plugin' ? '本地插件' : '内置接入'}</span></div><span className={`availability ${provider.available ? 'available' : ''}`}><span />{provider.available ? '已发现入口' : '未就绪'}</span></div>
       <p className="provider-detail">{provider.detail}</p><ProviderModelSummary provider={provider} />
       <div className="provider-capabilities"><span className={provider.capabilities.resume ? 'supported' : ''}>{provider.capabilities.resume ? <Check size={13} /> : <X size={13} />}继续会话{!provider.capabilities.resume && ' · 未支持'}</span><span className={provider.capabilities.approvals ? 'supported' : ''}><ShieldCheck size={13} />操作审批{!provider.capabilities.approvals && ' · 未支持'}</span></div>
+      <ProviderGuides provider={provider} />
     </motion.article>)}</div>
     <div className="plugin-section">
       <div className="plugin-section-heading"><div><h2><Plug size={18} />本地插件</h2><p>添加新的智能体接入后，点击刷新检测。</p></div><button className="button" onClick={() => void perform('open-plugins', () => window.workbench.openPluginDirectory())}><FolderOpen size={14} />打开插件目录</button></div>
       <code className="path-display">{snapshot.pluginPath}</code>
       {snapshot.pluginErrors.length > 0 && <div className="plugin-errors"><h3><CircleAlert size={15} />插件加载失败</h3>{snapshot.pluginErrors.map((error, index) => <p key={index}>{error}</p>)}</div>}
     </div>
+  </div>;
+}
+
+export function ProvidersView(props: ProvidersProps) {
+  return <section className="providers-page scroll-content">
+    <div className="page-intro"><div><span className="eyebrow">本地运行环境</span><h1>智能体接入</h1><p>安装或配置运行时后，回到这里刷新检测。</p></div></div>
+    <ProvidersContent {...props} />
   </section>;
+}
+
+export function ProvidersDialog({ onClose, ...props }: ProvidersProps & { onClose: () => void }) {
+  return <Modal title="安装与接入帮助" subtitle="查看官方安装与配置说明，刷新检测后继续填写协作。" size="wide" onClose={onClose}>
+    <ProvidersContent {...props} />
+  </Modal>;
 }
