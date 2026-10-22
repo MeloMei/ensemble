@@ -8,6 +8,7 @@ import { StateStore } from './store';
 import { CollaborationCore } from './collaboration-core';
 import { buildCodexLink } from './codex-link';
 import type { ProviderAdapter, TurnContext } from './providers/types';
+import { answerFormElicitation } from './providers/form-elicitation';
 
 async function fixture(run: (context: TurnContext) => Promise<void>) {
   const cwd = await mkdtemp(join(tmpdir(), 'workbench-engine-'));
@@ -28,6 +29,41 @@ async function until(predicate: () => boolean): Promise<void> {
   }
   assert.fail('state did not settle');
 }
+
+test('closed approval choices reject custom answers without consuming the pending request', async () => {
+  let formResult: unknown;
+  let nativeAnswer: string | undefined;
+  const { engine, cwd } = await fixture(async context => {
+    formResult = await answerFormElicitation({
+      type: 'object', required: ['confirmed', 'target', 'note'], properties: {
+        confirmed: { type: 'boolean' },
+        target: { type: 'string', enum: ['workspace'], enumNames: ['Workspace'] },
+        folders: { type: 'array', items: { type: 'string', enum: ['src'], enumNames: ['Source'] } },
+        note: { type: 'string' },
+      },
+    }, 'MCP form', '', context);
+    nativeAnswer = await context.approve({ title: 'Native question', detail: '', choices: [], questions: [{
+      id: 'format', header: 'Format', question: 'Which format?', options: [{ label: 'Short' }], multiSelect: false,
+    }] });
+  });
+  try {
+    const id = await engine.createSession({ title: 'answers', providerId: 'test', cwd });
+    engine.sendPrompt(id, { text: 'ask' });
+    await until(() => engine.getSession(id).approvals.length === 1);
+    const approval = engine.getSession(id).approvals[0];
+    const answer = { 'mcp-0': ['Yes'], 'mcp-1': ['Workspace'], 'mcp-2': ['Source'], 'mcp-3': ['Keep this custom answer'] };
+    assert.throws(() => engine.answerQuestions(approval.id, answer));
+    assert.equal(engine.getSession(id).status, 'waiting_approval');
+    assert.equal(engine.getSession(id).approvals[0]?.id, approval.id);
+    engine.answerQuestions(approval.id, { ...answer, 'mcp-0': ['是'] });
+    await until(() => engine.getSession(id).approvals[0]?.id !== approval.id && engine.getSession(id).approvals.length === 1);
+    assert.deepEqual(formResult, { action: 'accept', content: { confirmed: true, target: 'workspace', folders: ['src'], note: 'Keep this custom answer' } });
+    engine.answerQuestions(engine.getSession(id).approvals[0].id, { format: ['Free-form native answer'] });
+    await engine.waitSession(id);
+    assert.equal(engine.getSession(id).status, 'completed');
+    assert.deepEqual(JSON.parse(nativeAnswer!), { format: ['Free-form native answer'] });
+  } finally { await engine.shutdown(); await rm(cwd, { recursive: true, force: true }); }
+});
 
 test('workflow waits for dependencies and passes their actual output', async () => {
   const prompts: string[] = [];

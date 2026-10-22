@@ -78,6 +78,8 @@ Unsent text and selected attachments are saved with their session. Closing the w
 
 Sending an accepted task clears its submitted draft. This draft behavior applies to the session composer, not to unsaved file-editor content or terminal processes.
 
+File edits require an explicit save. While unsaved edits exist, reloading is blocked and closing lists the affected files, including when you have switched to another page. Choose **Keep window open** to return and save, or **Quit anyway** to discard those edits.
+
 ## Background process and data
 
 The desktop application, CLI, and MCP connections share one local backend for the selected data directory. Closing or quitting the desktop application leaves that backend and its tasks running. Ending an MCP stdio bridge only disconnects that client.

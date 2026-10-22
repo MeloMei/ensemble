@@ -1,18 +1,19 @@
 import { useTranslation } from 'react-i18next';
 import { formatDate, renderDisplayText } from '../shared/i18n';
 import type { DisplayText } from '../shared/display-text';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ChevronLeft, FileCode2, Files, Folder, GitBranch, GitCompareArrows, GitPullRequest, LoaderCircle, Maximize2, MessageSquare, Minimize2, PanelRight, RefreshCw, Save, X } from 'lucide-react';
 import { z } from 'zod';
 import type { FileContent, FileDiff, FileEntry, GitCommitPreview, GitMutation, GitState, PullRequestReview, Session, Workspace } from '../shared/types';
 import { CodeEditor } from './CodeEditor';
+import { FileDraftStore } from './file-drafts';
 import { diffLines, reviewFeedback, reviewNoteSchema, type DiffLine, type ReviewNote } from './review-notes';
 import { IconButton, Modal, type Perform } from './ui';
 import './FileReviewPanel.css';
 
 const notesSchema = z.array(reviewNoteSchema).max(200);
 type FileNotice = string | DisplayText;
-const fileDrafts = new Map<string, { original: FileContent; text: string }>();
+const fileDrafts = new FileDraftStore(summary => window.workbench.setUnsavedFiles(summary));
 function persistedNotes(workspaceId: string): ReviewNote[] {
   try { return notesSchema.parse(JSON.parse(localStorage.getItem(`workbench:review:${workspaceId}`) ?? '[]')); }
   catch { return []; }
@@ -27,11 +28,15 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [git, setGit] = useState<GitState | null>(null);
   const [selected, setSelected] = useState<{ path: string; mode: 'content' | 'diff' } | null>(null);
-  const [file, setFile] = useState<FileContent | null>(null);
-  const [draft, setDraft] = useState('');
+  const [loadedPath, setLoadedPath] = useState<string | null>(null);
+  useSyncExternalStore(fileDrafts.subscribe, fileDrafts.getSnapshot);
+  const buffer = loadedPath === null ? undefined : fileDrafts.get(workspace.id, loadedPath);
+  const file = buffer?.original ?? null;
+  const draft = buffer?.text ?? '';
   const [diff, setDiff] = useState<FileDiff | null>(null);
   const [error, setError] = useState<FileNotice>('');
-  const [busy, setBusy] = useState(false);
+  const [operationBusy, setBusy] = useState(false);
+  const busy = operationBusy || (loadedPath !== null && fileDrafts.isSaving(workspace.id, loadedPath));
   const [preview, setPreview] = useState<GitCommitPreview | null>(null);
   const [commitMessage, setCommitMessage] = useState('');
   const [discard, setDiscard] = useState<string | null>(null);
@@ -64,30 +69,30 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
     if (dirty && !force) throw new Error(t('files.saveBeforeOpen'));
     const token = ++fileGeneration.current;
     if (mode === 'content') {
-      const draftKey = `${workspace.id}:${filePath}`;
-      if (force) fileDrafts.delete(draftKey);
-      const cached = fileDrafts.get(draftKey);
+      const cached = fileDrafts.get(workspace.id, filePath);
       let contents: FileContent;
       try { contents = await window.workbench.readFile(workspace.id, filePath); }
       catch (failure) {
-        if (!cached) throw failure;
-        contents = cached.original;
+        const retained = fileDrafts.get(workspace.id, filePath);
+        if (force || !retained || (retained.text === retained.original.content && !fileDrafts.isSaving(workspace.id, filePath))) throw failure;
+        contents = retained.original;
         setError({ key: 'workspace:files.unreadableDraft' });
       }
       if (token !== fileGeneration.current) return;
-      setFile(cached?.original ?? contents); setDraft(cached?.text ?? contents.content); setDiff(null);
-      if (cached && cached.original.revision !== contents.revision) setError({ key: 'workspace:files.changedDraft' });
+      const current = fileDrafts.open(workspace, contents, cached, force);
+      setLoadedPath(filePath); setDiff(null);
+      if (current === cached && current.original.revision !== contents.revision) setError({ key: 'workspace:files.changedDraft' });
     } else {
       const patch = await window.workbench.fileDiff(workspace.id, filePath);
       if (token !== fileGeneration.current) return;
       setDiff(patch);
-      if (file?.path !== filePath) { setFile(null); setDraft(''); }
+      if (file?.path !== filePath) setLoadedPath(null);
     }
     setSelected({ path: filePath, mode }); setNoteLine(null); setNoteBody(''); setDiscard(null);
   };
 
   useEffect(() => {
-    setDirectory(''); setEntries([]); setGit(null); setSelected(null); setFile(null); setDraft(''); setDiff(null);
+    setDirectory(''); setEntries([]); setGit(null); setSelected(null); setLoadedPath(null); setDiff(null);
     setPreview(null); setReview(null); setNotes({ workspaceId: workspace.id, items: persistedNotes(workspace.id) });
     return () => { directoryGeneration.current++; fileGeneration.current++; };
   }, [workspace.id]);
@@ -97,16 +102,9 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
     try { localStorage.setItem(`workbench:review:${workspace.id}`, JSON.stringify(notes.items)); }
     catch { setError({ key: 'workspace:files.notesSaveFailed' }); }
   }, [notes, workspace.id]);
-  useEffect(() => {
-    const prevent = (event: BeforeUnloadEvent) => { if (dirty) { event.preventDefault(); event.returnValue = ''; } };
-    window.addEventListener('beforeunload', prevent);
-    return () => window.removeEventListener('beforeunload', prevent);
-  }, [dirty]);
-
   const save = () => file && run('save', async () => {
-    const written = await window.workbench.writeFile(workspace.id, { path: file.path, content: draft, revision: file.revision });
-    fileDrafts.delete(`${workspace.id}:${file.path}`);
-    setFile(written); setDraft(written.content); await refresh();
+    await fileDrafts.save(workspace.id, file.path, input => window.workbench.writeFile(workspace.id, input));
+    await refresh();
   });
   const mutate = (action: GitMutation['action'], filePath: string, revision?: string) => run(action, async () => {
     const updated = await window.workbench.gitMutate(workspace.id, { action, path: filePath, revision });
@@ -181,7 +179,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
     {selected && <section className="file-inspector review-inspector" hidden={view === 'pr'}>
       <div className="inspector-title"><FileCode2 size={14} /><span title={selected.path}>{selected.path}</span>{dirty && <span className="review-unsaved" title={t('files.unsavedTitle')}>{t('files.unsaved')}</span>}
         <IconButton label={expanded ? t('files.restorePanel') : t('files.expandPanel')} onClick={() => setExpanded(value => !value)}>{expanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}</IconButton>
-        <IconButton label={t('files.close')} disabled={dirty} onClick={() => { fileGeneration.current++; setSelected(null); setFile(null); setDiff(null); setExpanded(false); }}><X size={13} /></IconButton>
+        <IconButton label={t('files.close')} disabled={dirty} onClick={() => { fileGeneration.current++; setSelected(null); setLoadedPath(null); setDiff(null); setExpanded(false); }}><X size={13} /></IconButton>
       </div>
       <div className="inspector-tabs">
         <button className={selected.mode === 'content' ? 'active' : ''} disabled={!!busy || dirty} onClick={() => run('open', () => load(selected.path, 'content'))}>{t('files.edit')}</button>
@@ -191,9 +189,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
       </div>
       {file && <div className="review-editor" hidden={selected.mode !== 'content'} onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === 's') { event.preventDefault(); if (dirty && !busy) save(); } }}>
         <CodeEditor key={`${workspace.id}:${file.path}`} value={draft} onChange={text => {
-          setDraft(text);
-          if (text === file.content) fileDrafts.delete(`${workspace.id}:${file.path}`);
-          else fileDrafts.set(`${workspace.id}:${file.path}`, { original: file, text });
+          fileDrafts.edit(workspace.id, file.path, text);
         }} language={file.language} readOnly={!!busy} />
       </div>}
       {diff && <>

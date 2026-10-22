@@ -66,6 +66,7 @@ export async function answerFormElicitation(schemaValue: unknown, title: string,
     id, header: typeof field.title === 'string' ? field.title : name,
     question: [typeof field.title === 'string' ? field.title : name, typeof field.description === 'string' ? field.description : ''].filter(Boolean).join('：'),
     multiSelect: multiple,
+    allowCustomAnswer: options === undefined,
     options: [...(options ?? []).map(({ label, labelI18n, description }) => ({ label, ...(labelI18n ? { labelI18n } : {}), ...(description ? { description } : {}) })), ...(optional ? [{ label: OMIT, labelI18n: { key: 'runtime:question.omit' } }] : [])],
   }));
   const raw = await context.approve({ title, titleI18n, detail, choices: [], questions }, signal);

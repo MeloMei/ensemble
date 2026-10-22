@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { formatDate, formatNumber, renderDisplayText } from '../shared/i18n';
+import { validQuestionAnswers } from '../shared/question-answers';
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode, type Ref } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
@@ -43,9 +44,9 @@ function QuestionApproval({ approval, pending, perform }: ApprovalProps) {
   const questions = approval.questions ?? [];
   const answers = Object.fromEntries(questions.map(question => [
     question.id,
-    [...(selected[question.id] ?? []), ...(free[question.id]?.trim() ? [free[question.id].trim()] : [])],
+    [...(selected[question.id] ?? []), ...(question.allowCustomAnswer !== false && free[question.id]?.trim() ? [free[question.id].trim()] : [])],
   ]));
-  const valid = questions.every(question => answers[question.id].length > 0);
+  const valid = validQuestionAnswers(questions, answers);
   const busy = pending.has(`approval-${approval.id}`);
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -80,12 +81,12 @@ function QuestionApproval({ approval, pending, perform }: ApprovalProps) {
           </button>;
         })}
       </div>
-      <input aria-label={t('approval.otherAnswer', { question: renderDisplayText(question.header || question.question, question.headerI18n) })} value={free[question.id] ?? ''}
+      {question.allowCustomAnswer !== false && <input aria-label={t('approval.otherAnswer', { question: renderDisplayText(question.header || question.question, question.headerI18n) })} value={free[question.id] ?? ''}
         disabled={busy} placeholder={question.multiSelect ? t('approval.otherPlaceholder') : t('approval.answerPlaceholder')}
         onChange={event => {
           setFree(current => ({ ...current, [question.id]: event.target.value }));
           if (!question.multiSelect) setSelected(current => ({ ...current, [question.id]: [] }));
-        }} />
+        }} />}
     </fieldset>)}
     <div className="question-submit">
       <button className="button primary small" disabled={!valid || busy}>

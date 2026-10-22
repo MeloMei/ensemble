@@ -1,17 +1,26 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { Snapshot, WorkbenchAPI } from '../shared/types';
+import type { Snapshot, UnsavedFileSummary, WorkbenchAPI } from '../shared/types';
 import { DraftWriter } from '../shared/draft-writer';
+import { TerminalInputWriter } from '../shared/terminal-input-writer';
 import type { LanguageState } from '../shared/i18n';
 
 const drafts = new DraftWriter((id, input) => ipcRenderer.invoke('workbench:save-session-draft', id, input));
+const terminalInputs = new TerminalInputWriter((id, data) => ipcRenderer.invoke('workbench:write-terminal', id, data));
+let unsavedFiles: UnsavedFileSummary = { count: 0, names: [] };
+window.addEventListener('beforeunload', event => {
+  if (unsavedFiles.count || drafts.hasPending || terminalInputs.hasPending) {
+    event.preventDefault(); event.returnValue = '';
+  }
+});
 ipcRenderer.on('workbench:prepare-close', (_event, requestId: string) => {
-  void drafts.flush().then(
-    () => ipcRenderer.send('workbench:close-ready', { requestId, error: null }),
-    error => ipcRenderer.send('workbench:close-ready', { requestId, error: error instanceof Error ? error.message : String(error) }),
-  );
+  void Promise.allSettled([drafts.flush(), terminalInputs.flush()]).then(results => {
+    const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason instanceof Error ? result.reason.message : String(result.reason)] : []);
+    ipcRenderer.send('workbench:close-ready', { requestId, error: errors.length ? errors.join('\n') : null, unsavedFiles });
+  });
 });
 
 const api: WorkbenchAPI = {
+  setUnsavedFiles: summary => { unsavedFiles = structuredClone(summary); },
   getLanguage: () => ipcRenderer.invoke('workbench:get-language'),
   setLanguage: preference => ipcRenderer.invoke('workbench:set-language', preference),
   onLanguageChanged: listener => {
@@ -45,7 +54,7 @@ const api: WorkbenchAPI = {
   closeTab: (workspaceId, tabId) => ipcRenderer.invoke('workbench:close-tab', workspaceId, tabId),
   openSessionTab: (workspaceId, sessionId) => ipcRenderer.invoke('workbench:open-session-tab', workspaceId, sessionId),
   createTerminal: workspaceId => ipcRenderer.invoke('workbench:create-terminal', workspaceId),
-  writeTerminal: (id, data) => ipcRenderer.invoke('workbench:write-terminal', id, data),
+  writeTerminal: (id, data) => terminalInputs.write(id, data),
   resizeTerminal: (id, columns, rows) => ipcRenderer.invoke('workbench:resize-terminal', id, columns, rows),
   stopTerminal: id => ipcRenderer.invoke('workbench:stop-terminal', id),
   createPreview: (workspaceId, url) => ipcRenderer.invoke('workbench:create-preview', workspaceId, url),

@@ -10,6 +10,7 @@ import { WorkbenchNotifications } from './notifications';
 import { DesktopPreferences } from './preferences';
 import { DATA_DIRECTORY_NAME, PRODUCT_NAME } from '../shared/app-identity';
 import { initializeI18n, resolveLanguage, setLanguage, translate, type LanguagePreference, type LanguageState } from '../shared/i18n';
+import type { UnsavedFileSummary } from '../shared/types';
 
 app.setName(PRODUCT_NAME);
 app.setPath('userData', process.env.WORKBENCH_DATA_DIR ?? join(app.getPath('appData'), DATA_DIRECTORY_NAME));
@@ -30,9 +31,12 @@ interface CloseRequest {
 }
 let closeRequest: CloseRequest | undefined;
 let allowWindowClose = false;
+let discardPendingWork = false;
 const subscription = new AbortController();
 const cwdSchema = z.string().min(1).max(4096);
-const closeReplySchema = z.object({ requestId: z.string().uuid(), error: z.string().nullable() }).strict();
+const closeReplySchema = z.object({ requestId: z.string().uuid(), error: z.string().nullable(),
+  unsavedFiles: z.object({ count: z.number().int().nonnegative(), names: z.array(z.string().max(4400)).max(8) }).strict(),
+}).strict();
 
 function synchronizeLanguage(preference?: LanguagePreference): Promise<LanguageState> {
   const update = languageUpdates.then(async () => {
@@ -52,22 +56,24 @@ function synchronizeLanguage(preference?: LanguagePreference): Promise<LanguageS
   return update;
 }
 
-function finishCloseRequest(request: CloseRequest, error: string | null): void {
+function finishCloseRequest(request: CloseRequest, error: string | null, files?: UnsavedFileSummary): void {
   if (closeRequest !== request || request.phase !== 'saving' || request.window.isDestroyed()) return;
   if (request.timer) clearTimeout(request.timer);
   request.timer = undefined;
   request.phase = 'confirming';
-  const decide = (close: boolean) => {
+  const decide = (close: boolean, discard = false) => {
     if (closeRequest !== request || request.window.isDestroyed()) return;
     closeRequest = undefined;
-    if (close) { allowWindowClose = true; request.window.close(); }
+    if (close) { allowWindowClose = true; discardPendingWork = discard; request.window.close(); }
   };
-  if (error === null) { decide(true); return; }
+  if (error === null && !files?.count) { decide(true); return; }
+  const fileWarning = files?.count ? translate('native:close.fileList', { count: files.count, names: files.names.join('\n') })
+    + (files.count > files.names.length ? `\n${translate('native:close.moreFiles', { count: files.count - files.names.length })}` : '') : '';
   void dialog.showMessageBox(request.window, {
-    type: 'warning', title: translate('native:close.title', { product: PRODUCT_NAME }), message: translate('native:close.unsaved'),
-    detail: translate('native:close.detail', { error }),
+    type: 'warning', title: translate('native:close.title', { product: PRODUCT_NAME }), message: translate(error !== null ? 'native:close.unsaved' : 'native:close.fileEdits'),
+    detail: translate('native:close.detail', { error: [error, fileWarning].filter(Boolean).join('\n\n') }),
     buttons: [translate('native:close.keepWindow'), translate('native:close.quitAnyway')], defaultId: 0, cancelId: 0, noLink: true,
-  }).then(result => decide(result.response === 1), () => decide(false));
+  }).then(result => decide(result.response === 1, result.response === 1), () => decide(false));
 }
 
 function registerIPC(commands: string[]): void {
@@ -76,7 +82,7 @@ function registerIPC(commands: string[]): void {
     const request = closeRequest;
     if (!reply.success || !request || window !== request.window
       || event.sender.id !== request.window.webContents.id || reply.data.requestId !== request.id) return;
-    finishCloseRequest(request, reply.data.error);
+    finishCloseRequest(request, reply.data.error, reply.data.unsavedFiles);
   });
   const handle = (channel: string, handler: (...args: unknown[]) => unknown) => {
     ipcMain.handle(channel, (event, ...args: unknown[]) => {
@@ -120,6 +126,7 @@ async function createWindow(): Promise<void> {
     void synchronizeLanguage().catch(error => process.stderr.write(`Language preference refresh failed: ${String(error)}\n`));
   });
   allowWindowClose = false;
+  discardPendingWork = false;
   currentWindow.on('close', event => {
     if (allowWindowClose) return;
     event.preventDefault();
@@ -137,6 +144,10 @@ async function createWindow(): Promise<void> {
   currentWindow.webContents.on('render-process-gone', (_event, details) => {
     rendererFailure = details.reason;
     if (closeRequest?.window === currentWindow) finishCloseRequest(closeRequest, translate('native:close.rendererStopped', { reason: rendererFailure }));
+  });
+  currentWindow.webContents.on('will-prevent-unload', event => {
+    if (allowWindowClose && discardPendingWork) event.preventDefault();
+    else allowWindowClose = false;
   });
   currentWindow.webContents.on('did-finish-load', () => { rendererFailure = undefined; });
   currentWindow.once('ready-to-show', () => currentWindow.show());

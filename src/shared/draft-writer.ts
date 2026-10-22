@@ -13,6 +13,8 @@ export class DraftWriter {
 
   constructor(private write: (id: string, input: PromptInput) => Promise<void>) {}
 
+  get hasPending(): boolean { return this.drafts.size > 0; }
+
   save(id: string, value: PromptInput): Promise<void> {
     let draft = this.drafts.get(id);
     if (!draft) {

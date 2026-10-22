@@ -234,6 +234,79 @@ test('immutable file artifacts preserve their bytes when the source changes', as
   } finally { await f.close(); }
 });
 
+test('draft template edits synchronize the launch plan without rewriting manual tasks or executed history', async () => {
+  const turns: { prompt: string; permission?: string }[] = [];
+  const f = await fixture(async context => {
+    turns.push({ prompt: context.prompt, permission: context.session.settings?.permission });
+    context.emit({ type: 'text', itemId: 'result', text: 'controlled result' });
+  });
+  const step = (id: string, prompt: string, dependsOn: string[] = []) => ({ id, title: prompt, participantId: 'work', prompt, dependsOn, artifactIds: [] });
+  try {
+    const { runId } = await f.create(undefined, { start: false, completion: 'all-tasks',
+      steps: [step('keep', 'OLD-TARGET', ['remove']), step('remove', 'REMOVED-TARGET')] });
+    const initial = f.store.state.collaboration.tasks.map(task => ({ id: task.id, templateId: task.templateId }));
+    const keepId = initial.find(task => task.templateId === 'keep')!.id;
+    const { taskId: manualId } = await f.core.call(user, 'submit_task', {
+      requestId: 'manual', runId, participantId: 'work', title: 'Manual task', prompt: 'MANUAL-TARGET', dependsOn: [keepId],
+    }) as { taskId: string };
+    const before = structuredClone(f.store.state.collaboration);
+    await assert.rejects(f.core.call(user, 'update_run', {
+      requestId: 'invalid-edit', runId, expectedVersion: 1, steps: [step('remove', 'REMOVED-TARGET')],
+    }), /仍被其他任务、消息或资料引用/);
+    assert.deepEqual(f.store.state.collaboration, before, 'a rejected deletion rolls back the definition and every task');
+    const readOnly = { ...participant('work'), name: 'Updated worker', settings: { permission: 'read-only' as const },
+      permissions: { ...permissions, workspace: { cwd: f.cwd, access: 'read-only' as const } } };
+    await f.core.call(user, 'update_run', { requestId: 'edit', runId, expectedVersion: 1, participants: [readOnly],
+      steps: [step('keep', 'NEW-TARGET'), step('added', 'ADDED-TARGET', ['keep'])] });
+    const tasks = f.store.state.collaboration.tasks;
+    const kept = tasks.find(task => task.templateId === 'keep')!, added = tasks.find(task => task.templateId === 'added')!;
+    assert.equal(kept.id, keepId);
+    assert.equal(kept.prompt, 'NEW-TARGET'); assert.deepEqual(kept.dependsOn, []);
+    assert.equal(kept.definitionVersion, 2); assert.equal(kept.participantSnapshot.settings?.permission, 'read-only');
+    assert.deepEqual(added.dependsOn, [keepId]);
+    assert.equal(tasks.some(task => task.templateId === 'remove'), false);
+    assert.deepEqual(tasks.find(task => task.id === manualId), before.tasks.find(task => task.id === manualId));
+    await f.core.call(user, 'control_run', { requestId: 'start-edited', runId, action: 'start' });
+    await until(() => f.store.state.collaboration.runs[0].status === 'completed');
+    assert.equal(turns.length, 3);
+    assert.ok(turns.every(turn => !turn.prompt.includes('OLD-TARGET') && !turn.prompt.includes('REMOVED-TARGET')));
+    assert.equal(turns.find(turn => turn.prompt.includes('NEW-TARGET'))?.permission, 'read-only');
+    assert.equal(turns.find(turn => turn.prompt.includes('ADDED-TARGET'))?.permission, 'read-only');
+    assert.equal(turns.find(turn => turn.prompt.includes('MANUAL-TARGET'))?.permission, undefined);
+    const history = structuredClone(f.store.state.collaboration.tasks);
+    await f.core.call(user, 'update_run', { requestId: 'after-execution', runId, expectedVersion: 2, steps: [] });
+    assert.deepEqual(f.store.state.collaboration.tasks, history);
+  } finally { await f.close(); }
+});
+
+test('deadline updates remove, extend and shorten the active timer while a run is paused', async t => {
+  const f = await fixture(async context => {
+    await new Promise<void>(resolve => context.signal.addEventListener('abort', () => resolve(), { once: true }));
+  });
+  try {
+    const { runId } = await f.create();
+    await f.core.call(user, 'submit_task', { requestId: 'gated', runId, participantId: 'work', title: 'Gated task', prompt: 'wait' });
+    await until(() => f.store.state.collaboration.tasks[0].status === 'running');
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+    const deadline = (milliseconds: number) => new Date(Date.now() + milliseconds).toISOString();
+    await f.core.call(user, 'update_run', { requestId: 'add-deadline', runId, expectedVersion: 1, limits: { deadlineAt: deadline(1000) } });
+    await f.core.call(user, 'update_run', { requestId: 'remove-deadline', runId, expectedVersion: 2, limits: {} });
+    t.mock.timers.tick(1000);
+    assert.equal(f.store.state.collaboration.runs[0].status, 'running');
+    assert.equal(f.store.state.collaboration.tasks[0].status, 'running');
+    await f.core.call(user, 'update_run', { requestId: 'another-deadline', runId, expectedVersion: 3, limits: { deadlineAt: deadline(1000) } });
+    await f.core.call(user, 'update_run', { requestId: 'extend-deadline', runId, expectedVersion: 4, limits: { deadlineAt: deadline(2000) } });
+    t.mock.timers.tick(1000);
+    assert.equal(f.store.state.collaboration.runs[0].status, 'running');
+    await f.core.call(user, 'control_run', { requestId: 'pause', runId, action: 'pause' });
+    await f.core.call(user, 'update_run', { requestId: 'shorten-deadline', runId, expectedVersion: 5, limits: { deadlineAt: deadline(100) } });
+    t.mock.timers.tick(100);
+    assert.equal(f.store.state.collaboration.runs[0].status, 'failed');
+    assert.equal(f.store.state.collaboration.tasks[0].status, 'cancelled');
+    assert.match(f.store.state.collaboration.runs[0].error ?? '', /截止时间/);
+  } finally { t.mock.timers.reset(); await f.close(); }
+});
+
 test('implementation-review starter waits for start and passes the goal and output to a read-only reviewer', async () => {
   const turns: { prompt: string; permission?: string }[] = [];
   const f = await fixture(async context => {

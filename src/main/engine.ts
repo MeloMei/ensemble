@@ -8,6 +8,7 @@ import type {
   WorkflowInput, Workspace, WorkspaceTab,
 } from '../shared/types';
 import type { LoadedPromptAttachment, ProviderAdapter, ProviderEvent } from './providers/types';
+import { validQuestionAnswers } from '../shared/question-answers';
 import { StateStore } from './store';
 import { moveSession } from './lifecycle';
 import { workspaceExecutionKey } from './workspace-files';
@@ -376,10 +377,10 @@ export class WorkbenchEngine {
   answerQuestions(id: string, answers: Record<string, string[]>): void {
     const approval = this.store.state.sessions.flatMap(session => session.approvals).find(item => item.id === id);
     if (!approval?.questions?.length) throw new Error('这个问答已结束。');
+    if (!validQuestionAnswers(approval.questions, answers)) throw new Error('请按问题要求回答，受限问题只能选择给定选项。');
     const normalized: Record<string, string[]> = {};
     for (const question of approval.questions) {
       const values = answers[question.id];
-      if (!values?.length || values.some(value => !value.trim()) || (!question.multiSelect && values.length !== 1)) throw new Error('请回答每个问题。');
       normalized[question.id] = values;
     }
     const resolve = this.approvalResolvers.get(id);

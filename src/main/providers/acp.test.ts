@@ -194,6 +194,7 @@ test('ACP native form elicitation uses the user approval UI and returns typed or
       assert.equal(approval.title, 'Controlled ACP 需要你的回答');
       assert.equal(approval.detail, 'Native question');
       assert.equal(approval.questions?.[2].multiSelect, true);
+      assert.deepEqual(approval.questions?.map(question => question.allowCustomAnswer), [false, true, false, true, false]);
       return JSON.stringify({ 'mcp-0': ['本机'], 'mcp-1': ['（不提供）'], 'mcp-2': ['源码', '文档'], 'mcp-3': ['17'], 'mcp-4': ['是'] });
     };
     await f.provider.run(f.context);

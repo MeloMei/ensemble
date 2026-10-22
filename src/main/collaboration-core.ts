@@ -45,7 +45,7 @@ export class CollaborationCore {
   private active = new Map<string, { sessionId: string; engineAttemptId: string; messageIds: string[]; inputArtifactIds: string[] }>();
   private listeners = new Set<() => void>();
   private unsubscribe: () => void;
-  private deadlines = new Map<string, ReturnType<typeof setTimeout>>();
+  private deadlines = new Map<string, { at: string; timer: ReturnType<typeof setTimeout> }>();
   private artifacts: AttachmentService;
   private executionAttachments: AttachmentService;
   private legacyReservations = new Map<string, () => void>();
@@ -290,7 +290,9 @@ export class CollaborationCore {
           const previous = run.definitionSnapshot;
           this.syncIdentityGrants(principal, run.id, definition!, previous);
           this.store.state.collaboration.definitions.push(definition!); run.definitionSnapshot = definition!; run.definitionVersion = definition!.version;
-          run.updatedAt = now(); this.event(tx, run.id, 'run.configured', { participantId: this.actor(principal, run, 'read').participantId, data: { definitionVersion: definition!.version } });
+          const templateTasks = run.status === 'draft' ? this.synchronizeTemplateTasks(run, tx) : undefined;
+          run.updatedAt = now(); this.event(tx, run.id, 'run.configured', { participantId: this.actor(principal, run, 'read').participantId,
+            data: { definitionVersion: definition!.version, ...(templateTasks ? { templateTasks } : {}) } });
           result = { runId: run.id, version: run.definitionVersion };
         } else if (operation === 'submit_task') result = this.submitTask(principal, run, args, tx);
         else if (operation === 'claim_task') result = this.claimTask(principal, run, args, tx);
@@ -343,7 +345,7 @@ export class CollaborationCore {
     this.store.state.collaboration.runs.push(run);
     this.syncIdentityGrants(principal, id, definition);
     this.event(tx, id, 'run.created', { participantId: sourceParticipant?.id ?? 'user', data: { definitionVersion: definition.version, status: run.status } });
-    this.materializeSteps(run, tx);
+    this.synchronizeTemplateTasks(run, tx);
     if ((principal.kind === 'session' || principal.kind === 'managed') && sourceParticipant && args.start) this.attachSource(run, sourceParticipant, principal, tx);
     return { runId: id, definitionId: definition.id, version: definition.version, status: run.status, participantId: sourceParticipant?.id };
   }
@@ -355,16 +357,42 @@ export class CollaborationCore {
     if (!definition) throw new Error('协作定义不存在。');
     const run: CollaborationRun = { id: randomUUID(), definitionId: definition.id, definitionVersion: definition.version,
       definitionSnapshot: structuredClone(definition), status: 'running', createdBy: 'user', createdAt: now(), updatedAt: now() };
-    this.store.state.collaboration.runs.push(run); this.materializeSteps(run, tx); this.event(tx, run.id, 'run.started');
+    this.store.state.collaboration.runs.push(run); this.synchronizeTemplateTasks(run, tx); this.event(tx, run.id, 'run.started');
     this.syncIdentityGrants(principal, run.id, definition);
     return { runId: run.id, version: definition.version, status: run.status };
   }
 
-  private materializeSteps(run: CollaborationRun, tx: StoreTransaction): void {
-    const ids = new Map((run.definitionSnapshot.steps ?? []).map(step => [step.id, randomUUID()]));
-    for (const step of run.definitionSnapshot.steps ?? []) this.addTask(run, {
-      ...step, id: ids.get(step.id), dependsOn: step.dependsOn.map(id => ids.get(id)!), templateId: step.id,
-    }, { id: run.createdBy, participantId: 'user', source: 'platform' }, tx);
+  private synchronizeTemplateTasks(run: CollaborationRun, tx: StoreTransaction) {
+    const steps = run.definitionSnapshot.steps ?? [];
+    const existing = this.tasks(run.id);
+    const templates = new Map(existing.filter(task => task.templateId).map(task => [task.templateId!, task]));
+    if ([...templates.values()].some(task => task.attempts.length)) throw new Error('已经执行的预设任务不能随草稿更新。');
+    const ids = new Map(steps.map(step => [step.id, templates.get(step.id)?.id ?? randomUUID()]));
+    const removed = new Set([...templates.values()].filter(task => !ids.has(task.templateId!)).map(task => task.id));
+    const referenced = existing.some(task => !task.templateId
+      && (task.dependsOn.some(id => removed.has(id)) || Boolean(task.parentTaskId && removed.has(task.parentTaskId))))
+      || this.store.state.collaboration.messages.some(message => message.runId === run.id
+        && [message.taskId, message.targetTaskId].some(id => id && removed.has(id)))
+      || this.store.state.collaboration.artifacts.some(artifact => artifact.runId === run.id && artifact.taskId && removed.has(artifact.taskId));
+    if (referenced) throw new Error('不能移除仍被其他任务、消息或资料引用的预设任务。');
+    this.store.state.collaboration.tasks = this.store.state.collaboration.tasks.filter(task => !removed.has(task.id));
+    const updated: string[] = [], added: string[] = [];
+    for (const step of steps) {
+      const dependsOn = step.dependsOn.map(id => ids.get(id)!);
+      const task = templates.get(step.id);
+      if (task) {
+        Object.assign(task, {
+          definitionVersion: run.definitionVersion, participantId: step.participantId,
+          participantSnapshot: structuredClone(run.definitionSnapshot.participants.find(item => item.id === step.participantId)!),
+          title: step.title, prompt: step.prompt, dependsOn, artifactIds: [...step.artifactIds], updatedAt: now(),
+        });
+        updated.push(task.id);
+      } else {
+        added.push(this.addTask(run, { ...step, id: ids.get(step.id), dependsOn, templateId: step.id },
+          { id: run.createdBy, participantId: 'user', source: 'platform' }, tx).id);
+      }
+    }
+    return { added, updated, removed: [...removed] };
   }
 
   private attachSource(run: CollaborationRun, participant: CollaborationParticipant, principal: Extract<CollaborationPrincipal, { kind: 'session' | 'managed' }>, tx: StoreTransaction): void {
@@ -569,7 +597,7 @@ export class CollaborationCore {
   private event(tx: StoreTransaction, runId: string, type: string, extra: Partial<CollaborationEventInput> = {}): CollaborationEvent {
     return tx.appendEvent({ id: randomUUID(), runId, type, source: 'platform', data: {}, createdAt: now(), ...extra });
   }
-  private changed(): void { this.engine.publishState(); this.options.publish?.(); for (const listener of this.listeners) listener(); }
+  private changed(): void { this.synchronizeDeadlines(); this.engine.publishState(); this.options.publish?.(); for (const listener of this.listeners) listener(); }
 
   private async wait(principal: CollaborationPrincipal, args: Args): Promise<unknown> {
     const run = this.run(args.runId); const actor = this.actor(principal, run, 'read');
@@ -619,7 +647,6 @@ export class CollaborationCore {
 
   private async pump(): Promise<void> {
     for (const run of this.store.state.collaboration.runs.filter(item => item.status === 'running')) {
-      this.armDeadline(run);
       const candidates = this.tasks(run.id).filter(task => task.status === 'pending' || task.status === 'waiting');
       for (const candidate of candidates) {
         if (this.closing || this.run(run.id).status !== 'running') break;
@@ -794,18 +821,27 @@ export class CollaborationCore {
   private cancelStoppedExecutions(): void {
     for (const [taskId, active] of this.active) if (this.task(taskId).status === 'cancelled') this.engine.cancelSession(active.sessionId);
   }
-  private armDeadline(run: CollaborationRun): void {
-    if (!run.definitionSnapshot.limits.deadlineAt || this.deadlines.has(run.id)) return;
-    const expires = () => {
-      this.deadlines.delete(run.id); if (this.closing || !['running', 'paused'].includes(this.run(run.id).status)) return;
-      const remaining = Date.parse(this.run(run.id).definitionSnapshot.limits.deadlineAt!) - Date.now();
-      if (remaining > 0) { this.deadlines.set(run.id, setTimeout(expires, Math.min(remaining, 2_147_483_647))); return; }
-      this.store.atomic((_state, tx) => { const current = this.run(run.id); current.error = '已达到用户设置的截止时间。';
-        for (const task of this.tasks(current.id)) if (!terminal.has(task.status)) this.completeTask(task, 'cancelled', '', current.error, tx, 'platform');
-        this.moveRun(current, 'failed', tx); });
-      this.cancelStoppedExecutions(); this.changed();
-    };
-    this.deadlines.set(run.id, setTimeout(expires, Math.min(Math.max(0, Date.parse(run.definitionSnapshot.limits.deadlineAt) - Date.now()), 2_147_483_647)));
+  private synchronizeDeadlines(): void {
+    const desired = new Map(this.closing ? [] : this.store.state.collaboration.runs
+      .filter(run => ['running', 'paused'].includes(run.status) && run.definitionSnapshot.limits.deadlineAt)
+      .map(run => [run.id, run.definitionSnapshot.limits.deadlineAt!]));
+    for (const [id, deadline] of this.deadlines) if (desired.get(id) !== deadline.at) {
+      clearTimeout(deadline.timer); this.deadlines.delete(id);
+    }
+    for (const [id, at] of desired) if (!this.deadlines.has(id)) {
+      const timer = setTimeout(() => {
+        if (this.deadlines.get(id)?.timer !== timer) return;
+        this.deadlines.delete(id);
+        if (Date.parse(at) > Date.now()) { this.synchronizeDeadlines(); return; }
+        this.store.atomic((_state, tx) => {
+          const run = this.run(id); run.error = '已达到用户设置的截止时间。';
+          for (const task of this.tasks(id)) if (!terminal.has(task.status)) this.completeTask(task, 'cancelled', '', run.error, tx, 'platform');
+          this.moveRun(run, 'failed', tx);
+        });
+        this.cancelStoppedExecutions(); this.changed();
+      }, Math.min(Math.max(0, Date.parse(at) - Date.now()), 2_147_483_647));
+      this.deadlines.set(id, { at, timer });
+    }
   }
 
   private async legacyCall(principal: CollaborationPrincipal, operation: string, input: unknown): Promise<unknown> {
@@ -841,7 +877,7 @@ export class CollaborationCore {
     try { this.store.atomic((_state, tx) => { this.store.state.collaboration.definitions.push(definition);
       const run: CollaborationRun = { id: runId, definitionId: definition.id, definitionVersion: 1, definitionSnapshot: definition,
         status: 'running', createdBy: 'user', createdAt: now(), updatedAt: now(), legacyWorkflowId: workflowId };
-      this.store.state.collaboration.runs.push(run); workflow.status = 'running'; this.materializeSteps(run, tx); this.event(tx, run.id, 'run.started'); }); }
+      this.store.state.collaboration.runs.push(run); workflow.status = 'running'; this.synchronizeTemplateTasks(run, tx); this.event(tx, run.id, 'run.started'); }); }
     catch (error) { release(); throw error; }
     this.legacyReservations.set(runId, release);
     this.changed(); this.schedulePump();
@@ -861,7 +897,7 @@ export class CollaborationCore {
       const definition = this.legacyDefinition(workflow); this.store.state.collaboration.definitions.push(definition);
       const run: CollaborationRun = { id: randomUUID(), definitionId: definition.id, definitionVersion: 1, definitionSnapshot: definition,
         status: workflow.status, createdBy: 'user', createdAt: workflow.createdAt, updatedAt: now(), legacyWorkflowId: workflowId };
-      this.store.state.collaboration.runs.push(run); this.materializeSteps(run, tx);
+      this.store.state.collaboration.runs.push(run); this.synchronizeTemplateTasks(run, tx);
       for (const task of this.tasks(run.id)) {
         const step = workflow.steps.find(item => item.id === task.templateId)!; task.sessionId = step.sessionId;
         task.status = step.status === 'blocked' ? 'failed' : step.status === 'running' ? 'interrupted' : step.status;
@@ -928,7 +964,7 @@ export class CollaborationCore {
 
   close(): Promise<void> {
     if (this.closePromise) return this.closePromise;
-    this.closing = true; for (const timer of this.deadlines.values()) clearTimeout(timer); this.deadlines.clear();
+    this.closing = true; this.synchronizeDeadlines();
     for (const listener of this.listeners) listener();
     this.closePromise = (async () => {
       await this.mutations.catch(() => {}); await this.pumping;

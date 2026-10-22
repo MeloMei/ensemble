@@ -79,6 +79,7 @@ export interface ApprovalInput {
     headerI18n?: DisplayText;
     options: { label: string; description?: string; labelI18n?: DisplayText }[];
     multiSelect: boolean;
+    allowCustomAnswer?: boolean;
   }[];
 }
 
@@ -158,7 +159,10 @@ export interface Snapshot {
   collaborationEventSeq?: number;
 }
 
+export interface UnsavedFileSummary { count: number; names: string[] }
+
 export interface WorkbenchAPI {
+  setUnsavedFiles(summary: UnsavedFileSummary): void;
   getLanguage(): Promise<LanguageState>;
   setLanguage(preference: LanguagePreference): Promise<LanguageState>;
   onLanguageChanged(listener: (state: LanguageState) => void): () => void;

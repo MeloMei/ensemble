@@ -70,6 +70,7 @@ export type CollaborationAttempt = z.infer<typeof collaborationAttemptSchema>;
 export const collaborationTaskSchema = record({
   id: identifier, runId: identifier, participantId: identifier, createdBy: identifier, title: z.string(), prompt: z.string(),
   definitionVersion: z.number().int().positive(), participantSnapshot: collaborationParticipantSchema,
+  templateId: identifier.optional(),
   dependsOn: z.array(identifier), artifactIds: z.array(identifier), status: collaborationTaskStatusSchema,
   parentTaskId: identifier.optional(), waitingForTaskIds: z.array(identifier).optional(),
   attempts: z.array(collaborationAttemptSchema), sessionId: identifier.optional(), attemptId: identifier.optional(),
