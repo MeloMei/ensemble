@@ -1,4 +1,6 @@
 import type { CollaborationEvent, CollaborationState, CollaborationIdentity } from './collaboration';
+import type { LanguagePreference, LanguageState } from './i18n';
+import type { DisplayText } from './display-text';
 
 export type SessionStatus = 'idle' | 'queued' | 'running' | 'waiting_approval' | 'waiting_children' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
 export type StepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'blocked' | 'cancelled';
@@ -13,6 +15,7 @@ export interface ProviderInfo {
   source: 'builtin' | 'plugin';
   available: boolean;
   detail: string;
+  detailI18n?: DisplayText;
   capabilities: { resume: boolean; approvals: boolean; images?: boolean; rewind?: boolean; effort?: boolean; permissions?: boolean };
   models?: ProviderModel[];
   defaultModelId?: string;
@@ -66,13 +69,15 @@ export interface Message {
 
 export interface ApprovalInput {
   title: string;
+  titleI18n?: DisplayText;
   detail: string;
-  choices: { id: string; label: string }[];
+  choices: { id: string; label: string; labelI18n?: DisplayText }[];
   questions?: {
     id: string;
     question: string;
     header: string;
-    options: { label: string; description?: string }[];
+    headerI18n?: DisplayText;
+    options: { label: string; description?: string; labelI18n?: DisplayText }[];
     multiSelect: boolean;
   }[];
 }
@@ -154,6 +159,9 @@ export interface Snapshot {
 }
 
 export interface WorkbenchAPI {
+  getLanguage(): Promise<LanguageState>;
+  setLanguage(preference: LanguagePreference): Promise<LanguageState>;
+  onLanguageChanged(listener: (state: LanguageState) => void): () => void;
   collaborationCall(operation: string, input: unknown): Promise<unknown>;
   queryCollaborationEvents(runId: string, afterSeq?: number, limit?: number): Promise<CollaborationEvent[]>;
   snapshot(): Promise<Snapshot>;

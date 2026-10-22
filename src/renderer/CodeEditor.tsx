@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { useEffect, useRef } from 'react';
 import { Annotation, Compartment, EditorState, Transaction } from '@codemirror/state';
 import { EditorView, highlightActiveLine, keymap, lineNumbers } from '@codemirror/view';
@@ -22,11 +23,13 @@ const editorTheme = (dark: boolean) => EditorView.theme({
 export function CodeEditor({ value, onChange, readOnly = false, language = 'text' }: {
   value: string; onChange(value: string): void; readOnly?: boolean; language?: string;
 }) {
+  const { t } = useTranslation('workspace');
   const { theme } = useAppearance();
   const host = useRef<HTMLDivElement>(null);
   const editor = useRef<EditorView | null>(null);
   const permission = useRef(new Compartment());
   const appearance = useRef(new Compartment());
+  const accessibility = useRef(new Compartment());
   const changed = useRef(onChange); changed.current = onChange;
   const initial = useRef(value);
   useEffect(() => {
@@ -36,7 +39,7 @@ export function CodeEditor({ value, onChange, readOnly = false, language = 'text
       doc: initial.current,
       extensions: [lineNumbers(), highlightActiveLine(), history(), keymap.of([...defaultKeymap, ...historyKeymap]), appearance.current.of(editorTheme(theme === 'dark')),
         EditorState.lineSeparator.of(separator), permission.current.of([EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)]),
-        EditorView.contentAttributes.of({ 'aria-label': `文件编辑器 (${language})`, spellcheck: 'false' }),
+        accessibility.current.of(EditorView.contentAttributes.of({ 'aria-label': t('editor.label', { language }), spellcheck: 'false' })),
         EditorView.updateListener.of(update => {
           if (update.docChanged && !update.transactions.some(transaction => transaction.annotation(remoteUpdate))) {
             changed.current(update.state.doc.sliceString(0, undefined, separator));
@@ -52,6 +55,11 @@ export function CodeEditor({ value, onChange, readOnly = false, language = 'text
   useEffect(() => {
     editor.current?.dispatch({ effects: appearance.current.reconfigure(editorTheme(theme === 'dark')) });
   }, [theme]);
+  useEffect(() => {
+    editor.current?.dispatch({ effects: accessibility.current.reconfigure(
+      EditorView.contentAttributes.of({ 'aria-label': t('editor.label', { language }), spellcheck: 'false' }),
+    ) });
+  }, [language, t]);
   useEffect(() => {
     const view = editor.current;
     if (!view || view.state.doc.eq(view.state.toText(value))) return;

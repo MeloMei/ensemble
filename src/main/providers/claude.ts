@@ -6,6 +6,7 @@ import { homedir, tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { promisify } from 'node:util';
 import type { ApprovalInput, ProviderModel } from '../../shared/types';
+import type { DisplayText } from '../../shared/display-text';
 import { createNdjsonDecoder } from './ndjson';
 import { signalProcessTree } from './process-tree';
 import type { ProviderAdapter, TurnContext } from './types';
@@ -70,16 +71,18 @@ export async function createClaudeProvider(): Promise<ProviderAdapter> {
   const binary = await resolveClaudeBinary();
   let version = '';
   let detail = '没有找到 Claude Code。安装后点击刷新，或设置 CLAUDE_BINARY。';
+  let detailI18n: DisplayText | undefined = { key: 'runtime:detection.claudeMissing' };
   if (binary) {
     try {
       version = (await execute(binary, ['--version'], { timeout: 5_000, maxBuffer: 16_384 })).stdout.trim();
       detail = `${version} · ${binary}`;
-    } catch (error) { detail = `Claude Code 无法运行：${errorOf(error).message}`; }
+      detailI18n = undefined;
+    } catch (error) { detail = `Claude Code 无法运行：${errorOf(error).message}`; detailI18n = { key: 'runtime:detection.cannotRun', values: { provider: 'Claude Code', reason: errorOf(error).message } }; }
   }
   const models = await configuredClaudeModels();
   return {
     info: {
-      id: 'claude', name: 'Claude Code', source: 'builtin', available: Boolean(binary && version), detail,
+      id: 'claude', name: 'Claude Code', source: 'builtin', available: Boolean(binary && version), detail, detailI18n,
       capabilities: { resume: true, approvals: true, images: true, rewind: false, permissions: true, effort: true },
       efforts: EFFORTS,
       models: models.length ? models : undefined,
@@ -483,6 +486,7 @@ async function decideTool(request: ObjectValue, context: TurnContext, signal: Ab
       return {
         id: `q${index}`, question: question.question,
         header: typeof question.header === 'string' ? question.header : `问题 ${index + 1}`,
+        ...(typeof question.header === 'string' ? {} : { headerI18n: { key: 'runtime:question.numberedHeader', values: { number: index + 1 } } }),
         multiSelect: question.multiSelect === true,
         options: question.options.map(rawOption => {
           const option = object(rawOption);
@@ -491,7 +495,7 @@ async function decideTool(request: ObjectValue, context: TurnContext, signal: Ab
         }),
       };
     });
-    const rawAnswers = await context.approve({ title: 'Claude 需要你的回答', detail: '', choices: [], questions }, signal);
+    const rawAnswers = await context.approve({ title: 'Claude 需要你的回答', titleI18n: { key: 'runtime:approval.needsAnswer', values: { provider: 'Claude' } }, detail: '', choices: [], questions }, signal);
     if (signal.aborted || context.signal.aborted) throw cancelled();
     if (rawAnswers === 'cancel') return { behavior: 'deny', message: '用户取消回答', interrupt: true };
     let parsed: ObjectValue;
@@ -511,8 +515,8 @@ async function decideTool(request: ObjectValue, context: TurnContext, signal: Ab
     JSON.stringify(input, null, 2),
   ].filter(Boolean).join('\n');
   const choice = await context.approve({
-    title: `允许 Claude 使用 ${request.tool_name}？`, detail,
-    choices: [{ id: 'accept', label: '允许本次' }, { id: 'decline', label: '拒绝本次' }, { id: 'cancel', label: '取消任务' }],
+    title: `允许 Claude 使用 ${request.tool_name}？`, titleI18n: { key: 'runtime:approval.useTool', values: { provider: 'Claude', tool: request.tool_name } }, detail,
+    choices: [{ id: 'accept', label: '允许本次', labelI18n: { key: 'runtime:approval.allowOnce' } }, { id: 'decline', label: '拒绝本次', labelI18n: { key: 'runtime:approval.denyOnce' } }, { id: 'cancel', label: '取消任务', labelI18n: { key: 'runtime:approval.cancelTask' } }],
   }, signal);
   if (signal.aborted || context.signal.aborted) throw cancelled();
   if (choice === 'accept') return { behavior: 'allow', updatedInput: input };

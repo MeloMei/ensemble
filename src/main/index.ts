@@ -7,7 +7,9 @@ import { z } from 'zod';
 import { connectBackend, type BackendClient } from './backend-client';
 import { buildCodexLink } from './codex-link';
 import { WorkbenchNotifications } from './notifications';
+import { DesktopPreferences } from './preferences';
 import { DATA_DIRECTORY_NAME, PRODUCT_NAME } from '../shared/app-identity';
+import { initializeI18n, resolveLanguage, setLanguage, translate, type LanguagePreference, type LanguageState } from '../shared/i18n';
 
 app.setName(PRODUCT_NAME);
 app.setPath('userData', process.env.WORKBENCH_DATA_DIR ?? join(app.getPath('appData'), DATA_DIRECTORY_NAME));
@@ -17,6 +19,9 @@ const root = dirname(fileURLToPath(import.meta.url));
 let window: BrowserWindow | null = null;
 let backend: BackendClient;
 let notifications: WorkbenchNotifications;
+const preferences = new DesktopPreferences(app.getPath('userData'));
+let languageState: LanguageState;
+let languageUpdates: Promise<void> = Promise.resolve();
 interface CloseRequest {
   id: string;
   window: BrowserWindow;
@@ -28,6 +33,24 @@ let allowWindowClose = false;
 const subscription = new AbortController();
 const cwdSchema = z.string().min(1).max(4096);
 const closeReplySchema = z.object({ requestId: z.string().uuid(), error: z.string().nullable() }).strict();
+
+function synchronizeLanguage(preference?: LanguagePreference): Promise<LanguageState> {
+  const update = languageUpdates.then(async () => {
+    if (preference !== undefined) await preferences.setLanguagePreference(preference);
+    const next: LanguageState = {
+      preference: preferences.languagePreference,
+      language: resolveLanguage(preferences.languagePreference, app.getPreferredSystemLanguages()),
+    };
+    if (next.preference !== languageState.preference || next.language !== languageState.language) {
+      await setLanguage(next.language);
+      languageState = next;
+      if (window && !window.isDestroyed()) window.webContents.send('workbench:language-changed', next);
+    }
+    return { ...languageState };
+  });
+  languageUpdates = update.then(() => {}, () => {});
+  return update;
+}
 
 function finishCloseRequest(request: CloseRequest, error: string | null): void {
   if (closeRequest !== request || request.phase !== 'saving' || request.window.isDestroyed()) return;
@@ -41,9 +64,9 @@ function finishCloseRequest(request: CloseRequest, error: string | null): void {
   };
   if (error === null) { decide(true); return; }
   void dialog.showMessageBox(request.window, {
-    type: 'warning', title: `关闭 ${PRODUCT_NAME}`, message: '草稿尚未确认保存',
-    detail: `${error}\n\n选择“仍然退出”可能丢失尚未保存的文字和附件。保留窗口后可以再次尝试关闭。`,
-    buttons: ['保留窗口', '仍然退出'], defaultId: 0, cancelId: 0, noLink: true,
+    type: 'warning', title: translate('native:close.title', { product: PRODUCT_NAME }), message: translate('native:close.unsaved'),
+    detail: translate('native:close.detail', { error }),
+    buttons: [translate('native:close.keepWindow'), translate('native:close.quitAnyway')], defaultId: 0, cancelId: 0, noLink: true,
   }).then(result => decide(result.response === 1), () => decide(false));
 }
 
@@ -57,17 +80,19 @@ function registerIPC(commands: string[]): void {
   });
   const handle = (channel: string, handler: (...args: unknown[]) => unknown) => {
     ipcMain.handle(channel, (event, ...args: unknown[]) => {
-      if (!window || event.sender.id !== window.webContents.id) throw new Error('请求不属于当前工作台窗口。');
+      if (!window || event.sender.id !== window.webContents.id) throw new Error(translate('native:error.windowMismatch'));
       return handler(...args);
     });
   };
   for (const command of commands) handle(command, (...args) => backend.call(command, ...args));
+  handle('workbench:get-language', () => synchronizeLanguage());
+  handle('workbench:set-language', input => synchronizeLanguage(z.enum(['system', 'zh-CN', 'en']).parse(input)));
   handle('workbench:choose-directory', async () => {
-    const result = await dialog.showOpenDialog(window!, { title: '选择项目目录', properties: ['openDirectory', 'createDirectory'] });
+    const result = await dialog.showOpenDialog(window!, { title: translate('native:dialog.chooseDirectory'), buttonLabel: translate('native:dialog.chooseDirectoryButton'), properties: ['openDirectory', 'createDirectory'] });
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
   handle('workbench:choose-attachments', async () => {
-    const result = await dialog.showOpenDialog(window!, { title: '添加图片或文本文件', properties: ['openFile', 'multiSelections'] });
+    const result = await dialog.showOpenDialog(window!, { title: translate('native:dialog.chooseAttachments'), buttonLabel: translate('native:dialog.chooseAttachmentsButton'), properties: ['openFile', 'multiSelections'] });
     return result.canceled ? [] : backend.call('workbench:import-attachments', result.filePaths);
   });
   handle('workbench:launch-codex', async input => {
@@ -91,6 +116,9 @@ async function createWindow(): Promise<void> {
   });
   const currentWindow = window;
   let rendererFailure: string | undefined;
+  currentWindow.on('focus', () => {
+    void synchronizeLanguage().catch(error => process.stderr.write(`Language preference refresh failed: ${String(error)}\n`));
+  });
   allowWindowClose = false;
   currentWindow.on('close', event => {
     if (allowWindowClose) return;
@@ -99,16 +127,16 @@ async function createWindow(): Promise<void> {
     const request: CloseRequest = { id: randomUUID(), window: currentWindow, phase: 'saving' };
     closeRequest = request;
     if (rendererFailure || currentWindow.webContents.isDestroyed()) {
-      finishCloseRequest(request, rendererFailure ?? '界面已停止，无法确认草稿是否保存。');
+      finishCloseRequest(request, rendererFailure ? translate('native:close.rendererStopped', { reason: rendererFailure }) : translate('native:close.rendererUnavailable'));
       return;
     }
-    request.timer = setTimeout(() => finishCloseRequest(request, '等待草稿保存超过 10 秒，尚未收到确认。'), 10_000);
+    request.timer = setTimeout(() => finishCloseRequest(request, translate('native:close.saveTimeout')), 10_000);
     try { currentWindow.webContents.send('workbench:prepare-close', request.id); }
     catch (error) { finishCloseRequest(request, error instanceof Error ? error.message : String(error)); }
   });
   currentWindow.webContents.on('render-process-gone', (_event, details) => {
-    rendererFailure = `界面进程已停止（${details.reason}），无法确认草稿是否保存。`;
-    if (closeRequest?.window === currentWindow) finishCloseRequest(closeRequest, rendererFailure);
+    rendererFailure = details.reason;
+    if (closeRequest?.window === currentWindow) finishCloseRequest(closeRequest, translate('native:close.rendererStopped', { reason: rendererFailure }));
   });
   currentWindow.webContents.on('did-finish-load', () => { rendererFailure = undefined; });
   currentWindow.once('ready-to-show', () => currentWindow.show());
@@ -133,6 +161,9 @@ async function createWindow(): Promise<void> {
 
 if (gotLock) void app.whenReady().then(async () => {
   const dataPath = app.getPath('userData');
+  await preferences.load();
+  languageState = { preference: preferences.languagePreference, language: resolveLanguage(preferences.languagePreference, app.getPreferredSystemLanguages()) };
+  await initializeI18n(languageState.language);
   const launch = { command: process.execPath, entryPath: join(root, 'backend-entry.js') };
   backend = await connectBackend(dataPath, launch);
   notifications = new WorkbenchNotifications(sessionId => {
@@ -156,7 +187,7 @@ if (gotLock) void app.whenReady().then(async () => {
     }
   })();
 }).catch(error => {
-  dialog.showErrorBox(`${PRODUCT_NAME} 启动失败`, error instanceof Error ? error.message : String(error));
+  dialog.showErrorBox(translate('native:startup.failed', { product: PRODUCT_NAME }), error instanceof Error ? error.message : String(error));
   app.quit();
 });
 

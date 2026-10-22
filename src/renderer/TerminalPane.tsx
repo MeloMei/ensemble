@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { useEffect, useRef } from 'react';
 import { Terminal, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -21,6 +22,7 @@ function terminalTheme(element: HTMLElement): ITheme {
 }
 
 export function TerminalPane({ info, cwd, perform }: { info: TerminalInfo; cwd: string; perform: Perform }) {
+  const { t } = useTranslation('workspace');
   const { theme } = useAppearance();
   const container = useRef<HTMLDivElement>(null);
   const instance = useRef<Terminal | null>(null);
@@ -67,6 +69,12 @@ export function TerminalPane({ info, cwd, perform }: { info: TerminalInfo; cwd: 
   }, [info.id]);
 
   useEffect(() => {
+    Terminal.strings.promptLabel = t('terminal.input');
+    Terminal.strings.tooMuchOutput = t('terminal.tooMuchOutput');
+    instance.current?.textarea?.setAttribute('aria-label', t('terminal.input'));
+  }, [t, info.id]);
+
+  useEffect(() => {
     const frame = requestAnimationFrame(() => {
       if (instance.current && container.current) instance.current.options.theme = terminalTheme(container.current);
     });
@@ -90,7 +98,7 @@ export function TerminalPane({ info, cwd, perform }: { info: TerminalInfo; cwd: 
   }, [info.output, info.outputOffset, info.status]);
 
   return <section className="terminal-pane"><div className="terminal-toolbar"><span title={cwd}><TerminalSquare size={14} /><span>{cwd}</span></span>
-    <span className={`terminal-status ${info.status === 'running' ? 'running' : ''}`}><i />{info.status === 'running' ? '运行中' : `已退出${info.exitCode !== null ? ` · ${info.exitCode}` : ''}`}</span>
-    {info.status === 'running' && <button className="text-button" onClick={() => void perform(`stop-terminal-${info.id}`, () => window.workbench.stopTerminal(info.id))}><CircleStop size={13} />停止</button>}
+    <span className={`terminal-status ${info.status === 'running' ? 'running' : ''}`}><i />{info.status === 'running' ? t('terminal.running') : info.exitCode !== null ? t('terminal.exitedCode', { code: info.exitCode }) : t('terminal.exited')}</span>
+    {info.status === 'running' && <button className="text-button" onClick={() => void perform(`stop-terminal-${info.id}`, () => window.workbench.stopTerminal(info.id))}><CircleStop size={13} />{t('common.stop')}</button>}
   </div><div className="terminal-surface" ref={container} /></section>;
 }

@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { Snapshot, WorkbenchAPI } from '../shared/types';
 import { DraftWriter } from '../shared/draft-writer';
+import type { LanguageState } from '../shared/i18n';
 
 const drafts = new DraftWriter((id, input) => ipcRenderer.invoke('workbench:save-session-draft', id, input));
 ipcRenderer.on('workbench:prepare-close', (_event, requestId: string) => {
@@ -11,6 +12,13 @@ ipcRenderer.on('workbench:prepare-close', (_event, requestId: string) => {
 });
 
 const api: WorkbenchAPI = {
+  getLanguage: () => ipcRenderer.invoke('workbench:get-language'),
+  setLanguage: preference => ipcRenderer.invoke('workbench:set-language', preference),
+  onLanguageChanged: listener => {
+    const receive = (_event: Electron.IpcRendererEvent, state: LanguageState) => listener(state);
+    ipcRenderer.on('workbench:language-changed', receive);
+    return () => ipcRenderer.removeListener('workbench:language-changed', receive);
+  },
   collaborationCall: (operation, input) => ipcRenderer.invoke('workbench:collaboration-call', operation, input),
   queryCollaborationEvents: (runId, afterSeq, limit) => ipcRenderer.invoke('workbench:collaboration-events', runId, afterSeq, limit),
   snapshot: () => ipcRenderer.invoke('workbench:snapshot'),

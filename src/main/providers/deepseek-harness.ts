@@ -78,6 +78,7 @@ export async function createDeepSeekHarnessDescriptor(options: {
   return {
     id: 'deepseek-harness', name: 'DeepSeek Harness', version,
     detail: `${version} · ${command} · Flash · 每次模型请求最多 ${maxTokens} 输出 tokens`,
+    detailI18n: { key: 'runtime:detection.deepSeek', values: { version, command, maxTokens } },
     models: [{ id: FLASH_MODEL_ID, name: 'DeepSeek Flash', free: false, efforts: ['off', 'low', 'high', 'max'] }],
     defaultModelId: FLASH_MODEL_ID,
     reasoningPreference: ['off', 'low'],

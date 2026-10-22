@@ -39,36 +39,42 @@ npm run package:mac
 
 The packaging script builds for the host architecture and writes to `release/<version>/`. It applies an ad hoc signature and verifies it. It does not perform Developer ID signing or notarization.
 
+## Choose the interface language
+
+Open **Preferences** (偏好设置), then choose **Follow system**, **简体中文**, or **English** under **Interface language**. The first launch follows your system language: Chinese system preferences use Simplified Chinese; other system languages use English. Your selection is saved locally and restored on the next launch.
+
+Changing the interface language keeps the current workspace in place. Existing conversations, task text, code, terminal output, and runtime diagnostics remain in their original language. New collaboration templates use the selected language; switching languages does not rewrite a setup you have already started.
+
+The instructions below use the English interface. The project screenshots and video were recorded in Ensemble 0.7.0 with the Simplified Chinese interface.
+
 ## Start your first collaboration
 
-The current interface uses Simplified Chinese labels.
-
-1. Choose **新建工作区** and select your project directory.
-2. Open **协作** and choose **实现与审阅**. Enter a concrete goal in **任务目标**.
+1. Choose **New workspace** and select your project directory.
+2. Open **Collaboration** and choose **Implement and review**. Enter a concrete goal in **Task goal**.
 3. Select a runtime and model for the implementer and reviewer. The same runtime can fill both roles. The reviewer must support read-only execution.
-4. If a required runtime is missing, open **接入与登录帮助**, follow its official guide, and choose **刷新检测**. Close the help dialog to continue with your configuration.
-5. Choose **检查分工**. Review the two tasks, their dependency, the directory, and file permissions. The implementer can modify the project; the reviewer waits for implementation and reads the result.
-6. Choose **保存并查看协作**. The configuration is saved without starting tasks. Select **开始协作** when you are ready to use the configured model accounts.
+4. If a required runtime is missing, open **Setup and sign-in help**, follow its official guide, and choose **Refresh detection**. Close the help dialog to continue with your configuration.
+5. Choose **Review the setup**. Review the two tasks, their dependency, the directory, and file permissions. The implementer can modify the project; the reviewer waits for implementation and reads the result.
+6. Choose **Save and view collaboration**. The configuration is saved without starting tasks. Select **Start collaboration** when you are ready to use the configured model accounts.
 
-For a copyable example with a focused completion check, follow [First collaboration](first-collaboration.md). Choose **自定义协作** when you want to define participants, permissions, and tasks yourself.
+For a copyable example with a focused completion check, follow [First collaboration](first-collaboration.md). Choose **Custom collaboration** when you want to define participants, permissions, and tasks yourself.
 
 Within a collaboration, tasks in the same project run in order. Independent, non-overlapping directories can execute concurrently. A separate individual session cannot start while another owner is executing in its project.
 
 ## Open an individual session
 
-1. Open **接入与插件** and choose **刷新检测**. **已发现入口** means the local runtime was detected; it does not prove authentication, account quota, or a successful model request. Each built-in runtime links to its official installation and configuration help.
-2. Choose **新建工作区** and select a local project, such as `/absolute/project`.
-3. Use **＋ → 新建 Agent 会话**. Choose an available runtime and a model when offered.
+1. Open **Runtimes & plugins** and choose **Refresh detection**. **Entry point found** means the local runtime was detected; it does not prove authentication, account quota, or a successful model request. Each built-in runtime links to its official installation and configuration help.
+2. Choose **New workspace** and select a local project, such as `/absolute/project`.
+3. Use **＋ → New agent session**. Choose an available runtime and a model when offered.
 4. Review the session's permission setting before sending a task. Read-only support differs by runtime; DeepSeek Harness currently rejects it.
 5. Send a task, such as “Summarize this project's structure.” Respond to approvals or questions in the session.
 
 The **＋** menu also opens a real local terminal or adds an HTTP/HTTPS preview at `localhost`, `127.0.0.1`, or `[::1]`. Start your project's service before adding its preview. Terminal sessions are not restored after a backend restart.
 
-The **文件 (Files)** panel edits real project files. **改动 (Changes)** supports local Git operations. **PR / CI** displays remote pull request and check information through a read-only interface. The terminal and file editor have their own access to the machine; an agent's read-only setting does not restrict them.
+The **Files** panel edits real project files. **Changes** supports local Git operations. **PR / CI** displays remote pull request and check information through a read-only interface. The terminal and file editor have their own access to the machine; an agent's read-only setting does not restrict them.
 
 ## Session drafts
 
-Unsent text and selected attachments are saved with their session. Closing the window waits for pending draft saves. If saving fails or cannot be confirmed, keep the window open and retry after resolving the error; choosing **仍然退出** can discard the unsaved changes.
+Unsent text and selected attachments are saved with their session. Closing the window waits for pending draft saves. If saving fails or cannot be confirmed, keep the window open and retry after resolving the error; choosing **Quit anyway** can discard the unsaved changes.
 
 Sending an accepted task clears its submitted draft. This draft behavior applies to the session composer, not to unsaved file-editor content or terminal processes.
 
@@ -95,7 +101,7 @@ Set `WORKBENCH_DATA_DIR` before starting the desktop application or CLI to use a
 
 ## Connect an external agent
 
-Open **协作 → Agent MCP 接入**, give the agent a name, and authorize its project directories and platform runtimes. Copy the generated configuration into the original client. The credential is shown only when issued and can be revoked independently.
+Open **Collaboration → Agent MCP connections**, give the agent a name, and authorize its project directories and platform runtimes. Copy the generated configuration into the original client. The credential is shown only when issued and can be revoked independently.
 
 The source checkout also supports issuing an identity without opening the desktop window:
 

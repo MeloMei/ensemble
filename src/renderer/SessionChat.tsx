@@ -1,3 +1,5 @@
+import { useTranslation } from 'react-i18next';
+import { formatDate, formatNumber, renderDisplayText } from '../shared/i18n';
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode, type Ref } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
@@ -33,9 +35,9 @@ interface SessionChatProps {
 type ApprovalProps = Pick<SessionChatProps, 'pending' | 'perform'> & { approval: Approval };
 
 const activeStatuses = new Set<Session['status']>(['running', 'waiting_approval', 'waiting_children', 'queued']);
-const numberFormat = new Intl.NumberFormat('zh-CN');
 
 function QuestionApproval({ approval, pending, perform }: ApprovalProps) {
+  const { t } = useTranslation('workspace');
   const [selected, setSelected] = useState<Record<string, string[]>>({});
   const [free, setFree] = useState<Record<string, string>>({});
   const questions = approval.questions ?? [];
@@ -52,10 +54,10 @@ function QuestionApproval({ approval, pending, perform }: ApprovalProps) {
   };
 
   return <form className="approval-card question-approval" onSubmit={submit}>
-    <ApprovalHeading title={approval.title || '智能体需要你的回答'} caption="需要你的回答" busy={busy} />
+    <ApprovalHeading title={renderDisplayText(approval.title || t('approval.answerTitle'), approval.titleI18n)} caption={t('approval.answerCaption')} busy={busy} />
     {questions.map(question => <fieldset key={question.id}>
-      <legend>{question.header && <span>{question.header}</span>}{question.question}</legend>
-      {question.multiSelect && <p className="question-hint">可选择多项</p>}
+      <legend>{question.header && <span>{renderDisplayText(question.header, question.headerI18n)}</span>}{question.question}</legend>
+      {question.multiSelect && <p className="question-hint">{t('approval.multiple')}</p>}
       <div className="question-options">
         {question.options.map(option => {
           const checked = (selected[question.id] ?? []).includes(option.label);
@@ -74,12 +76,12 @@ function QuestionApproval({ approval, pending, perform }: ApprovalProps) {
             <span className={`choice-indicator ${question.multiSelect ? 'multi' : ''}`} aria-hidden="true">
               {checked && <Check size={12} />}
             </span>
-            <span><strong>{option.label}</strong>{option.description && <small>{option.description}</small>}</span>
+            <span><strong>{renderDisplayText(option.label, option.labelI18n)}</strong>{option.description && <small>{option.description}</small>}</span>
           </button>;
         })}
       </div>
-      <input aria-label={`${question.header || question.question}：其他答案`} value={free[question.id] ?? ''}
-        disabled={busy} placeholder={question.multiSelect ? '补充其他答案…' : '也可以直接输入答案…'}
+      <input aria-label={t('approval.otherAnswer', { question: renderDisplayText(question.header || question.question, question.headerI18n) })} value={free[question.id] ?? ''}
+        disabled={busy} placeholder={question.multiSelect ? t('approval.otherPlaceholder') : t('approval.answerPlaceholder')}
         onChange={event => {
           setFree(current => ({ ...current, [question.id]: event.target.value }));
           if (!question.multiSelect) setSelected(current => ({ ...current, [question.id]: [] }));
@@ -87,8 +89,7 @@ function QuestionApproval({ approval, pending, perform }: ApprovalProps) {
     </fieldset>)}
     <div className="question-submit">
       <button className="button primary small" disabled={!valid || busy}>
-        {busy ? <LoaderCircle className="spin" size={14} /> : <Check size={14} />}提交回答
-      </button>
+        {busy ? <LoaderCircle className="spin" size={14} /> : <Check size={14} />}{t('approval.submit')}</button>
     </div>
   </form>;
 }
@@ -101,15 +102,16 @@ function ApprovalHeading({ title, caption, busy }: { title: string; caption: str
 }
 
 function ApprovalCard({ approval, pending, perform }: ApprovalProps) {
+  const { t } = useTranslation('workspace');
   if (approval.questions?.length) return <QuestionApproval approval={approval} pending={pending} perform={perform} />;
   const busy = pending.has(`approval-${approval.id}`);
   return <section className="approval-card" aria-busy={busy}>
-    <ApprovalHeading title={approval.title} caption="等待你确认" busy={busy} />
+    <ApprovalHeading title={renderDisplayText(approval.title, approval.titleI18n)} caption={t('approval.confirmCaption')} busy={busy} />
     <p>{approval.detail}</p>
     <div className="approval-actions">
       {approval.choices.map(choice => <button key={choice.id} className="button small" disabled={busy}
         onClick={() => void perform(`approval-${approval.id}`, () => window.workbench.decideApproval(approval.id, choice.id))}>
-        {choice.label}
+        {renderDisplayText(choice.label, choice.labelI18n)}
       </button>)}
     </div>
   </section>;
@@ -141,6 +143,7 @@ function SessionSettings({ session, provider, workspaceId, active, visible, perf
   openSession: (id: string) => void;
   onClose: () => void;
 }) {
+  const { t } = useTranslation('workspace');
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const efforts = provider?.models?.find(item => item.id === session.modelId)?.efforts ?? provider?.efforts ?? [];
   const availableSkills = skills.filter(skill => !skill.issue);
@@ -150,42 +153,39 @@ function SessionSettings({ session, provider, workspaceId, active, visible, perf
 
   return <div className="session-settings">
     <div className="session-settings-heading">
-      <span><Settings2 size={14} />模型与权限</span>
-      <IconButton label="收起模型与权限" onClick={onClose}><X size={14} /></IconButton>
+      <span><Settings2 size={14} />{t('chat.settings')}</span>
+      <IconButton label={t('chat.closeSettings')} onClick={onClose}><X size={14} /></IconButton>
     </div>
     <div className="session-settings-fields">
-      <label>模型
-        <select disabled={active || !provider?.models?.length} value={session.modelId ?? ''}
+      <label>{t('chat.model')}<select disabled={active || !provider?.models?.length} value={session.modelId ?? ''}
           onChange={event => void perform('session-model', () => window.workbench.updateSession(session.id, { modelId: event.target.value || null }))}>
-          <option value="">当前 CLI 配置</option>
+          <option value="">{t('chat.cliDefault')}</option>
           {session.modelId && !provider?.models?.some(model => model.id === session.modelId)
-            && <option value={session.modelId} disabled>{session.modelId} · 当前不可用</option>}
+            && <option value={session.modelId} disabled>{session.modelId} {t('chat.modelUnavailable')}</option>}
           {provider?.models?.map(model => <option key={model.id} value={model.id}>
-            {model.name}{model.free ? ' · 免费' : session.providerId === 'codex' ? ' · 账户额度' : ' · 按量计费'}
+            {model.name}{model.free ? t('chat.modelFree') : session.providerId === 'codex' ? t('chat.modelAccount') : t('chat.modelMetered')}
           </option>)}
         </select>
       </label>
-      {efforts.length > 0 && <label>推理强度
-        <select disabled={active} value={session.settings?.effort ?? ''}
+      {efforts.length > 0 && <label>{t('chat.effort')}<select disabled={active} value={session.settings?.effort ?? ''}
           onChange={event => void perform('session-effort', () => window.workbench.updateSession(session.id, {
             settings: { ...session.settings, effort: event.target.value || undefined },
           }))}>
-          <option value="">运行时默认</option>
+          <option value="">{t('chat.runtimeDefault')}</option>
           {efforts.map(effort => <option key={effort}>{effort}</option>)}
         </select>
       </label>}
-      {provider?.capabilities.permissions && <label>权限
-        <select disabled={active} value={session.settings?.permission ?? 'review'}
+      {provider?.capabilities.permissions && <label>{t('chat.permissions')}<select disabled={active} value={session.settings?.permission ?? 'review'}
           onChange={event => void perform('session-permission', () => window.workbench.updateSession(session.id, {
             settings: { ...session.settings, permission: event.target.value as 'review' | 'read-only' },
           }))}>
-          <option value="review">写操作按运行时审批</option>
-          <option value="read-only">只读</option>
+          <option value="review">{t('chat.reviewPermission')}</option>
+          <option value="read-only">{t('common.readOnly')}</option>
         </select>
       </label>}
     </div>
     {availableSkills.length > 0 && <div className="session-skills">
-      <span>会话 Skills</span>
+      <span>{t('chat.skills')}</span>
       <div className="skills-select">
         {availableSkills.map(skill => <label key={skill.id} title={skill.description}>
           <input type="checkbox" disabled={active} checked={session.settings?.skillIds?.includes(skill.id) ?? false}
@@ -202,15 +202,14 @@ function SessionSettings({ session, provider, workspaceId, active, visible, perf
       </div>
     </div>}
     <div className="session-settings-footer">
-      {active && <span>任务结束后可调整设置</span>}
+      {active && <span>{t('chat.settingsAfterTask')}</span>}
       <button disabled={active} onClick={() => void perform('archive-session',
         () => window.workbench.updateSession(session.id, { archived: !session.archived }))}>
-        <Archive size={13} />{session.archived ? '取消归档' : '归档会话'}
+        <Archive size={13} />{session.archived ? t('chat.unarchive') : t('chat.archive')}
       </button>
       <button disabled={active} onClick={() => void perform('fork-session',
         async () => openSession(await window.workbench.forkSession(session.id)))}>
-        <GitFork size={13} />从当前上下文新建
-      </button>
+        <GitFork size={13} />{t('chat.forkCurrent')}</button>
     </div>
   </div>;
 }
@@ -219,40 +218,43 @@ function AttachmentChips({ attachments, onRemove }: {
   attachments: PromptAttachment[];
   onRemove?: (id: string) => void;
 }) {
+  const { t } = useTranslation('workspace');
   if (!attachments.length) return null;
   return <div className="attachments-strip">
     {attachments.map(item => <span className="attachment-chip" key={item.id} title={`${item.name} · ${Math.ceil(item.size / 1024)} KB`}>
       {item.kind === 'image' ? <Image size={14} /> : <FileText size={14} />}
       <span>{item.name}</span>
       <small>{Math.ceil(item.size / 1024)} KB</small>
-      {onRemove && <button type="button" aria-label={`移除 ${item.name}`} onClick={() => onRemove(item.id)}><X size={12} /></button>}
+      {onRemove && <button type="button" aria-label={t('chat.removeAttachment', { name: item.name })} onClick={() => onRemove(item.id)}><X size={12} /></button>}
     </span>)}
   </div>;
 }
 
 function CopyAnswer({ message, perform }: { message: Message; perform: Perform }) {
+  const { t } = useTranslation('workspace');
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!copied) return;
     const timer = window.setTimeout(() => setCopied(false), 2000);
     return () => window.clearTimeout(timer);
   }, [copied]);
-  return <IconButton label={copied ? '已复制' : '复制回答'} onClick={() => void perform(`copy-${message.id}`, async () => {
+  return <IconButton label={copied ? t('chat.copied') : t('chat.copyAnswer')} onClick={() => void perform(`copy-${message.id}`, async () => {
     await navigator.clipboard.writeText(message.text);
     setCopied(true);
   })}>{copied ? <Check size={14} /> : <Copy size={14} />}</IconButton>;
 }
 
 function SessionProgress({ status }: { status: Session['status'] }) {
+  const { t } = useTranslation('workspace');
   const states = {
-    running: { icon: <Activity size={14} />, text: '正在处理任务' },
-    waiting_approval: { icon: <ShieldCheck size={14} />, text: '等待你处理请求' },
-    waiting_children: { icon: <Users size={14} />, text: '等待子任务返回' },
-    queued: { icon: <Clock3 size={14} />, text: '已排队，等待开始' },
-    completed: { icon: <Check size={14} />, text: '本轮任务已完成' },
-    failed: { icon: <CircleAlert size={14} />, text: '任务失败' },
-    cancelled: { icon: <CircleStop size={14} />, text: '任务已停止' },
-    interrupted: { icon: <CircleAlert size={14} />, text: '任务已中断' },
+    running: { icon: <Activity size={14} />, text: t('chat.progress.running') },
+    waiting_approval: { icon: <ShieldCheck size={14} />, text: t('chat.progress.waitingApproval') },
+    waiting_children: { icon: <Users size={14} />, text: t('chat.progress.waitingChildren') },
+    queued: { icon: <Clock3 size={14} />, text: t('chat.progress.queued') },
+    completed: { icon: <Check size={14} />, text: t('chat.progress.completed') },
+    failed: { icon: <CircleAlert size={14} />, text: t('chat.progress.failed') },
+    cancelled: { icon: <CircleStop size={14} />, text: t('chat.progress.cancelled') },
+    interrupted: { icon: <CircleAlert size={14} />, text: t('chat.progress.interrupted') },
   };
   const state = states[status as keyof typeof states];
   if (!state) return null;
@@ -260,24 +262,26 @@ function SessionProgress({ status }: { status: Session['status'] }) {
 }
 
 function UsageBadge({ usage }: { usage?: UsageRecord }) {
+  const { t } = useTranslation('workspace');
   if (!usage) return null;
   if (usage.scope === 'context') {
     const known = usage.contextUsed !== undefined && usage.contextSize !== undefined && usage.contextSize > 0;
     return <span className="session-usage" title={known
-      ? `上下文 ${numberFormat.format(usage.contextUsed!)} / ${numberFormat.format(usage.contextSize!)} tokens`
-      : `上下文 ${usage.contextUsed === undefined ? '—' : numberFormat.format(usage.contextUsed)} tokens`}>
+      ? t('usage.contextCapacity', { used: formatNumber(usage.contextUsed!), size: formatNumber(usage.contextSize!) })
+      : t('usage.contextTokens', { used: usage.contextUsed === undefined ? '—' : formatNumber(usage.contextUsed) })}>
       {known && <span className="context-meter" aria-hidden="true">
         <span style={{ width: `${Math.min(100, Math.max(0, usage.contextUsed! / usage.contextSize! * 100))}%` }} />
       </span>}
-      上下文 {usage.contextUsed === undefined ? '—' : numberFormat.format(usage.contextUsed)}
+      {t('usage.contextUsed', { used: usage.contextUsed === undefined ? '—' : formatNumber(usage.contextUsed) })}
     </span>;
   }
-  return <span className="session-usage">输出 {usage.outputTokens === undefined ? '—' : numberFormat.format(usage.outputTokens)} tokens</span>;
+  return <span className="session-usage">{t('usage.outputTokens', { tokens: usage.outputTokens === undefined ? '—' : formatNumber(usage.outputTokens) })}</span>;
 }
 
 export function SessionChat({
   session, provider, perform, pending, draft, draftError, onDraftChange, workspaceId, sessions = [], openSession,
 }: SessionChatProps) {
+  const { t } = useTranslation('workspace');
   const [showActivity, setShowActivity] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [find, setFind] = useState<string | null>(null);
@@ -375,18 +379,17 @@ export function SessionChat({
       </div>
       <Status value={session.status} />
       <div className="chat-toolbar-actions">
-        <IconButton label={find === null ? '查找正文' : '关闭查找'} aria-pressed={find !== null}
+        <IconButton label={find === null ? t('chat.find') : t('chat.closeFind')} aria-pressed={find !== null}
           onClick={() => setFind(find === null ? '' : null)}><Search size={15} /></IconButton>
-        <IconButton label="模型与权限" aria-expanded={showSettings} aria-controls={settingsId}
+        <IconButton label={t('chat.settings')} aria-expanded={showSettings} aria-controls={settingsId}
           onClick={() => setShowSettings(value => !value)}><Settings2 size={15} /></IconButton>
         <button className={`text-button chat-activity-button ${showActivity ? 'selected' : ''}`}
           aria-expanded={showActivity} aria-controls={activityId} onClick={() => setShowActivity(value => !value)}>
-          <Activity size={14} /><span className="chat-activity-label">活动</span>{activity.length > 0 && <span className="chat-count">{activity.length}</span>}
+          <Activity size={14} /><span className="chat-activity-label">{t('chat.activity')}</span>{activity.length > 0 && <span className="chat-count">{activity.length}</span>}
         </button>
         {active && <button className="text-button stop-action" disabled={pending.has(`cancel-${session.id}`)}
           onClick={() => void perform(`cancel-${session.id}`, () => window.workbench.cancelSession(session.id))}>
-          <CircleStop size={14} />停止
-        </button>}
+          <CircleStop size={14} />{t('common.stop')}</button>}
       </div>
     </header>
 
@@ -395,7 +398,7 @@ export function SessionChat({
         animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={transition}>
         <div className="conversation-find">
           <Search size={15} />
-          <input aria-label="查找正文" value={find} autoFocus placeholder="查找消息或工具记录…"
+          <input aria-label={t('chat.find')} value={find} autoFocus placeholder={t('chat.findPlaceholder')}
             onChange={event => { setFind(event.target.value); setMatchIndex(0); }}
             onKeyDown={event => {
               if (event.key === 'Escape') setFind(null);
@@ -404,11 +407,11 @@ export function SessionChat({
               }
             }} />
           <small aria-live="polite">{matches.length ? `${matchIndex % matches.length + 1} / ${matches.length}` : '0'}</small>
-          <IconButton label="上一个匹配" disabled={!matches.length}
+          <IconButton label={t('chat.previousMatch')} disabled={!matches.length}
             onClick={() => setMatchIndex(value => (value + matches.length - 1) % matches.length)}><ArrowUp size={14} /></IconButton>
-          <IconButton label="下一个匹配" disabled={!matches.length}
+          <IconButton label={t('chat.nextMatch')} disabled={!matches.length}
             onClick={() => setMatchIndex(value => value + 1)}><ArrowDown size={14} /></IconButton>
-          <IconButton label="关闭查找" onClick={() => setFind(null)}><X size={14} /></IconButton>
+          <IconButton label={t('chat.closeFind')} onClick={() => setFind(null)}><X size={14} /></IconButton>
         </div>
       </motion.div>}
     </AnimatePresence>
@@ -418,13 +421,13 @@ export function SessionChat({
         perform={perform} openSession={openSession} onClose={() => setShowSettings(false)} />
     </CollapsibleRegion>
 
-    <div className="message-scroll" ref={scroll} tabIndex={0} aria-label="会话内容"
+    <div className="message-scroll" ref={scroll} tabIndex={0} aria-label={t('chat.conversation')}
       onScroll={handleScroll} onWheel={markUserInput} onTouchStart={markUserInput}
       onKeyDown={event => {
         if (event.target === event.currentTarget && ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) markUserInput();
       }}>
-      {(parent || children.length > 0) && <nav className="session-children" aria-label="关联会话">
-        {parent && <button onClick={() => openSession(parent.id)}><ArrowUpLeft size={13} />协调者：{parent.title}</button>}
+      {(parent || children.length > 0) && <nav className="session-children" aria-label={t('chat.relatedSessions')}>
+        {parent && <button onClick={() => openSession(parent.id)}><ArrowUpLeft size={13} />{t('chat.coordinator', { title: parent.title })}</button>}
         {children.map(child => <button key={child.id} onClick={() => openSession(child.id)}>
           <GitFork size={13} /><span>{child.title}</span><small>{child.providerId}</small><Status value={child.status} />
         </button>)}
@@ -432,9 +435,9 @@ export function SessionChat({
       {messages.length === 0
         ? <div className="conversation-empty">
           <div className="agent-mark"><PanelsTopLeft size={27} strokeWidth={1.5} /></div>
-          <span className="conversation-empty-caption">{provider?.name ?? session.providerId} · {provider?.available ? '准备就绪' : '尚未就绪'}</span>
+          <span className="conversation-empty-caption">{provider?.name ?? session.providerId} · {provider?.available ? t('chat.ready') : t('chat.notReady')}</span>
           <h2>{session.title}</h2>
-          <p>描述任务，{provider?.name ?? session.providerId} 会在这个项目中开始工作。</p>
+          <p>{t('chat.describeTask', { provider: provider?.name ?? session.providerId })}</p>
           <div className="conversation-project"><FolderOpen size={14} /><code>{session.cwd}</code></div>
         </div>
         : <div className="messages">
@@ -451,14 +454,14 @@ export function SessionChat({
                       {message.attachments && <AttachmentChips attachments={message.attachments} />}
                     </div>
                     {!active && provider?.capabilities.rewind && message.nativeTurnId && <div className="message-tools">
-                      <button onClick={() => setRewindMessage(message.id)}><ArrowUpLeft size={12} />回退到这条之前</button>
+                      <button onClick={() => setRewindMessage(message.id)}><ArrowUpLeft size={12} />{t('chat.rewindBefore')}</button>
                     </div>}
                   </>
                   : <>
                     <div className="assistant-heading">
                       <span className="assistant-symbol"><PanelsTopLeft size={13} /></span>
                       <strong>{provider?.name ?? session.providerId}</strong>
-                      <time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</time>
+                      <time dateTime={message.createdAt}>{formatDate(message.createdAt, { hour: '2-digit', minute: '2-digit' })}</time>
                     </div>
                     <div className="markdown-message">
                       <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
@@ -470,8 +473,7 @@ export function SessionChat({
                       <CopyAnswer message={message} perform={perform} />
                       {!active && <button onClick={() => void perform('fork-session',
                         async () => openSession(await window.workbench.forkSession(session.id, message.id)))}>
-                        <GitFork size={12} />从此处分叉
-                      </button>}
+                        <GitFork size={12} />{t('chat.forkHere')}</button>}
                     </div>
                   </>}
             </motion.article>)}
@@ -494,20 +496,20 @@ export function SessionChat({
       <AnimatePresence initial={false}>
         {showJumpControl && <motion.div className="jump-to-bottom-anchor" key="jump" initial={{ opacity: 0, y: 4 }}
           animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 4 }} transition={transition}>
-          <button className="jump-to-bottom" onClick={() => scrollToBottom(!reducedMotion)}><ArrowDown size={14} />最新输出</button>
+          <button className="jump-to-bottom" onClick={() => scrollToBottom(!reducedMotion)}><ArrowDown size={14} />{t('chat.latestOutput')}</button>
         </motion.div>}
       </AnimatePresence>
       <CollapsibleRegion expanded={showActivity} id={activityId} className="chat-activity-region"
         regionRef={activityRegion} onClose={() => setShowActivity(false)}>
         <section className="activity-drawer">
-          <header><span><Activity size={14} />活动记录<small>{activity.length}</small></span>
-            <IconButton label="收起活动" onClick={() => setShowActivity(false)}><ChevronDown size={15} /></IconButton>
+          <header><span><Activity size={14} />{t('chat.activityLog')}<small>{activity.length}</small></span>
+            <IconButton label={t('chat.closeActivity')} onClick={() => setShowActivity(false)}><ChevronDown size={15} /></IconButton>
           </header>
           <div className="activity-entries">
             {activity.length ? activity.map(message => <div className="activity-entry" key={message.id}>
               <span className="activity-dot" /><p>{message.text}</p>
-              <time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</time>
-            </div>) : <p className="pane-note">工具调用和运行记录会显示在这里。</p>}
+              <time dateTime={message.createdAt}>{formatDate(message.createdAt, { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</time>
+            </div>) : <p className="pane-note">{t('chat.activityEmpty')}</p>}
           </div>
         </section>
       </CollapsibleRegion>
@@ -515,9 +517,9 @@ export function SessionChat({
         <div className={`composer${active ? ' composer-task-active' : ''}`}>
           <AttachmentChips attachments={attachments}
             onRemove={busy ? undefined : id => onDraftChange({ ...currentDraft.current, attachments: attachments.filter(attachment => attachment.id !== id) })} />
-          <textarea aria-label="任务内容" value={draft.text} rows={3} maxLength={200_000} disabled={busy}
+          <textarea aria-label={t('chat.taskContent')} value={draft.text} rows={3} maxLength={200_000} disabled={busy}
             onChange={event => onDraftChange({ ...currentDraft.current, text: event.target.value })}
-            placeholder={active ? '可以先写下一条消息，当前任务结束后再发送…' : '描述任务，或继续追问…'}
+            placeholder={active ? t('chat.nextPromptPlaceholder') : t('chat.promptPlaceholder')}
             onCompositionStart={() => { composing.current = true; }}
             onCompositionEnd={() => { composing.current = false; }}
             onKeyDown={event => {
@@ -528,21 +530,21 @@ export function SessionChat({
             }} />
           <div className="composer-bottom">
             <div className="composer-controls">
-              <IconButton label="添加图片或文件" disabled={active || busy || attachments.length >= 8 || pending.has('attachments')}
+              <IconButton label={t('chat.attach')} disabled={active || busy || attachments.length >= 8 || pending.has('attachments')}
                 onClick={() => void perform('attachments', async () => {
                   const selected = await window.workbench.chooseAttachments();
                   onDraftChange({ ...currentDraft.current, attachments: [...(currentDraft.current.attachments ?? []), ...selected].slice(0, 8) });
                 })}><Paperclip size={16} /></IconButton>
               <span className="composer-divider" />
-              <button className="composer-model-button" title="模型与权限" aria-expanded={showSettings} aria-controls={settingsId}
+              <button className="composer-model-button" title={t('chat.settings')} aria-expanded={showSettings} aria-controls={settingsId}
                 onClick={() => setShowSettings(value => !value)}>
                 <TerminalSquare size={14} />
                 <span>{session.modelId ? modelName(provider, session.modelId) : provider?.name ?? session.providerId}</span>
                 <ChevronDown size={12} />
               </button>
-              {session.settings?.permission === 'read-only' && <span className="composer-permission"><ShieldCheck size={12} />只读</span>}
+              {session.settings?.permission === 'read-only' && <span className="composer-permission"><ShieldCheck size={12} />{t('common.readOnly')}</span>}
             </div>
-            <motion.button className="send-button" aria-label="发送任务"
+            <motion.button className="send-button" aria-label={t('chat.sendTask')}
               disabled={(!draft.text.trim() && !attachments.length) || active || busy || !provider?.available}
               whileTap={reducedMotion ? undefined : { scale: 0.98 }} transition={transition} onClick={send}>
               {busy ? <LoaderCircle className="spin" size={17} /> : <ArrowUp size={18} />}
@@ -552,25 +554,25 @@ export function SessionChat({
         <div className="composer-caption">
           <span className="composer-project" title={session.cwd}><FolderOpen size={12} />{pathName(session.cwd)}</span>
           <UsageBadge usage={session.usage?.at(-1)} />
-          <span className="composer-shortcut"><CornerDownLeft size={11} />发送<span>·</span>Shift + Enter 换行</span>
+          <span className="composer-shortcut"><CornerDownLeft size={11} />{t('chat.send')}<span>·</span>{t('chat.newLine')}</span>
         </div>
-        {draftError && <p className="composer-note" role="alert"><CircleAlert size={13} />草稿尚未保存：{draftError}<button className="text-button" onClick={() => onDraftChange(draft)}>重试保存</button></p>}
-        {!provider?.available && <p className="composer-note"><CircleAlert size={13} />当前智能体不可用，请在「接入」检查本机环境。</p>}
+        {draftError && <p className="composer-note" role="alert"><CircleAlert size={13} />{t('chat.draftError', { error: draftError })}<button className="text-button" onClick={() => onDraftChange(draft)}>{t('chat.retrySave')}</button></p>}
+        {!provider?.available && <p className="composer-note"><CircleAlert size={13} />{t('chat.providerUnavailable')}</p>}
       </div>
     </div>
 
-    {rewindMessage && <Modal title="回退对话" subtitle="移除这条用户消息及后续对话。项目文件保留当前内容。"
+    {rewindMessage && <Modal title={t('chat.rewindTitle')} subtitle={t('chat.rewindDescription')}
       onClose={() => setRewindMessage(undefined)}>
       <div className="modal-actions">
-        <button className="button" onClick={() => setRewindMessage(undefined)}>取消</button>
+        <button className="button" onClick={() => setRewindMessage(undefined)}>{t('common.cancel')}</button>
         <button className="button primary" onClick={() => void perform('rewind', async () => {
           const restored = await window.workbench.rewindSession(session.id, rewindMessage);
           onDraftChange(restored);
           setRewindMessage(undefined);
-        })}>确认回退对话</button>
+        })}>{t('chat.confirmRewind')}</button>
       </div>
     </Modal>}
-    {nativeAgent && <Modal title={nativeAgent.title} subtitle={`原生子 Agent · ${nativeAgent.nativeId}`}
+    {nativeAgent && <Modal title={nativeAgent.title} subtitle={t('chat.nativeAgent', { id: nativeAgent.nativeId })}
       onClose={() => setNativeAgentId(undefined)}>
       <div className="native-agent-events" ref={nativeDetails} onScrollCapture={event => {
         if (!nativeAgentId || !(event.target instanceof HTMLElement)) return;
@@ -578,7 +580,7 @@ export function SessionChat({
         positions.set(event.target.dataset.scrollKey ?? 'list', { top: event.target.scrollTop, left: event.target.scrollLeft });
         nativeScrollPositions.current.set(nativeAgentId, positions);
       }}>
-        <p className="pane-note">显示运行时已返回的过程与结果。</p>
+        <p className="pane-note">{t('chat.nativeDescription')}</p>
         {nativeEvents.map((event, index) => <section className="process-card" key={`${event.kind}-${event.nativeId}-${index}`}>
           <div className="process-heading"><strong>{event.title}</strong><Status value={event.status} /></div>
           <ProcessBody event={event} />
@@ -593,6 +595,7 @@ function ProcessCard({ event, openSession, openNativeAgent }: {
   openSession: (id: string) => void;
   openNativeAgent: (id: string) => void;
 }) {
+  const { t } = useTranslation('workspace');
   const [expanded, setExpanded] = useState(false);
   const bodyId = useId();
   const icon = event.kind === 'plan' ? <ListChecks size={15} />
@@ -609,8 +612,8 @@ function ProcessCard({ event, openSession, openNativeAgent }: {
         <Status value={event.status} /><ChevronDown className="process-chevron" size={14} />
       </button>
       {(event.sessionId || (event.kind === 'subagent' && event.nativeId)) && <div className="process-links">
-        {event.sessionId && <button onClick={() => openSession(event.sessionId!)}>查看子任务<ArrowUpLeft size={12} /></button>}
-        {event.kind === 'subagent' && event.nativeId && <button onClick={() => openNativeAgent(event.nativeId!)}>查看原生过程<ArrowUpLeft size={12} /></button>}
+        {event.sessionId && <button onClick={() => openSession(event.sessionId!)}>{t('chat.openChild')}<ArrowUpLeft size={12} /></button>}
+        {event.kind === 'subagent' && event.nativeId && <button onClick={() => openNativeAgent(event.nativeId!)}>{t('chat.openNative')}<ArrowUpLeft size={12} /></button>}
       </div>}
     </div>
     <CollapsibleRegion expanded={expanded} id={bodyId} className="process-reveal" onClose={() => setExpanded(false)}>
@@ -620,17 +623,18 @@ function ProcessCard({ event, openSession, openNativeAgent }: {
 }
 
 function ProcessBody({ event }: { event: ProcessEvent }) {
+  const { t } = useTranslation('workspace');
   return <div className="process-body">
-    {event.input && <div className="process-output"><span>输入</span><pre data-scroll-key={`${event.id}:input`}>{event.input}</pre></div>}
+    {event.input && <div className="process-output"><span>{t('common.input')}</span><pre data-scroll-key={`${event.id}:input`}>{event.input}</pre></div>}
     {event.entries?.length ? <ol className="process-checklist">
       {event.entries.map((entry, index) => <li key={index}><Status value={entry.status} /><span>{entry.text}</span></li>)}
     </ol> : null}
-    {event.output && <div className="process-output"><span>输出</span><pre data-scroll-key={`${event.id}:output`}>{event.output}</pre></div>}
+    {event.output && <div className="process-output"><span>{t('common.output')}</span><pre data-scroll-key={`${event.id}:output`}>{event.output}</pre></div>}
     {(event.nativeId || event.parentId) && <div className="process-identifiers">
-      {event.nativeId && <small>原生 ID <code>{event.nativeId}</code></small>}
-      {event.parentId && <small>父调用 <code>{event.parentId}</code></small>}
+      {event.nativeId && <small>{t('chat.nativeId')}<code>{event.nativeId}</code></small>}
+      {event.parentId && <small>{t('chat.parentCall')}<code>{event.parentId}</code></small>}
     </div>}
     {!event.input && !event.entries?.length && !event.output && !event.nativeId && !event.parentId
-      && <p className="process-empty">{event.status === 'running' ? '等待运行时返回详情…' : '运行时未返回更多详情。'}</p>}
+      && <p className="process-empty">{event.status === 'running' ? t('chat.waitingDetails') : t('chat.noDetails')}</p>}
   </div>;
 }

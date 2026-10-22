@@ -1,6 +1,7 @@
 import electron from 'electron';
 import type { NotificationStatus, Session, Snapshot } from '../shared/types';
 import { reserveNotificationCooldown } from './vendor/orca/notification-burst-cooldown';
+import { translate } from '../shared/i18n';
 
 interface NotificationHandle {
   on(event: string, listener: (...args: unknown[]) => void): unknown;
@@ -28,7 +29,7 @@ export class WorkbenchNotifications {
   private readonly notifications = new Set<NotificationHandle>();
   private readonly cooldown = new Map<string, number>();
   private readonly previous = new Map<string, { status: string; approvals: Set<string> }>();
-  private latest: NotificationStatus;
+  private latest: NotificationStatus & { errorKey?: string };
   private initialized = false;
 
   constructor(openSession: (sessionId: string) => void, driver: NotificationDriver = nativeDriver()) {
@@ -37,7 +38,10 @@ export class WorkbenchNotifications {
     this.latest = { supported: driver.supported, state: 'idle' };
   }
 
-  status(): NotificationStatus { return { ...this.latest }; }
+  status(): NotificationStatus {
+    const { errorKey, ...status } = this.latest;
+    return errorKey ? { ...status, error: translate(errorKey) } : status;
+  }
 
   observe(snapshot: Pick<Snapshot, 'sessions'>): void {
     for (const session of snapshot.sessions) {
@@ -60,18 +64,18 @@ export class WorkbenchNotifications {
     const turn = session.attempts?.at(-1)?.id ?? [...session.messages].reverse().find(message => message.role === 'user')?.id ?? session.createdAt;
     if (!reserveNotificationCooldown(this.cooldown, `${session.id}:${turn}:${reason}:${approvalId}`, Date.now())) return;
     if (!this.driver.supported) {
-      this.latest = { supported: false, state: 'failed', error: '当前系统不支持桌面通知。' };
+      this.latest = { supported: false, state: 'failed', errorKey: 'native:notification.unsupported' };
       return;
     }
     try {
       const notification = this.driver.create({
-        title: reason === 'permission' ? 'Agent 等待审批' : reason === 'error' ? 'Agent 运行失败' : 'Agent 已完成',
+        title: translate(`native:notification.${reason}`),
         body: `${session.title} · ${session.providerId}`, silent: true,
       });
       this.notifications.add(notification);
       notification.on('show', () => { this.latest = { supported: true, state: 'shown' }; });
       notification.on('failed', (_event, failure) => {
-        this.latest = { supported: true, state: 'failed', error: typeof failure === 'string' ? failure : '系统未能显示通知；请检查应用签名和系统通知设置。' };
+        this.latest = { supported: true, state: 'failed', ...(typeof failure === 'string' ? { error: failure } : { errorKey: 'native:notification.deliveryFailed' }) };
         this.notifications.delete(notification);
       });
       notification.on('click', () => { this.openSession(session.id); this.notifications.delete(notification); });

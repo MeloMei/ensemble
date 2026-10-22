@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { translate } from '../shared/i18n';
 import { formatDiffComments } from './vendor/orca/diff-comments-format';
 
 export interface DiffComment { filePath: string; lineNumber: number; startLine?: number; body: string; source?: 'diff' | 'markdown' }
@@ -28,6 +29,6 @@ export function diffLines(patch: string): DiffLine[] {
 }
 
 export function reviewFeedback(notes: ReviewNote[]): string {
-  return `请处理以下本地审阅意见。行号对应所列版本，请先检查当前差异。\n\n${notes.map(note =>
+  return `${translate('workspace:files.feedbackPrompt')}\n\n${notes.map(note =>
     `${formatDiffComments([note])}\nDiff: ${note.scope}; side: ${note.side}; revision: ${note.revision}`).join('\n\n')}`;
 }

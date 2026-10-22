@@ -314,7 +314,9 @@ test('ACP approvals preserve tool input and expose only exact single-use choices
     assert.match(approvals[0].detail, /Literal command/);
     assert.match(approvals[0].detail, /literal \$value/);
     assert.match(approvals[0].detail, /\/fixture\/project/);
-    assert.deepEqual(approvals[0].choices, [{ id: 'opaque-allow', label: '允许本次' }, { id: 'opaque-reject', label: '拒绝本次' }]);
+    assert.deepEqual(approvals[0].choices.map(({ id, label }) => ({ id, label })), [{ id: 'opaque-allow', label: '允许本次' }, { id: 'opaque-reject', label: '拒绝本次' }]);
+    assert.ok(approvals[0].titleI18n?.key);
+    assert.ok(approvals[0].choices.every(choice => choice.labelI18n?.key));
     const frames = await f.trace();
     assert.deepEqual(frames.find(frame => frame.id === 'permission-opaque' && !frame.method)?.result,
       { outcome: { outcome: 'selected', optionId: 'opaque-allow' } });

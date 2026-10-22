@@ -166,8 +166,8 @@ class AcpSession {
       const choices = request.options.filter(option => ['allow_once', 'reject_once'].includes(option.kind));
       if (!choices.length) throw new Error('运行时没有提供单次审批选项。');
       const detail = [tool.title, tool.rawInput === undefined ? '' : JSON.stringify(tool.rawInput, null, 2)].filter(Boolean).join('\n');
-      const selected = await current.approve({ title: `${this.descriptor.name} 请求操作`, detail: detail || tool.toolCallId,
-        choices: choices.map(option => ({ id: option.optionId, label: option.kind === 'allow_once' ? '允许本次' : '拒绝本次' })) },
+      const selected = await current.approve({ title: `${this.descriptor.name} 请求操作`, titleI18n: { key: 'runtime:approval.requestAction', values: { provider: this.descriptor.name } }, detail: detail || tool.toolCallId,
+        choices: choices.map(option => ({ id: option.optionId, label: option.kind === 'allow_once' ? '允许本次' : '拒绝本次', labelI18n: { key: option.kind === 'allow_once' ? 'runtime:approval.allowOnce' : 'runtime:approval.denyOnce' } })) },
       AbortSignal.any([requestSignal, controller.signal]));
       if (!choices.some(option => option.optionId === selected)) throw new Error('审批结果不属于运行时提供的选项。');
       return { outcome: { outcome: 'selected', optionId: selected } };
@@ -186,7 +186,7 @@ class AcpSession {
     const controller = new AbortController();
     this.permissions.add(controller);
     try {
-      return await answerFormElicitation(request.requestedSchema, `${this.descriptor.name} 需要你的回答`, request.message, current, AbortSignal.any([requestSignal, controller.signal, current.signal]));
+      return await answerFormElicitation(request.requestedSchema, `${this.descriptor.name} 需要你的回答`, request.message, current, AbortSignal.any([requestSignal, controller.signal, current.signal]), { key: 'runtime:approval.needsAnswer', values: { provider: this.descriptor.name } });
     } catch (error) {
       if (current.signal.aborted || requestSignal.aborted || controller.signal.aborted) return { action: 'cancel' };
       this.fatal = asError(error);
@@ -277,15 +277,15 @@ export async function createAcpProvider(id: string, name: string, discover: () =
   let disposed = false;
   const sessions = new Set<AcpSession>();
   const provider: AcpProvider = {
-    info: { id, name, available: false, source: 'builtin', detail: '尚未检测', capabilities: { resume: true, approvals: true } },
+    info: { id, name, available: false, source: 'builtin', detail: '尚未检测', detailI18n: { key: 'runtime:detection.notChecked' }, capabilities: { resume: true, approvals: true } },
     async refreshInfo() {
       try {
         descriptor = await discover();
         if (descriptor.id !== id) throw new Error('ACP provider 身份不符');
-        provider.info = { ...provider.info, available: true, detail: descriptor.detail, models: descriptor.models, defaultModelId: descriptor.defaultModelId,
+        provider.info = { ...provider.info, available: true, detail: descriptor.detail, detailI18n: descriptor.detailI18n, models: descriptor.models, defaultModelId: descriptor.defaultModelId,
           efforts: descriptor.efforts,
           capabilities: { resume: true, approvals: true, images: true, rewind: false, effort: Boolean(descriptor.efforts?.length), permissions: Boolean(descriptor.sessionModes) } };
-      } catch (error) { descriptor = undefined; provider.info = { ...provider.info, available: false, detail: asError(error).message, models: undefined, defaultModelId: undefined }; }
+      } catch (error) { descriptor = undefined; provider.info = { ...provider.info, available: false, detail: asError(error).message, detailI18n: { key: 'runtime:detection.failed', values: { provider: name, reason: asError(error).message } }, models: undefined, defaultModelId: undefined }; }
     },
     async run(context) {
       if (disposed || !descriptor) throw new Error(provider.info.detail);

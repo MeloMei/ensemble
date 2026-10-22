@@ -1,14 +1,15 @@
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
 import type { ApprovalInput } from '../../shared/types';
+import type { DisplayText } from '../../shared/display-text';
 import type { TurnContext } from './types';
 import { abortError } from './json-rpc';
 
 type ObjectValue = Record<string, unknown>;
 type Content = Record<string, string | number | boolean | string[]>;
 type Response = { action: 'accept'; content: Content } | { action: 'decline' | 'cancel' };
-type Option = { value: string; label: string; description?: string };
+type Option = { value: string; label: string; labelI18n?: DisplayText; description?: string };
 const OMIT = '（不提供）';
-const CONFIRM = [{ id: 'accept', label: '允许本次' }, { id: 'decline', label: '拒绝本次' }, { id: 'cancel', label: '取消请求' }];
+const CONFIRM = [{ id: 'accept', label: '允许本次', labelI18n: { key: 'runtime:approval.allowOnce' } }, { id: 'decline', label: '拒绝本次', labelI18n: { key: 'runtime:approval.denyOnce' } }, { id: 'cancel', label: '取消请求', labelI18n: { key: 'runtime:approval.cancelRequest' } }];
 function object(value: unknown): ObjectValue { return value && typeof value === 'object' && !Array.isArray(value) ? value as ObjectValue : {}; }
 
 function options(schema: ObjectValue): Option[] | undefined {
@@ -25,7 +26,7 @@ function options(schema: ObjectValue): Option[] | undefined {
   });
 }
 
-export async function answerFormElicitation(schemaValue: unknown, title: string, detail: string, context: TurnContext, signal = context.signal): Promise<Response> {
+export async function answerFormElicitation(schemaValue: unknown, title: string, detail: string, context: TurnContext, signal = context.signal, titleI18n?: DisplayText): Promise<Response> {
   const schema = object(schemaValue);
   const properties = Object.entries(object(schema.properties));
   if ((schema.type !== undefined && schema.type !== 'object') || properties.length > 20) {
@@ -40,7 +41,7 @@ export async function answerFormElicitation(schemaValue: unknown, title: string,
       if (!['string', 'number', 'integer', 'boolean', 'array'].includes(String(field.type))) throw new Error('不支持的字段类型。');
       const multiple = field.type === 'array';
       let choices = options(multiple ? object(field.items) : field);
-      if (field.type === 'boolean') choices = [{ value: 'true', label: '是' }, { value: 'false', label: '否' }];
+      if (field.type === 'boolean') choices = [{ value: 'true', label: '是', labelI18n: { key: 'runtime:question.yes' } }, { value: 'false', label: '否', labelI18n: { key: 'runtime:question.no' } }];
       if (multiple && !choices) throw new Error('多选字段缺少选项。');
       if (choices) {
         const counts = new Map<string, number>();
@@ -55,7 +56,7 @@ export async function answerFormElicitation(schemaValue: unknown, title: string,
   }
   const validator = new AjvJsonSchemaValidator().getValidator<Content>({ ...schema, type: 'object' });
   if (!fields.length) {
-    const selected = await context.approve({ title, detail, choices: CONFIRM }, signal);
+    const selected = await context.approve({ title, titleI18n, detail, choices: CONFIRM }, signal);
     if (signal.aborted || context.signal.aborted) throw abortError();
     if (selected === 'decline' || selected === 'cancel') return { action: selected };
     if (selected !== 'accept' || !validator({}).valid) throw new Error('表单确认结果无效。');
@@ -65,9 +66,9 @@ export async function answerFormElicitation(schemaValue: unknown, title: string,
     id, header: typeof field.title === 'string' ? field.title : name,
     question: [typeof field.title === 'string' ? field.title : name, typeof field.description === 'string' ? field.description : ''].filter(Boolean).join('：'),
     multiSelect: multiple,
-    options: [...(options ?? []).map(({ label, description }) => ({ label, ...(description ? { description } : {}) })), ...(optional ? [{ label: OMIT }] : [])],
+    options: [...(options ?? []).map(({ label, labelI18n, description }) => ({ label, ...(labelI18n ? { labelI18n } : {}), ...(description ? { description } : {}) })), ...(optional ? [{ label: OMIT, labelI18n: { key: 'runtime:question.omit' } }] : [])],
   }));
-  const raw = await context.approve({ title, detail, choices: [], questions }, signal);
+  const raw = await context.approve({ title, titleI18n, detail, choices: [], questions }, signal);
   if (signal.aborted || context.signal.aborted) throw abortError();
   if (raw === 'cancel' || raw === 'decline') return { action: raw };
   const answers = object(JSON.parse(raw));

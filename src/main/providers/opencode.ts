@@ -157,6 +157,7 @@ export async function createOpenCodeDescriptor({ dataPath }: { dataPath: string 
   return {
     id: 'opencode', name: 'OpenCode', version: binary.version,
     detail: `OpenCode ${binary.version} · ${binary.command} · 仅免费模型，独立数据目录`,
+    detailI18n: { key: 'runtime:detection.openCode', values: { version: binary.version, command: binary.command } },
     defaultModelId: DEFAULT_MODEL,
     sessionModes: { review: 'build', 'read-only': 'plan' },
     models,

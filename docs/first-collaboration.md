@@ -4,7 +4,9 @@ English | [简体中文](first-collaboration.zh-CN.md)
 
 Use two participants to fix a small search function and review the change. You can assign Codex to both roles; each gets its own session and permissions.
 
-The application guides you through **填写目标 → 检查分工 → 开始协作**: describe the goal, review the setup, then start. [Watch the workflow](media/ensemble-demo.mp4).
+The application guides you through **Describe the goal → Review the setup → Start collaboration**. [Watch the workflow](media/ensemble-demo.mp4). The video was recorded in Ensemble 0.7.0 with the Simplified Chinese interface.
+
+These instructions use English. Open **Preferences** (偏好设置) and select **English** before creating the collaboration. You can also choose **简体中文** or **Follow system**; the first launch follows your system language, and your choice is saved locally. Existing conversations, task text, code, and runtime diagnostics keep their original language. The task and role names below belong to a newly created English template.
 
 ## 1. Prepare a small project
 
@@ -77,9 +79,9 @@ Git may ask you to configure your own author name and email if you have not done
 
 ## 2. Describe the goal
 
-In Ensemble, choose **新建工作区** and select the example directory. Open **协作**, then choose **实现与审阅**.
+In Ensemble, choose **New workspace** and select the example directory. Open **Collaboration**, then choose **Implement and review**.
 
-Paste this into **任务目标**:
+Paste this into **Task goal**:
 
 ```text
 Fix searchItems in src/search.js.
@@ -100,40 +102,40 @@ Do not modify files. Reuse passed checks unless a specific concern requires
 further verification.
 ```
 
-Select the runtime and model for **实现者** and **审阅者**. The same Codex installation can serve both roles. The reviewer list only offers runtimes that support read-only execution; DeepSeek Harness cannot fill that role.
+Select the runtime and model for **Implementer** and **Reviewer**. The same Codex installation can serve both roles. The reviewer list only offers runtimes that support read-only execution; DeepSeek Harness cannot fill that role.
 
-If no suitable runtime is available, choose **接入与登录帮助**, follow the official setup guide, and select **刷新检测**. Close the help dialog to continue. A discovered entry does not confirm sign-in or model access.
+If no suitable runtime is available, choose **Setup and sign-in help**, follow the official setup guide, and select **Refresh detection**. Close the help dialog to continue. A discovered entry does not confirm sign-in or model access.
 
 ## 3. Review the setup
 
-Choose **检查分工**. You can adjust the full configuration before saving.
+Choose **Review the setup**. You can adjust the full configuration before saving.
 
 | Check | Expected setup |
 | --- | --- |
 | Project and execution directory | Your `ensemble-search-demo` folder |
 | Implementer | May modify the authorized project; approvals follow the runtime |
 | Reviewer | Read-only |
-| First task | **实现目标**, assigned to the implementer |
-| Second task | **审阅改动**, assigned to the reviewer and waiting for **实现目标** |
+| First task | **Implement the goal**, assigned to the implementer |
+| Second task | **Review the changes**, assigned to the reviewer and waiting for **Implement the goal** |
 | Completion | Finish after all submitted tasks complete |
 
 The template does not grant permission to dispatch more tasks, send collaboration messages, publish artifacts, or change the run configuration. Both tasks receive the shared goal. The reviewer also receives the preceding task output.
 
-Choose **保存并查看协作**. This saves a draft run. It does not execute the tasks yet.
+Choose **Save and view collaboration**. This saves a draft run. It does not execute the tasks yet.
 
 ## 4. Start and follow the work
 
-Choose **开始协作** when you are ready to use the selected model accounts. Model requests and charges follow those accounts; the template is not a cost cap.
+Choose **Start collaboration** when you are ready to use the selected model accounts. Model requests and charges follow those accounts; the template is not a cost cap.
 
-Open **任务与数据流** to follow the two tasks. Implementation runs first. Review waits for its dependency and then starts in the same project.
+Open **Tasks and data flow** to follow the two tasks. Implementation runs first. Review waits for its dependency and then starts in the same project.
 
-Select a task to inspect its requirements, state, result, and execution attempts. **打开真实会话** takes you to its conversation. If it is waiting for approval, inspect the requested operation there before responding. If a task fails, read the recorded error before choosing whether to retry.
+Select a task to inspect its requirements, state, result, and execution attempts. **Open actual session** takes you to its conversation. If it is waiting for approval, inspect the requested operation there before responding. If a task fails, read the recorded error before choosing whether to retry.
 
 A read-only reviewer checks the code and available results. It is not expected to rerun shell commands that its permission mode blocks.
 
 ## 5. Inspect the result
 
-From the task details, choose **打开真实会话** to return to the workspace. In **文件与改动**, open **改动** and select `src/search.js`. Ensemble opens the actual Git diff.
+From the task details, choose **Open actual session** to return to the workspace. In **Files and changes**, open **Changes** and select `src/search.js`. Ensemble opens the actual Git diff.
 
 Read the check result recorded by the implementer. Reuse a passed result while the code and environment are unchanged. If the result is missing or a concrete concern requires verification, run the same focused command in the example directory:
 
@@ -150,4 +152,4 @@ The example is complete when:
 
 Task completion records execution status. Read the output and review findings before keeping the change.
 
-For another arrangement, choose **自定义协作**. Individual sessions, terminals, and previews remain available from the workspace. See [Getting started](getting-started.md) for drafts and backend controls.
+For another arrangement, choose **Custom collaboration**. Individual sessions, terminals, and previews remain available from the workspace. See [Getting started](getting-started.md) for drafts and backend controls.

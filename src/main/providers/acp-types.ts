@@ -1,4 +1,5 @@
 import type { McpServerConfig, ProviderModel, Session } from '../../shared/types';
+import type { DisplayText } from '../../shared/display-text';
 
 export interface AcpConfigChoice { value: string; name: string }
 
@@ -15,6 +16,7 @@ export interface AcpRuntimeDescriptor {
   name: string;
   version: string;
   detail: string;
+  detailI18n?: DisplayText;
   models: ProviderModel[];
   defaultModelId: string;
   launch(session: Session, mcpServers?: McpServerConfig[]): Promise<AcpLaunchSpec>;

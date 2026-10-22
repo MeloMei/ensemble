@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from 'react';
 import { Monitor, Moon, Sun } from 'lucide-react';
 import { motion } from 'framer-motion';
@@ -52,13 +53,14 @@ export function useAppearance() {
 }
 
 export function ThemeOptions() {
+  const { t } = useTranslation('shell');
   const { preference, setPreference } = useAppearance();
   const options = [
-    { value: 'light', label: '浅色', Icon: Sun },
-    { value: 'dark', label: '深色', Icon: Moon },
-    { value: 'system', label: '跟随系统', Icon: Monitor },
+    { value: 'light', label: t('preferences.light'), Icon: Sun },
+    { value: 'dark', label: t('preferences.dark'), Icon: Moon },
+    { value: 'system', label: t('preferences.system'), Icon: Monitor },
   ] as const;
-  return <div className="appearance-options" role="group" aria-label="界面主题">
+  return <div className="appearance-options" role="group" aria-label={t('preferences.theme')}>
     {options.map(({ value, label, Icon }) => <button key={value} type="button" className={`appearance-option ${preference === value ? 'selected' : ''}`} aria-pressed={preference === value} onClick={() => setPreference(value)}>
       {preference === value && <motion.span className="appearance-selection" layoutId="appearance-selection" transition={SPRING_SNAPPY} />}
       <span className={`theme-sample sample-${value}`} aria-hidden="true"><span /><span><i /><i /><i /></span></span>

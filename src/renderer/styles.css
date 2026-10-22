@@ -271,6 +271,11 @@ a { color: var(--accent); text-underline-offset: 3px; }
 .modal-backdrop::backdrop { background: var(--overlay); backdrop-filter: blur(4px); }
 .modal { width: 500px; max-width: 100%; max-height: calc(100dvh - 50px); overflow: auto; background: var(--surface-overlay); backdrop-filter: blur(12px); border: 1px solid var(--border-strong); border-radius: var(--radius-overlay); box-shadow: var(--shadow-popover); padding: 22px; }
 .modal-wide { width: 940px; }
+.language-settings { display: grid; grid-template-columns: 1fr minmax(180px, 220px); align-items: center; gap: 12px 20px; padding-bottom: 22px; margin-bottom: 22px; border-bottom: 1px solid var(--border); }
+.language-settings > label { margin: 0; font-weight: 600; }
+.language-settings > p { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.language-settings > p.field-error { color: var(--danger); }
+.preferences-heading { margin: 0 0 12px; font-size: 13px; font-weight: 600; }
 .modal-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; margin-bottom: 20px; }
 .modal-heading h2 { font-size: 19px; font-weight: 550; color: var(--text); letter-spacing: -.3px; }
 .modal-heading p { font-size: 12px; line-height: 1.8; color: var(--muted); margin-top: 9px; }

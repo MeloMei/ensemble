@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
 import type { Session } from '../shared/types';
 import { WorkbenchNotifications } from './notifications';
+import { setLanguage } from '../shared/i18n';
 
 class Notice extends EventEmitter {
   closed = false;
@@ -30,4 +31,28 @@ test('notifications follow actual transitions once, track delivery failure, and 
   notices[1].emit('show'); assert.equal(manager.status().state, 'shown');
   notices[1].emit('click'); assert.deepEqual(opened, ['one']);
   manager.dispose();
+});
+
+test('notification language changes apply to new notices without replaying prior transitions', async () => {
+  const notices: { title: string; body: string; handle: Notice }[] = [];
+  const manager = new WorkbenchNotifications(() => {}, { supported: true, create(input) {
+    const handle = new Notice(); notices.push({ ...input, handle }); return handle;
+  } });
+  try {
+    await setLanguage('zh-CN');
+    const running = { ...session('running'), title: '用户自定义标题' };
+    const completed = { ...running, status: 'completed' as const };
+    manager.observe({ sessions: [running] }); manager.observe({ sessions: [completed] });
+    assert.equal(notices[0].title, 'Agent 已完成');
+    await setLanguage('en');
+    manager.observe({ sessions: [completed] });
+    assert.equal(notices.length, 1);
+    manager.observe({ sessions: [{ ...running, approvals: [{ id: 'language-approval', sessionId: 'one', title: 'Approval', detail: '', choices: [] }] }] });
+    assert.equal(notices[1].title, 'Agent needs approval');
+    assert.equal(notices[1].body, '用户自定义标题 · codex');
+    notices[1].handle.emit('failed');
+    assert.match(manager.status().error ?? '', /could not show/);
+    await setLanguage('zh-CN');
+    assert.match(manager.status().error ?? '', /系统未能显示通知/);
+  } finally { manager.dispose(); await setLanguage('zh-CN'); }
 });

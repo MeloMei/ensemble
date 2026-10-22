@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { abortError, asError, JsonRpcProcess, RpcError, type RpcExit, type RpcNotification, type RpcRequest } from './json-rpc';
 import type { ProviderAdapter, TurnContext } from './types';
 import type { ProviderModel, Session } from '../../shared/types';
+import type { DisplayText } from '../../shared/display-text';
 import { attachmentText, emitProcess, processStatus, processText } from './provider-events';
 import { codexMcpConfiguration } from './mcp-configuration';
 import { answerCodexElicitation } from './codex-elicitation';
@@ -152,13 +153,14 @@ export async function createCodexProvider(): Promise<CodexProvider> {
   let binary: string | null = null;
   let version = '';
   let detail = '没有找到 Codex CLI。安装后点击刷新，或设置 CODEX_BINARY。';
+  let detailI18n: DisplayText | undefined = { key: 'runtime:detection.codexMissing' };
   let disposed = false;
   let disposal: Promise<void> | undefined;
   let catalog: CatalogModel[] = [];
   const sessions = new Map<string, CodexSessionConnection>();
   const provider: CodexProvider = {
     info: {
-      id: 'codex', name: 'Codex', source: 'builtin', available: false, detail,
+      id: 'codex', name: 'Codex', source: 'builtin', available: false, detail, detailI18n,
       capabilities: { resume: true, approvals: true, images: true, rewind: true, permissions: true, effort: true },
     },
     async refreshInfo() {
@@ -166,19 +168,21 @@ export async function createCodexProvider(): Promise<CodexProvider> {
       version = '';
       catalog = [];
       detail = '没有找到 Codex CLI。安装后点击刷新，或设置 CODEX_BINARY。';
+      detailI18n = { key: 'runtime:detection.codexMissing' };
       if (binary) {
         try {
           const result = await execute(binary, ['--version'], { timeout: 5_000, maxBuffer: 16_384 });
           version = result.stdout.trim();
           detail = `${version} · ${binary}`;
+          detailI18n = undefined;
           const rpc = new JsonRpcProcess({ command: binary, args: ['app-server', '--listen', 'stdio://'] });
           try { await initialize(rpc); catalog = await modelCatalog(rpc); }
           finally { await rpc.close(); }
-        } catch (error) { detail = `Codex CLI 无法运行：${asError(error).message}`; }
+        } catch (error) { detail = `Codex CLI 无法运行：${asError(error).message}`; detailI18n = { key: 'runtime:detection.cannotRun', values: { provider: 'Codex CLI', reason: asError(error).message } }; }
       }
       const models: ProviderModel[] = catalog.map(model => ({ id: model.id, name: model.displayName || model.id, free: false,
         efforts: model.supportedReasoningEfforts?.map(effort => effort.reasoningEffort).filter(Boolean) }));
-      provider.info = { ...provider.info, available: Boolean(binary && version), detail, models: models.length ? models : undefined,
+      provider.info = { ...provider.info, available: Boolean(binary && version), detail, detailI18n, models: models.length ? models : undefined,
         efforts: models.find(model => catalog.find(native => native.id === model.id)?.isDefault)?.efforts };
     },
     async run(context) {
@@ -421,7 +425,7 @@ async function handleApproval(request: RpcRequest, context: TurnContext, item?: 
       context.emit({ type: 'activity', text: '只读会话已拒绝原生权限升级。' });
       return { permissions: {}, scope: 'turn' };
     }
-    const selected = await context.approve({ title: '允许 Codex 扩展本轮权限？', detail: [params.reason, processText(params.permissions)].filter(Boolean).join('\n'), choices: [{ id: 'accept', label: '允许本轮' }, { id: 'decline', label: '拒绝' }] });
+    const selected = await context.approve({ title: '允许 Codex 扩展本轮权限？', titleI18n: { key: 'runtime:approval.extendPermissions', values: { provider: 'Codex' } }, detail: [params.reason, processText(params.permissions)].filter(Boolean).join('\n'), choices: [{ id: 'accept', label: '允许本轮', labelI18n: { key: 'runtime:approval.allowTurn' } }, { id: 'decline', label: '拒绝', labelI18n: { key: 'runtime:approval.deny' } }] });
     if (context.signal.aborted) throw abortError();
     if (!['accept', 'decline'].includes(selected)) throw new Error('权限审批结果无效。');
     return { permissions: selected === 'accept' ? object(params.permissions) : {}, scope: 'turn' };
@@ -432,10 +436,10 @@ async function handleApproval(request: RpcRequest, context: TurnContext, item?: 
     const questions = params.questions.map(raw => {
       const value = object(raw);
       if (typeof value.id !== 'string' || typeof value.question !== 'string' || !value.question.trim()) throw new Error('Codex 结构化问答内容无效。');
-      return { id: value.id, question: value.question, header: typeof value.header === 'string' ? value.header : '问题', multiSelect: false,
+      return { id: value.id, question: value.question, header: typeof value.header === 'string' ? value.header : '问题', ...(typeof value.header === 'string' ? {} : { headerI18n: { key: 'runtime:question.header' } }), multiSelect: false,
         options: (Array.isArray(value.options) ? value.options : []).map(rawOption => { const option = object(rawOption); if (typeof option.label !== 'string') throw new Error('Codex 问题选项无效。'); return { label: option.label, ...(typeof option.description === 'string' ? { description: option.description } : {}) }; }) };
     });
-    const raw = await context.approve({ title: 'Codex 需要你的回答', detail: '', choices: [], questions });
+    const raw = await context.approve({ title: 'Codex 需要你的回答', titleI18n: { key: 'runtime:approval.needsAnswer', values: { provider: 'Codex' } }, detail: '', choices: [], questions });
     if (context.signal.aborted) throw abortError();
     const parsed = object(JSON.parse(raw));
     const answers: Record<string, { answers: string[] }> = {};
@@ -457,7 +461,11 @@ async function handleApproval(request: RpcRequest, context: TurnContext, item?: 
     context.emit({ type: 'activity', text: '只读会话已拒绝命令或文件写入的权限升级。' });
     return { decision: Array.isArray(params.availableDecisions) && !params.availableDecisions.includes('decline') ? 'cancel' : 'decline' };
   }
-  const labels: Record<string, string> = { accept: '允许本次', decline: '拒绝本次', cancel: '取消任务' };
+  const labels: Record<string, { label: string; labelI18n: DisplayText }> = {
+    accept: { label: '允许本次', labelI18n: { key: 'runtime:approval.allowOnce' } },
+    decline: { label: '拒绝本次', labelI18n: { key: 'runtime:approval.denyOnce' } },
+    cancel: { label: '取消任务', labelI18n: { key: 'runtime:approval.cancelTask' } },
+  };
   const available = Array.isArray(params.availableDecisions) ? params.availableDecisions : ['accept', 'decline', 'cancel'];
   const ids = [...new Set(available.filter((choice): choice is string => typeof choice === 'string' && Object.hasOwn(labels, choice)))];
   if (!ids.length) throw new RpcError(-32602, 'Codex 没有提供当前客户端支持的审批选项');
@@ -476,8 +484,9 @@ async function handleApproval(request: RpcRequest, context: TurnContext, item?: 
   ].filter(Boolean).join('\n') || (fileChange ? 'Codex 请求修改工作目录外的文件。' : 'Codex 请求运行需要批准的操作。');
   const decision = await context.approve({
     title: fileChange ? '允许 Codex 修改文件？' : '允许 Codex 执行操作？',
+    titleI18n: { key: fileChange ? 'runtime:approval.modifyFiles' : 'runtime:approval.performAction', values: { provider: 'Codex' } },
     detail,
-    choices: ids.map(id => ({ id, label: labels[id] })),
+    choices: ids.map(id => ({ id, ...labels[id] })),
   });
   if (context.signal.aborted) throw abortError();
   if (!ids.includes(decision)) throw new RpcError(-32602, '审批返回了不在当前请求中的选项');

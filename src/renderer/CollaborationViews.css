@@ -9,7 +9,7 @@
 .collaboration-list { display: flex; flex-direction: column; flex-shrink: 0; width: 208px; gap: 8px; padding: 18px 12px 12px; border-right: 1px solid var(--border); background: var(--sidebar); }
 .collaboration-list > .sidebar-heading { padding: 0 6px; }
 .collaboration-list > p { margin: 0 6px 10px; color: var(--muted); font-size: 12px; line-height: 1.6; }
-.collaboration-list > .button { flex-shrink: 0; justify-content: center; }
+.collaboration-list > .button { flex-shrink: 0; justify-content: center; white-space: normal; text-align: center; }
 .collaboration-run-list { flex: 1; min-height: 0; overflow: auto; }
 .collaboration-run-item { position: relative; display: flex; flex-direction: column; gap: 6px; width: 100%; margin-bottom: 3px; padding: 10px; border: 1px solid transparent; border-radius: var(--radius-control); color: var(--text); text-align: left; transition: background var(--duration-fast) var(--ease-out); }
 .collaboration-run-item:hover { background: var(--selected); }
@@ -76,12 +76,12 @@
 .collaboration-run-heading p { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 7px; color: var(--muted); font-size: 11px; }
 .collaboration-run-heading p > span:not(.status) { color: var(--dim); }
 .collaboration-run-actions { display: flex; flex-shrink: 0; align-items: center; gap: 8px; }
-.collaboration-toolbar { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 16px; background: var(--surface); }
+.collaboration-toolbar { display: flex; flex-wrap: wrap; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 16px; background: var(--surface); }
 .collaboration-view-switch { display: flex; align-items: center; gap: 3px; max-width: 100%; padding: 0; }
 .collaboration-view-switch > button { position: relative; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 6px 8px; border-radius: var(--radius-control); color: var(--muted); font-size: 12px; white-space: nowrap; transition: color var(--duration-fast) var(--ease-out), background var(--duration-fast) var(--ease-out); }
 .collaboration-view-switch > button:hover { color: var(--text); }
 .collaboration-view-switch > button.active { background: var(--selected); color: var(--text); }
-.collaboration-toolbar-actions { display: flex; align-items: center; gap: 8px; }
+.collaboration-toolbar-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .collaboration-legend { display: flex; flex-shrink: 0; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 0 18px 10px; color: var(--muted); font-size: 11px; background: var(--surface); }
 .collaboration-legend > span { display: flex; align-items: center; gap: 7px; }
 .collaboration-legend i { width: 18px; height: 0; border-top: 1px solid var(--muted); }
@@ -170,10 +170,11 @@
 .collaboration-editor-body { flex: 1; width: 100%; max-width: 1000px; min-height: 0; margin: 0 auto; overflow: auto; padding: 24px; }
 .collaboration-editor-body label,
 .collaboration-connection-result > label { display: flex; flex-direction: column; gap: 9px; margin-bottom: 18px; color: var(--text); font-size: 12px; }
-.collaboration-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.collaboration-form-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; }
 .collaboration-form-grid > .model-field { margin: 0; }
 .collaboration-form-grid > .model-field > label { margin-bottom: 9px; }
 .collaboration-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 24px 0 14px; }
+.collaboration-section-heading > .button { flex-shrink: 0; }
 .collaboration-section-heading h2 { color: var(--text); font-size: 15px; font-weight: 550; }
 .collaboration-section-heading p { margin-top: 6px; color: var(--muted); font-size: 12px; line-height: 1.7; }
 .collaboration-form-empty { padding: 22px; border: 1px dashed var(--border-strong); border-radius: var(--radius-panel); color: var(--muted); font-size: 13px; text-align: center; }
@@ -234,7 +235,6 @@
   .collaboration-selection { --selection-width: 282px; }
   .collaboration-run-heading { padding: 16px 18px; }
   .collaboration-legend small { display: none; }
-  .collaboration-toolbar { flex-wrap: wrap; }
   .collaboration-toolbar-actions { gap: 6px; }
   .collaboration-editor-body { padding: 24px; }
 }

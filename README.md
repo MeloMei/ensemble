@@ -33,7 +33,7 @@ One runtime can fill both roles. Within a collaboration, tasks in the same proje
 
 The walkthrough combines captured views from two independent Codex sessions in the actual Ensemble app. The implementer changes one line in a local search example and passes the focused checks; a read-only reviewer then inspects the diff and test file, using the recorded result without rerunning the checks or modifying files. The video is edited, so its length does not represent actual execution time.
 
-The current application interface uses Simplified Chinese; the English guide includes the matching button labels.
+The screenshots and video show the Simplified Chinese interface recorded in Ensemble 0.7.0.
 
 ## Get started
 
@@ -46,10 +46,12 @@ npm ci
 npm run dev
 ```
 
-1. Open **接入与插件** and choose **刷新检测** to find installed runtimes.
-2. Create a workspace for your project, then open **协作 → 实现与审阅**.
-3. Describe the goal, choose the runtimes, and select **检查分工**.
-4. Review the tasks and permissions, choose **保存并查看协作**, then **开始协作** when ready.
+In **Preferences** (偏好设置), choose **Follow system**, **简体中文**, or **English**. The first launch follows your system language, and your choice is saved on this Mac. Existing tasks, conversations, code, and runtime diagnostics stay in their original language.
+
+1. Open **Runtimes & plugins** and choose **Refresh detection** to find installed runtimes.
+2. Create a workspace for your project, then open **Collaboration → Implement and review**.
+3. Describe the goal, choose the runtimes, and select **Review the setup**.
+4. Review the tasks and permissions, choose **Save and view collaboration**, then **Start collaboration** when ready.
 
 Detected means the local entry point was found. Authentication and model access are confirmed by the actual task. Model usage follows your runtime configuration and provider account.
 
