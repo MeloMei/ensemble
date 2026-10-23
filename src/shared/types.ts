@@ -2,6 +2,8 @@ import type { CollaborationEvent, CollaborationState, CollaborationIdentity } fr
 import type { LanguagePreference, LanguageState } from './i18n';
 import type { DisplayText } from './display-text';
 import type { BackendConnectionState, SessionHistoryPage, TerminalOutputEvent } from './backend';
+import type { ProviderCapabilities } from './provider-capabilities';
+export type { ProviderCapabilities } from './provider-capabilities';
 
 export type SessionStatus = 'idle' | 'queued' | 'running' | 'waiting_approval' | 'waiting_children' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
 export type StepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'blocked' | 'cancelled';
@@ -17,7 +19,10 @@ export interface ProviderInfo {
   available: boolean;
   detail: string;
   detailI18n?: DisplayText;
-  capabilities: { resume: boolean; approvals: boolean; images?: boolean; rewind?: boolean; effort?: boolean; permissions?: boolean };
+  capabilities: ProviderCapabilities;
+  health?: ProviderHealth;
+  protocolVersion?: 1 | 2;
+  declaredCapabilities?: ProviderCapabilities;
   models?: ProviderModel[];
   defaultModelId?: string;
   efforts?: string[];
@@ -53,6 +58,12 @@ export interface WorktreeOperation extends Omit<ManagedWorktree, 'status'> {
   status: 'creating' | 'ready' | 'failed' | 'removing' | 'removed'; workspaceId?: string; error?: string; updatedAt: string;
   cleanupHeadSha?: string;
 }
+
+export type ProviderHealthStage = 'binary' | 'protocol' | 'catalog' | 'authentication' | 'quota';
+export interface ProviderHealthCheck {
+  status: 'ready' | 'missing' | 'unknown' | 'error'; observedAt: string; source: string; detail?: string;
+}
+export interface ProviderHealth { cwd?: string; checks: Record<ProviderHealthStage, ProviderHealthCheck> }
 
 export interface TerminalInfo {
   id: string;
@@ -142,6 +153,13 @@ export interface SessionQueueItem {
   id: string; commandId: string; input: PromptInput; modelId?: string; settings?: SessionSettings; createdAt: string; updatedAt: string;
 }
 export interface SessionCommandReceipt { commandId: string; kind: string; result: unknown; createdAt: string }
+export interface DiagnosticEntry {
+  seq: number; at: string; layer: 'provider' | 'engine' | 'command' | 'transport'; kind: string;
+  providerId?: string; sessionId?: string; attemptId?: string; turnId?: string; requestId?: string;
+  runtimeId?: string; method?: string; eventType?: string; status?: string; errorCode?: string;
+  protocol?: unknown;
+}
+
 export interface WorkflowStepInput {
   id: string;
   title: string;
@@ -209,6 +227,11 @@ export interface WorkbenchAPI {
   removeQueuedPrompt(id: string, itemId: string): Promise<void>;
   setSessionQueuePaused(id: string, paused: boolean): Promise<void>;
   reconcileSessionDelivery(id: string): Promise<void>;
+  providerHealth(cwd?: string): Promise<ProviderInfo[]>;
+  diagnostics(): Promise<DiagnosticEntry[]>;
+  exportDiagnostics(): Promise<string>;
+  setDiagnosticTracing(enabled: boolean): Promise<void>;
+  diagnosticTracing(): Promise<boolean>;
   setUnsavedFiles(summary: UnsavedFileSummary): void;
   getLanguage(): Promise<LanguageState>;
   setLanguage(preference: LanguagePreference): Promise<LanguageState>;

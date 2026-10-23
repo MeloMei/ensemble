@@ -49,7 +49,7 @@ class ProjectBusyError extends Error {}
 
 export interface ExecutionHandle { sessionId: string; attemptId: string; done: Promise<void> }
 export type ExecutionObservation =
-  | { type: 'input'; sessionId: string; attemptId: string; turnId: string; userMessageId: string; prompt: string; attachments: import('../shared/types').PromptAttachment[] }
+  | { type: 'input'; sessionId: string; attemptId: string; turnId: string; userMessageId: string; providerIdentity: Pick<ProviderInfo, 'id' | 'detail'>; prompt: string; attachments: import('../shared/types').PromptAttachment[] }
   | { type: 'event'; sessionId: string; attemptId: string; turnId: string; event: ProviderEvent }
   | { type: 'settled'; sessionId: string; attemptId: string; status: 'completed' | 'failed' | 'cancelled'; output: string; error?: string };
 export interface WorkflowExecution {
@@ -709,6 +709,7 @@ export class WorkbenchEngine {
       const adapter = this.adapters.get(session.providerId);
       if (!adapter?.info.available) throw new Error('这个 Agent 目前不可用。');
       this.observe({ type: 'input', sessionId: session.id, attemptId: task.attempt.id, turnId: turnKey, userMessageId: job.userMessageId,
+        providerIdentity: { id: adapter.info.id, detail: adapter.info.detail },
         prompt: enrichment?.prompt ?? job.input.text, attachments: (enrichment?.attachments ?? []).map(({ data: _data, text: _text, ...attachment }) => attachment) });
       providerInvoked = true;
       await adapter.run({ session: { ...structuredClone(session), modelId: task.modelId, settings: structuredClone(task.settings) }, prompt: enrichment?.prompt ?? job.input.text,

@@ -107,6 +107,7 @@ test('service history cursors and search preserve bounded views and recover full
     await assert.rejects(service.call('workbench:session-history-around', [id, expired, 20]), /游标.*失效/);
   } finally { await fixture.close(); }
 });
+
 test('service read acknowledgements persist exact revisions without clearing failures or newer results', async () => {
   const fixture = await createFixture(async context => {
     if (context.prompt === 'fail') throw new Error('Fixture requested failure');
@@ -147,6 +148,39 @@ test('service read acknowledgements persist exact revisions without clearing fai
     assert.equal(fixture.service.engine.getSession(id).attention?.seenRevision, resultRevision);
   } finally { await fixture.close(); }
 });
+
+test('service provider health isolates directory evidence and invalidates authentication after a binary identity change', async () => {
+  const fixture = await createFixture(async context => {
+    if (context.prompt === 'authentication-error') throw new Error('401 unauthorized fixture');
+    context.emit({ type: 'text', itemId: 'health-result', text: 'Completed fixture turn' });
+  });
+  try {
+    const health = async (cwd?: string) => (await fixture.service.call('workbench:provider-health', [cwd]) as ProviderInfo[]).find(provider => provider.id === fixture.info.id)!;
+    const initial = await health(fixture.firstProject);
+    assert.equal(initial.available, true); assert.equal(initial.health?.cwd, fixture.firstProject);
+    assert.equal(initial.health?.checks.binary.status, 'ready');
+    assert.equal(initial.health?.checks.authentication.status, 'unknown');
+    assert.equal(initial.health?.checks.quota.status, 'unknown'); assert.equal(initial.health?.checks.quota.source, 'no-quota-source');
+    assert.equal(Object.values(initial.health!.checks.quota).some(value => value === 0), false);
+    const firstId = await fixture.service.engine.createSession({ title: 'Project A', providerId: fixture.info.id, cwd: fixture.firstProject });
+    const secondId = await fixture.service.engine.createSession({ title: 'Project B', providerId: fixture.info.id, cwd: fixture.secondProject });
+    await fixture.service.call('workbench:send-prompt', [firstId, { text: 'complete' }, 'health-first']); await fixture.service.engine.waitSession(firstId);
+    assert.equal((await health(fixture.firstProject)).health?.checks.authentication.status, 'ready');
+    assert.equal((await health(fixture.firstProject)).health?.checks.authentication.source, 'completed-turn');
+    assert.equal((await health(fixture.secondProject)).health?.checks.authentication.status, 'unknown');
+    assert.equal((await health()).health?.checks.authentication.status, 'unknown');
+    await fixture.service.call('workbench:send-prompt', [secondId, { text: 'authentication-error' }, 'health-second']); await fixture.service.engine.waitSession(secondId);
+    assert.equal((await health(fixture.secondProject)).health?.checks.authentication.status, 'error');
+    assert.equal((await health(fixture.firstProject)).health?.checks.authentication.status, 'ready');
+    assert.equal((await health(fixture.firstProject)).health?.checks.quota.status, 'unknown');
+    fixture.info.detail = 'different-fixture-binary@v2';
+    const changed = await health(fixture.firstProject);
+    assert.equal(changed.available, true); assert.equal(changed.detail, fixture.info.detail);
+    assert.equal(changed.health?.checks.authentication.status, 'unknown');
+    assert.equal((await health(fixture.secondProject)).health?.checks.authentication.status, 'unknown');
+  } finally { await fixture.close(); }
+});
+
 test('service worktree access fences alias saves and persistent removal admission', { timeout: 20_000 }, async () => {
   let providerRuns = 0;
   const fixture = await createFixture(async () => { providerRuns++; });
@@ -218,6 +252,25 @@ test('service worktree access fences alias saves and persistent removal admissio
     await saving?.catch(() => {}); await fixture.close();
   }
 });
+
+test('service health does not attribute an old runtime completion to its replacement', async () => {
+  let started!: () => void, release!: () => void;
+  const running = new Promise<void>(resolve => { started = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const fixture = await createFixture(async () => { started(); await gate; });
+  try {
+    const id = await fixture.service.engine.createSession({ title: 'Old runtime', providerId: fixture.info.id, cwd: fixture.firstProject });
+    await fixture.service.call('workbench:send-prompt', [id, { text: 'old runtime' }, 'old-health-turn']); await running;
+    const replacement = { ...fixture.info, detail: 'fixture-binary@v2' };
+    fixture.service.engine.setProviders([{ info: replacement, async run() {} }], [], []);
+    release(); await fixture.service.engine.waitSession(id);
+    const health = async () => (await fixture.service.call('workbench:provider-health', [fixture.firstProject]) as ProviderInfo[]).find(info => info.id === replacement.id)!;
+    assert.equal((await health()).health?.checks.authentication.status, 'unknown');
+    await fixture.service.call('workbench:send-prompt', [id, { text: 'replacement runtime' }, 'new-health-turn']); await fixture.service.engine.waitSession(id);
+    assert.equal((await health()).health?.checks.authentication.status, 'ready');
+  } finally { release(); await fixture.close(); }
+});
+
 test('service Stop forwarding fences a delayed request to its captured attempt', async () => {
   let firstStarted!: () => void, secondStarted!: () => void, releaseFirst!: () => void;
   const first = new Promise<void>(resolve => { firstStarted = resolve; });

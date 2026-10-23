@@ -72,17 +72,19 @@ Ordinary create/send/cancel/answer commands share SQLite transaction receipts. F
 
 Desktop Stop requests carry the observed attempt ID; the backend compares it atomically before cancelling or pausing a queue. Pending Codex input that never reached physical execution is rejected on cancellation or queued-state recovery; input interrupted after execution began remains unknown. The same delivery guard applies to ordinary, managed and collaboration dispatch. Each new concurrent approval advances the attention revision.
 
-Watched sessions receive bounded recent history; older pages and search windows load on demand. Unwatched sessions omit draft and queued-message bodies.
+Watched sessions receive bounded recent history; older pages and search windows load on demand. Unwatched sessions omit draft and queued-message bodies. Runtime health separates binary, protocol, catalog, authentication evidence and quota. Missing evidence remains unknown; DeepSeek API balance does not establish a Harness account balance.
 
 The watched tail is bounded by message count. Individual message bodies remain intact. Frames above 8 MiB end the subscription with an explicit size-limit reason while retaining cached content; selecting a smaller session can restore synchronization. Historical sessions whose workspace was removed remain readable in a temporary read-only view without recreating the directory.
 
-Failed watch updates invalidate only their owning subscription and reconnect using the desired session IDs. Renderer reload or loss releases its view subscriptions. A live-tail reset invalidates pages fetched against an obsolete tail.
-
-Desktop subscriptions require stream version 2. An older backend is left running with its tasks; management CLI connections remain usable so the user can stop it when appropriate before starting the new desktop client.
+Failed watch updates invalidate only their owning subscription and reconnect using the desired session IDs. Renderer reload or loss releases its view subscriptions. A live-tail reset invalidates pages fetched against an obsolete tail. Authentication evidence is attributed to the adapter identity captured at dispatch, so an older runtime cannot authenticate its replacement.
 
 Managed worktrees have durable creation intents with repository, branch, base SHA and ownership. Retrying the command can recover creation. Cleanup requires no active or queued work, active terminal, in-flight file/configuration operation, uncommitted files or commits missing from the source checkout. The desktop also blocks cleanup while any editor has unsaved files. Root and subdirectory aliases share the same lifecycle guard. A durable removing state records the exact branch head before Git deletion, so interrupted cleanup can continue; removed records prevent historical sessions from recreating the workspace on restart. Cleanup never force-deletes a user directory or runs repository setup scripts.
 
-A requested source subdirectory must exist as a directory in the starting commit before an intent or checkout is created.
+A requested source subdirectory must exist as a directory in the starting commit before an intent or checkout is created. Native run, history reconciliation and rewind calls share session-scoped diagnostics.
+
+Diagnostics default to lifecycle metadata with a 512 KiB/1000-entry retention cap. Explicit tracing stores redacted protocol shapes: only known structural fields and enums remain readable; content, unknown keys and native identifiers are anonymized, while numbers and booleans become type placeholders. Platform session, attempt and runtime IDs remain available for correlation. Offline replay uses the existing NDJSON decoder to inspect structure and ordering; it cannot recover original content or guarantee every semantic failure is reproducible. Backend restart defaults tracing to off.
+
+Desktop subscriptions require stream version 2. An older backend is left running with its tasks; management CLI connections remain usable so the user can stop it when appropriate before starting the new desktop client.
 
 ## Build boundaries and licensing
 

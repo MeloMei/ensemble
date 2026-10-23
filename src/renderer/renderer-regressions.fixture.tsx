@@ -3,10 +3,11 @@ import { createRoot, type Root } from 'react-dom/client';
 import { I18nextProvider } from 'react-i18next';
 import { MotionConfig } from 'framer-motion';
 import { i18n, translate } from '../shared/i18n';
-import type { FileContent, McpSettingsView, Message, ProviderInfo, Session, Snapshot, UnsavedFileSummary, Workflow, Workspace } from '../shared/types';
+import type { DiagnosticEntry, FileContent, McpSettingsView, Message, ProviderInfo, Session, Snapshot, UnsavedFileSummary, Workflow, Workspace } from '../shared/types';
 import type { BackendConnectionState, SessionHistoryWindow } from '../shared/backend';
 import { WorkspaceTools } from './WorkspaceTools';
-import { WorkflowView } from './WorkflowViews';
+import { ProvidersView, WorkflowView } from './WorkflowViews';
+import { DiagnosticsPanel } from './DiagnosticsPanel';
 import { ManagedWorktreePanel } from './ManagedWorktreePanel';
 import { FileReviewPanel } from './FileReviewPanel';
 import { SessionChat } from './SessionChat';
@@ -401,6 +402,24 @@ const cases: Record<string, () => Promise<void>> = {
       assert(unsubscribed === 1, 'Closing the terminal did not release its output subscription');
     } finally { Terminal.prototype.open = originalOpen; }
   },
+  'PROVIDER-3 UI: plugin v2 gates each attachment kind without dropping files': async () => {
+    const sends: unknown[] = [];
+    window.workbench = { sendPrompt: async (_id: string, input: unknown) => { sends.push(input); } } as unknown as Window['workbench'];
+    const text = { id: 'text', name: 'note.txt', kind: 'text' as const, ownedPath: '/note.txt', mimeType: 'text/plain', size: 4, sha256: 'a'.repeat(64) };
+    const image = { ...text, id: 'image', name: 'image.png', kind: 'image' as const, mimeType: 'image/png' };
+    const plugin: ProviderInfo = { ...provider, id: 'plugin-v2', source: 'plugin', protocolVersion: 2, capabilities: { resume: false, approvals: false }, declaredCapabilities: { resume: false, approvals: false, textAttachments: true, images: false } };
+    const show = (attachments: typeof text[] | typeof image[] | (typeof text | typeof image)[], configured = plugin) => render(chat({ provider: configured, draft: { text: 'Use the files', attachments } }));
+    await show([text, image]);
+    assert(!button('workspace:chat.attach').disabled && button('workspace:chat.sendTask').disabled && document.querySelectorAll('.composer .attachment-chip').length === 2, 'A mixed draft was dropped or an unsupported image was allowed');
+    assert(document.querySelector('[role=alert]')?.textContent?.includes('some of the attached file types'), 'The v2 attachment kind restriction was not explained');
+    await show([text]); await click('workspace:chat.sendTask'); await settle();
+    assert(JSON.stringify(sends[0]) === JSON.stringify({ text: 'Use the files', attachments: [text] }), 'An allowed text file was blocked or silently dropped before the v2 handshake');
+    await show([image], { ...plugin, declaredCapabilities: { resume: false, approvals: false, images: true, textAttachments: false } });
+    await click('workspace:chat.sendTask'); await settle();
+    assert(JSON.stringify(sends[1]) === JSON.stringify({ text: 'Use the files', attachments: [image] }), 'Image support did not honor its separately declared capability');
+    await show([text], { ...plugin, protocolVersion: 1 });
+    assert(button('workspace:chat.sendTask').disabled && button('workspace:chat.pluginAttachmentsUnsupported').disabled, 'A v1 plugin acquired v2 attachment support');
+  },
   'PROVIDER-2 UI: plugins retain attachment drafts and block unsupported sends': async () => {
     let sends = 0, changes = 0;
     window.workbench = { sendPrompt: async () => { sends++; } } as unknown as Window['workbench'];
@@ -549,6 +568,64 @@ const cases: Record<string, () => Promise<void>> = {
     await click('shell:history.closeSession');
     await waitFor(() => Boolean(watched.length && watched.at(-1)?.length === 0), 'Closing retained history did not unsubscribe its session');
     assert(!document.querySelector('.chat-pane-readonly') && creations === 0 && openedTabs === 0 && sends === 0, 'Reading retained history created a workspace/tab or sent a prompt');
+  },
+  'UI-12: health evidence stays scoped to the selected directory and entry detection is not sign-in': async () => {
+    const first = deferred<ProviderInfo[]>(), second = deferred<ProviderInfo[]>();
+    const other: Workspace = { ...workspace, id: 'other', name: 'Other', cwd: '/other' };
+    const checked = (status: 'ready' | 'unknown' | 'error', source: string): ProviderInfo => ({ ...provider, health: { checks: {
+      binary: { status: 'ready', source: 'runtime-discovery', observedAt: '2026-10-23T00:00:00Z' },
+      protocol: { status: 'unknown', source: 'runtime-discovery', observedAt: '2026-10-23T00:00:00Z' },
+      catalog: { status: 'unknown', source: 'runtime-discovery', observedAt: '2026-10-23T00:00:00Z' },
+      authentication: { status, source, observedAt: '2026-10-23T00:00:00Z' },
+      quota: { status: 'unknown', source: 'no-quota-source', observedAt: '2026-10-23T00:00:00Z' },
+    } } });
+    let refreshes = 0, sends = 0;
+    const requests: (string | undefined)[] = [];
+    window.workbench = {
+      providerHealth: (cwd?: string) => { requests.push(cwd); return cwd === workspace.cwd ? first.promise : second.promise; },
+      refreshProviders: async () => { refreshes++; }, sendPrompt: async () => { sends++; },
+    } as unknown as Window['workbench'];
+    const snapshot: Snapshot = { version: 1, sessions: [], workspaces: [workspace, other], providers: [checked('unknown', 'no-authentication-evidence')], workflows: [], terminals: [], pluginErrors: [], pluginPath: '/plugins', dataPath: '/data' };
+    await render(<ProvidersView snapshot={snapshot} perform={perform} pending={new Set()} />);
+    const authentication = () => document.querySelector<HTMLElement>('[data-stage="authentication"]')!;
+    assert(authentication().dataset.status === 'unknown' && document.querySelector('.availability.available'), 'A detected CLI was treated as authenticated');
+    await change(input('.runtime-directory select'), workspace.cwd);
+    await change(input('.runtime-directory select'), other.cwd);
+    assert(authentication().dataset.status === 'unknown', 'Changing directories displayed another project authentication');
+    await act(async () => { second.resolve([checked('ready', 'completed-turn')]); await tick(); });
+    await waitFor(() => authentication().dataset.status === 'ready', 'Selected directory evidence did not load');
+    await act(async () => { first.resolve([checked('error', 'runtime-authentication-error')]); await tick(); });
+    assert(authentication().dataset.status === 'ready' && authentication().textContent?.includes('A task completed in this directory')
+      && (input('.runtime-directory select') as HTMLSelectElement).value === other.cwd, 'A late response replaced the newly selected directory');
+    await click('shell:provider.refresh'); await settle();
+    assert(refreshes === 1 && sends === 0 && requests.every(cwd => cwd === workspace.cwd || cwd === other.cwd), 'Health refresh sent a model task or lost directory scope');
+    assert(document.querySelector('[data-stage="quota"]')?.getAttribute('data-status') === 'unknown' && authentication().querySelector('time')?.dateTime, 'Quota unknown or evidence time was omitted');
+  },
+  'UI-13: diagnostic collection requires a user toggle and exports a local path without rendering protocol content': async () => {
+    let tracing = false;
+    const changes: boolean[] = [];
+    const records: DiagnosticEntry[] = [{ seq: 1, at: '2026-10-23T00:00:00Z', layer: 'provider', kind: 'rpc.receive', sessionId: session.id,
+      attemptId: 'attempt-1', turnId: 'turn-1', method: 'turn/completed', status: 'completed', protocol: { raw: 'DO_NOT_RENDER_PROTOCOL_CONTENT' } }];
+    window.workbench = {
+      diagnostics: async () => records, diagnosticTracing: async () => tracing,
+      setDiagnosticTracing: async (enabled: boolean) => { changes.push(enabled); tracing = enabled; },
+      exportDiagnostics: async () => '/local/diagnostics/export.json',
+    } as unknown as Window['workbench'];
+    await render(<DiagnosticsPanel sessions={[session]} />);
+    await waitFor(() => !(input('.diagnostics-tracing input') as HTMLInputElement).disabled, 'Tracing state did not load');
+    assert(changes.length === 0 && !(input('.diagnostics-tracing input') as HTMLInputElement).checked, 'Mounting diagnostics enabled protocol collection');
+    assert(!document.body.textContent?.includes('DO_NOT_RENDER_PROTOCOL_CONTENT') && document.body.textContent?.includes(session.title), 'Diagnostics exposed protocol content or lost the session label');
+    await change(input('.diagnostics-tracing input'), true);
+    await waitFor(() => tracing && !input('.diagnostics-tracing input').disabled, 'Explicit tracing selection was not saved');
+    await click('runtime:diagnostics.export');
+    await waitFor(() => document.querySelector('.diagnostics-export code')?.textContent === '/local/diagnostics/export.json', 'Diagnostic export did not display its local path');
+    await render(<div />);
+    assert(tracing && Number(changes.length) === 1, 'Leaving diagnostics changed the user recording choice');
+    await render(<DiagnosticsPanel sessions={[session]} />);
+    await waitFor(() => !(input('.diagnostics-tracing input') as HTMLInputElement).disabled, 'Tracing state did not reload');
+    assert((input('.diagnostics-tracing input') as HTMLInputElement).checked && Number(changes.length) === 1, 'Reopening diagnostics hid the backend recording state');
+    await change(input('.diagnostics-tracing input'), false);
+    await waitFor(() => !tracing && changes.length === 2, 'Explicit tracing stop was not saved');
   },
   'UI-14: worktree removal requires a current directory and branch confirmation and retains rejected work': async () => {
     const removals: string[] = []; let closed = 0;

@@ -1,3 +1,4 @@
+import { discoveryHealth } from '../provider-health';
 import { constants } from 'node:fs';
 import { access, stat } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
@@ -164,6 +165,8 @@ export async function createCodexProvider(): Promise<CodexProvider> {
       capabilities: { resume: true, approvals: true, images: true, rewind: true, permissions: true, effort: true },
     },
     async refreshInfo() {
+      let protocolReady: boolean | undefined;
+      let catalogReady: boolean | undefined;
       binary = await resolveCodexBinary();
       version = '';
       catalog = [];
@@ -176,13 +179,14 @@ export async function createCodexProvider(): Promise<CodexProvider> {
           detail = `${version} · ${binary}`;
           detailI18n = undefined;
           const rpc = new JsonRpcProcess({ command: binary, args: ['app-server', '--listen', 'stdio://'] });
-          try { await initialize(rpc); catalog = await modelCatalog(rpc); }
+          try { protocolReady = false; await initialize(rpc); protocolReady = true; catalogReady = false; catalog = await modelCatalog(rpc); catalogReady = true; }
           finally { await rpc.close(); }
         } catch (error) { detail = `Codex CLI 无法运行：${asError(error).message}`; detailI18n = { key: 'runtime:detection.cannotRun', values: { provider: 'Codex CLI', reason: asError(error).message } }; }
       }
       const models: ProviderModel[] = catalog.map(model => ({ id: model.id, name: model.displayName || model.id, free: false,
         efforts: model.supportedReasoningEfforts?.map(effort => effort.reasoningEffort).filter(Boolean) }));
       provider.info = { ...provider.info, available: Boolean(binary && version), detail, detailI18n, models: models.length ? models : undefined,
+        health: discoveryHealth({ binary: Boolean(binary), protocol: protocolReady, catalog: catalogReady, source: 'codex-app-server' }),
         efforts: models.find(model => catalog.find(native => native.id === model.id)?.isDefault)?.efforts };
     },
     async run(context) {

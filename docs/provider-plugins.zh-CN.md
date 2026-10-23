@@ -4,7 +4,43 @@
 
 把每个本地插件放在插件目录的独立子目录里，提供 `manifest.json`，再在 App 中刷新 Providers。插件以本机当前用户权限运行，只加载自己信任的代码。每个 turn 启动一个子进程，不使用 shell。内置 ID `codex`、`claude`、`opencode`、`deepseek-harness`、`cursor` 保留，使用这些 ID 的插件会被拒绝加载。如果多个插件使用同一 ID，这些插件全部拒绝加载。
 
-## Manifest
+## 协议版本
+
+版本 1 继续支持原有严格的纯文本契约。下文未单独说明的章节描述版本 1。
+
+版本 2 在发送任务数据前增加能力握手。Manifest 保留同一组字段，把 `apiVersion` 改为 `2`，只声明已实现能力。`resume`、`approvals` 仍为必填布尔值。可选布尔值有 `images`、`textAttachments`、`structured`、`usage`、`questions`、`effort`、`permissions`。当前插件协议没有实现原生 `rewind` 和 `steer` 操作，不能将这两项声明为 true。
+
+宿主先发送：
+
+```json
+{"type":"initialize","apiVersion":2,"host":"Ensemble","capabilities":{"resume":true,"approvals":true,"images":true,"structured":true}}
+```
+
+插件必须在五秒内回复：
+
+```json
+{"type":"ready","apiVersion":2,"capabilities":{"resume":true,"approvals":true,"images":true,"structured":true}}
+```
+
+实际能力可以是 Manifest 声明的子集。增加未声明能力、在 `ready` 前发送输出、重复发送 `ready`，都会使进程失败。如果实际能力不能处理本次附件或设置，平台在发送任务正文前拒绝该回合。
+
+版本 2 的 `turn` 增加 `apiVersion`、稳定的 `clientUserMessageId`、`settings`、可选 `modelId` 和 `attachments`。附件包含 `id`、`name`、`kind`、`mimeType`、`size`、`sha256`、`encoding: "base64"`、`data`，不发送平台保存文件的本地路径。图片需要 `images`，UTF-8 文本文件需要 `textAttachments`。思考档和权限设置也分别要求声明并协商相应能力。Skill 内容继续经过现有提示词准备流程。
+
+可选输出帧使用与内置适配器相同的规范化事件：
+
+```jsonl
+{"type":"native-turn","turnId":"turn-1"}
+{"type":"structured","event":{"id":"tool-1","kind":"tool","title":"读取文件","status":"completed"}}
+{"type":"usage","usage":{"id":"turn-1","source":"my-agent","scope":"turn","inputTokens":100,"outputTokens":20,"createdAt":"2026-10-23T00:00:00.000Z"}}
+```
+
+`structured`、`usage` 分别要求声明并协商对应能力。Usage 是插件报告的值，不是平台计费保证。结构化事件还接受可选 `nativeId`、`parentId`、`input`、`output` 和计划 `entries`；字符串和数组有运行时 schema 上限。
+
+版本 2 的审批可以带 `questions`，字段为 `id`、`question`、`header`、`options`（label 和可选 description）、`multiSelect`、可选 `allowCustomAnswer`。问题 ID 必须唯一，并要求协商 `questions` 能力。只有问题时，`choices` 可以为空。回答帧为 `{"type":"approval-result","id":"request-id","answers":{"question-id":["选项 label"]}}`；普通审批仍接收 `choiceId`。
+
+原有 result、退出、帧大小、取消和进程树清理规则同时适用于两个版本。版本 2 不授予界面扩展能力，也不构成操作系统沙箱。
+
+## 版本 1 Manifest
 
 `manifest.json` 必须精确包含以下字段。所有字段都必填，包括两个能力开关；manifest 和 `capabilities` 都不接受额外字段。
 

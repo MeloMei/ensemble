@@ -1,3 +1,4 @@
+import { discoveryHealth } from '../provider-health';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { Readable, Writable } from 'node:stream';
 import { pathToFileURL } from 'node:url';
@@ -293,9 +294,11 @@ export async function createAcpProvider(id: string, name: string, discover: () =
         descriptor = await discover();
         if (descriptor.id !== id) throw new Error('ACP provider 身份不符');
         provider.info = { ...provider.info, available: true, detail: descriptor.detail, detailI18n: descriptor.detailI18n, models: descriptor.models, defaultModelId: descriptor.defaultModelId,
+          health: discoveryHealth({ binary: true, catalog: descriptor.models?.length ? true : undefined, source: 'acp-runtime-discovery' }),
           efforts: descriptor.efforts,
           capabilities: { resume: true, approvals: true, images: true, rewind: false, effort: Boolean(descriptor.efforts?.length), permissions: Boolean(descriptor.sessionModes) } };
-      } catch (error) { descriptor = undefined; provider.info = { ...provider.info, available: false, detail: asError(error).message, detailI18n: { key: 'runtime:detection.failed', values: { provider: name, reason: asError(error).message } }, models: undefined, defaultModelId: undefined }; }
+      } catch (error) { descriptor = undefined; provider.info = { ...provider.info, available: false, detail: asError(error).message, detailI18n: { key: 'runtime:detection.failed', values: { provider: name, reason: asError(error).message } }, models: undefined, defaultModelId: undefined,
+        health: discoveryHealth({ binary: undefined, source: 'acp-discovery-error' }) }; }
     },
     async run(context) {
       if (disposed || !descriptor) throw new Error(provider.info.detail);

@@ -4,7 +4,43 @@ English | [简体中文](provider-plugins.zh-CN.md)
 
 Place each local plugin in its own subdirectory of the plugin directory, with a `manifest.json`, then refresh Providers in the app. Plugins run with the permissions of the current local user, so only load code you trust. Each turn starts one child process without a shell. The built-in IDs `codex`, `claude`, `opencode`, `deepseek-harness`, and `cursor` are reserved. Plugins using a reserved ID are rejected; if multiple plugins use the same ID, all of them are rejected.
 
-## Manifest
+## Protocol versions
+
+Version 1 remains supported with its existing strict text-only contract. The sections below describe version 1 unless stated otherwise.
+
+Version 2 adds a capability handshake before any task data is sent. Keep the same manifest fields, set `apiVersion` to `2`, and declare only implemented capabilities. `resume` and `approvals` remain required booleans. Optional booleans are `images`, `textAttachments`, `structured`, `usage`, `questions`, `effort`, and `permissions`. Native `rewind` and `steer` operations are not implemented by this plugin protocol and cannot be declared true.
+
+The host sends:
+
+```json
+{"type":"initialize","apiVersion":2,"host":"Ensemble","capabilities":{"resume":true,"approvals":true,"images":true,"structured":true}}
+```
+
+The plugin must reply within five seconds:
+
+```json
+{"type":"ready","apiVersion":2,"capabilities":{"resume":true,"approvals":true,"images":true,"structured":true}}
+```
+
+The effective capabilities may be a subset of the manifest. Adding an undeclared capability, emitting output before `ready`, or sending `ready` twice fails the process. If the effective set cannot handle the pending attachments or settings, the turn is rejected before its task payload is sent.
+
+The version 2 `turn` adds `apiVersion`, a stable `clientUserMessageId`, `settings`, optional `modelId`, and `attachments`. Each attachment contains `id`, `name`, `kind`, `mimeType`, `size`, `sha256`, `encoding: "base64"`, and `data`. Local owned-file paths are not sent. Images require `images`; UTF-8 text files require `textAttachments`. Requested effort and permission settings require the corresponding capabilities. Skill content continues through the normal prompt enrichment path.
+
+Optional output frames use the same normalized events as built-in adapters:
+
+```jsonl
+{"type":"native-turn","turnId":"turn-1"}
+{"type":"structured","event":{"id":"tool-1","kind":"tool","title":"Read file","status":"completed"}}
+{"type":"usage","usage":{"id":"turn-1","source":"my-agent","scope":"turn","inputTokens":100,"outputTokens":20,"createdAt":"2026-10-23T00:00:00.000Z"}}
+```
+
+`structured` and `usage` each require their declared and negotiated capability. Usage is plugin-reported, not a billing guarantee. Structured events accept optional `nativeId`, `parentId`, `input`, `output`, and plan `entries`; strings and collection sizes are bounded by the runtime schema.
+
+A version 2 approval may contain `questions` with `id`, `question`, `header`, `options` (label and optional description), `multiSelect`, and optional `allowCustomAnswer`. Question IDs must be unique and `questions` requires the negotiated capability. `choices` can be empty for a question-only request. The response is `{"type":"approval-result","id":"request-id","answers":{"question-id":["selected label"]}}`; ordinary approvals still receive `choiceId`.
+
+The existing result, exit, frame-size, cancellation and process-tree rules apply to both versions. Version 2 has no UI-extension or operating-system sandbox grant.
+
+## Version 1 manifest
 
 `manifest.json` must contain exactly these fields. All fields are required, including both capability flags; extra fields are rejected in both the manifest and `capabilities`.
 

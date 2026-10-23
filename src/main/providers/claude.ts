@@ -1,3 +1,4 @@
+import { discoveryHealth } from '../provider-health';
 import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
@@ -86,6 +87,7 @@ export async function createClaudeProvider(): Promise<ProviderAdapter> {
       capabilities: { resume: true, approvals: true, images: true, rewind: false, permissions: true, effort: true },
       efforts: EFFORTS,
       models: models.length ? models : undefined,
+      health: discoveryHealth({ binary: Boolean(binary), catalog: models.length ? true : undefined, source: 'claude-local-configuration' }),
     },
     async run(context) {
       if (!binary || !version) throw new Error(detail);

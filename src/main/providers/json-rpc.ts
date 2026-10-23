@@ -1,6 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createNdjsonDecoder } from './ndjson';
 import { signalProcessTree } from './process-tree';
+import { randomUUID } from 'node:crypto';
+import { diagnosticScope } from '../diagnostics';
 
 export type RpcId = string | number;
 export interface RpcNotification { method: string; params?: unknown }
@@ -37,6 +39,8 @@ export interface JsonRpcOptions {
 }
 
 export class JsonRpcProcess {
+  private readonly diagnosticOwner = diagnosticScope();
+  private readonly diagnosticRuntimeId = randomUUID();
   readonly closed: Promise<RpcExit>;
   private readonly process: ChildProcessWithoutNullStreams;
   private readonly pending = new Map<RpcId, PendingRequest>();
@@ -62,7 +66,7 @@ export class JsonRpcProcess {
     this.process.stderr.setEncoding('utf8');
     this.process.stdout.on('data', (chunk: Buffer) => {
       if (this.terminalError) return;
-      try { decoder.feed(chunk); } catch (error) { this.fail(asError(error)); }
+      try { decoder.feed(chunk); } catch (error) { this.diagnosticFailure('decode.failed'); this.fail(asError(error)); }
     });
     this.process.stderr.on('data', (chunk: string) => { this.stderr = (this.stderr + chunk).slice(-16_384); });
     this.process.stdout.on('error', error => this.fail(error));
@@ -95,7 +99,7 @@ export class JsonRpcProcess {
         pending.dispose();
         reject(error);
       };
-      const timer = setTimeout(() => finish(new Error(`Agent 请求超时：${method}`)), options.timeoutMs ?? 30_000);
+      const timer = setTimeout(() => { this.diagnosticFailure('request.timeout', String(id), method); finish(new Error(`Agent 请求超时：${method}`)); }, options.timeoutMs ?? 30_000);
       const onAbort = () => finish(abortError());
       options.signal?.addEventListener('abort', onAbort, { once: true });
       this.pending.set(id, {
@@ -152,10 +156,14 @@ export class JsonRpcProcess {
     if (this.exit || this.terminalError || this.process.stdin.destroyed || this.process.stdin.writableEnded) {
       throw this.terminalError ?? new Error('Agent 连接已关闭');
     }
+    const current = diagnosticScope();
+    const owner = current?.context.sessionId === this.diagnosticOwner?.context.sessionId ? current : this.diagnosticOwner;
+    owner?.journal.native(owner.context, 'send', this.diagnosticRuntimeId, message);
     this.process.stdin.write(`${JSON.stringify(message)}\n`);
   }
 
   private receive(value: unknown): void {
+    if (this.diagnosticOwner) this.diagnosticOwner.journal.native({ ...this.diagnosticOwner.context, attemptId: undefined, turnId: undefined }, 'receive', this.diagnosticRuntimeId, value);
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Agent 返回了无效的 JSON-RPC 消息');
     const message = value as Record<string, unknown>;
     if (typeof message.method === 'string') {
@@ -203,10 +211,18 @@ export class JsonRpcProcess {
 
   private fail(error: Error): void {
     if (this.terminalError || this.exit) return;
+    this.diagnosticFailure('rpc.failed');
     this.terminalError = error;
     this.rejectPending(error);
     try { signalProcessTree(this.process, 'SIGTERM'); } catch { this.process.kill('SIGTERM'); }
     void this.close().catch(() => {});
+  }
+
+  private diagnosticFailure(kind: string, requestId?: string, method?: string): void {
+    const owner = this.diagnosticOwner;
+    if (!owner) return;
+    owner.journal.record({ providerId: owner.context.providerId, sessionId: owner.context.sessionId,
+      layer: 'provider', kind, runtimeId: this.diagnosticRuntimeId, requestId, method });
   }
 
   private rejectPending(error: Error): void {

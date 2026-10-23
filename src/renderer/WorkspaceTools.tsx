@@ -1,13 +1,14 @@
 import { useTranslation } from 'react-i18next';
 import { formatDate, formatNumber } from '../shared/i18n';
 import { useEffect, useRef, useState } from 'react';
-import { Activity, BellRing, FileText, GitBranch, Plug, Plus, Puzzle, RefreshCw, Wallet } from 'lucide-react';
+import { Activity, BellRing, FileText, GitBranch, ListChecks, Plug, Plus, Puzzle, RefreshCw, Wallet } from 'lucide-react';
 import type { McpSettingsView, NotificationStatus, Session, SkillInfo, Workspace } from '../shared/types';
 import { Modal, type Perform } from './ui';
+import { DiagnosticsPanel } from './DiagnosticsPanel';
 import { ManagedWorktreePanel } from './ManagedWorktreePanel';
 
 interface SkillDraft { token: object; id?: string; name: string; content: string; revision?: string; editable: boolean }
-type ToolTab = 'skills' | 'mcp' | 'usage' | 'worktree';
+type ToolTab = 'skills' | 'mcp' | 'usage' | 'diagnostics' | 'worktree';
 
 export function WorkspaceTools({ workspace, sessions, perform, onClose }: { workspace: Workspace; sessions: Session[]; perform: Perform; onClose: () => void }) {
   const { t } = useTranslation('workspace');
@@ -72,7 +73,7 @@ export function WorkspaceTools({ workspace, sessions, perform, onClose }: { work
     return () => { cancelled = true; skillReadGeneration.current++; };
   }, [workspace.id]);
   const usage = sessions.filter(session => session.cwd === workspace.cwd).flatMap(session => (session.usage ?? []).map(record => ({ ...record, title: session.title })));
-  const tabs: ToolTab[] = ['skills', 'mcp', 'usage', ...(workspace.worktree ? ['worktree' as const] : [])];
+  const tabs: ToolTab[] = ['skills', 'mcp', 'usage', 'diagnostics', ...(workspace.worktree ? ['worktree' as const] : [])];
 
   return <Modal title={t('tools.title')} subtitle={workspace.name} onClose={onClose}>
     <div className="workspace-tools">
@@ -80,9 +81,10 @@ export function WorkspaceTools({ workspace, sessions, perform, onClose }: { work
         {tabs.map(value => <button className={tab === value ? 'selected' : ''} aria-pressed={tab === value} key={value} onClick={() => {
           setTab(value);
           if (value === 'usage') void perform('notification-status', async () => setNotification(await window.workbench.notificationStatus()));
-        }}>{value === 'skills' ? <Puzzle size={15} /> : value === 'mcp' ? <Plug size={15} /> : value === 'usage' ? <Activity size={15} /> : <GitBranch size={15} />}{value === 'skills' ? 'Skills' : value === 'mcp' ? 'MCP' : value === 'usage' ? t('tools.usageTab') : runtimeText('worktree.tab')}</button>)}
+        }}>{value === 'skills' ? <Puzzle size={15} /> : value === 'mcp' ? <Plug size={15} /> : value === 'usage' ? <Activity size={15} /> : value === 'diagnostics' ? <ListChecks size={15} /> : <GitBranch size={15} />}{value === 'skills' ? 'Skills' : value === 'mcp' ? 'MCP' : value === 'usage' ? t('tools.usageTab') : runtimeText(value === 'diagnostics' ? 'diagnostics.tab' : 'worktree.tab')}</button>)}
       </div>
       <div className="tools-content">
+        {tab === 'diagnostics' && <DiagnosticsPanel sessions={sessions} />}
         {tab === 'worktree' && <ManagedWorktreePanel workspace={workspace} onRemoved={onClose} />}
         {tab === 'skills' && <>
           <div className="tools-actions"><span>{t('tools.skillSources')}</span><button className="button small" onClick={() => { skillReadGeneration.current++; editSkill({ token: {}, name: '', content: '---\nname: \ndescription: \n---\n\n', editable: true }); }}><Plus size={13} />{t('tools.newSkill')}</button></div>
