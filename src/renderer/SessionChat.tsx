@@ -7,7 +7,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
-  Activity, Archive, ArrowDown, ArrowUp, ArrowUpLeft, Check, ChevronDown,
+  Activity, Archive, ArrowDown, ArrowUp, ArrowUpLeft, Brain, Check, ChevronDown,
   CircleAlert, CircleStop, Clock3, Copy, CornerDownLeft, FileText, FolderOpen,
   GitFork, Image, ListChecks, LoaderCircle, MessageCircle, PanelsTopLeft,
   Paperclip, Search, Settings2, ShieldCheck, TerminalSquare, Users, X,
@@ -136,9 +136,8 @@ function CollapsibleRegion({ expanded, id, className = '', regionRef, onClose, c
   </div>;
 }
 
-function SessionSettings({ session, provider, workspaceId, active, visible, perform, openSession, onClose }: {
+function SessionSettings({ session, workspaceId, active, visible, perform, openSession, onClose }: {
   session: Session;
-  provider?: ProviderInfo;
   workspaceId: string;
   active: boolean;
   visible: boolean;
@@ -148,7 +147,6 @@ function SessionSettings({ session, provider, workspaceId, active, visible, perf
 }) {
   const { t } = useTranslation('workspace');
   const [skills, setSkills] = useState<SkillInfo[]>([]);
-  const efforts = provider?.models?.find(item => item.id === session.modelId)?.efforts ?? provider?.efforts ?? [];
   const availableSkills = skills.filter(skill => !skill.issue);
   useEffect(() => {
     if (visible) void perform('session-skills', async () => setSkills(await window.workbench.listSkills(workspaceId)));
@@ -158,34 +156,6 @@ function SessionSettings({ session, provider, workspaceId, active, visible, perf
     <div className="session-settings-heading">
       <span><Settings2 size={14} />{t('chat.settings')}</span>
       <IconButton label={t('chat.closeSettings')} onClick={onClose}><X size={14} /></IconButton>
-    </div>
-    <div className="session-settings-fields">
-      <label>{t('chat.model')}<select disabled={active || !provider?.models?.length} value={session.modelId ?? ''}
-          onChange={event => void perform('session-model', () => window.workbench.updateSession(session.id, { modelId: event.target.value || null }))}>
-          <option value="">{t('chat.cliDefault')}</option>
-          {session.modelId && !provider?.models?.some(model => model.id === session.modelId)
-            && <option value={session.modelId} disabled>{session.modelId} {t('chat.modelUnavailable')}</option>}
-          {provider?.models?.map(model => <option key={model.id} value={model.id}>
-            {model.name}{model.free ? t('chat.modelFree') : session.providerId === 'codex' ? t('chat.modelAccount') : t('chat.modelMetered')}
-          </option>)}
-        </select>
-      </label>
-      {efforts.length > 0 && <label>{t('chat.effort')}<select disabled={active} value={session.settings?.effort ?? ''}
-          onChange={event => void perform('session-effort', () => window.workbench.updateSession(session.id, {
-            settings: { effort: event.target.value || null },
-          }))}>
-          <option value="">{t('chat.runtimeDefault')}</option>
-          {efforts.map(effort => <option key={effort}>{effort}</option>)}
-        </select>
-      </label>}
-      {provider?.capabilities.permissions && <label>{t('chat.permissions')}<select disabled={active} value={session.settings?.permission ?? 'review'}
-          onChange={event => void perform('session-permission', () => window.workbench.updateSession(session.id, {
-            settings: { permission: event.target.value as 'review' | 'read-only' },
-          }))}>
-          <option value="review">{t('chat.reviewPermission')}</option>
-          <option value="read-only">{t('common.readOnly')}</option>
-        </select>
-      </label>}
     </div>
     {availableSkills.length > 0 && <div className="session-skills">
       <span>{t('chat.skills')}</span>
@@ -214,6 +184,65 @@ function SessionSettings({ session, provider, workspaceId, active, visible, perf
         <GitFork size={13} />{t('chat.forkCurrent')}</button>
     </div>
   </div>;
+}
+
+
+function ComposerSelect({ label, icon, value, display, disabled, hint, onChange, children, className = '' }: {
+  label: string;
+  icon: ReactNode;
+  value: string;
+  display: string;
+  disabled: boolean;
+  hint: string;
+  onChange: (value: string) => void;
+  children: ReactNode;
+  className?: string;
+}) {
+  return <label className={`composer-select ${className}`} title={disabled ? hint : `${label}: ${display}`}>
+    {icon}<span className="composer-select-value" aria-hidden="true">{display}</span><ChevronDown size={11} aria-hidden="true" />
+    <select aria-label={label} value={value} disabled={disabled} onChange={event => onChange(event.target.value)}>{children}</select>
+  </label>;
+}
+
+function ComposerSettings({ session, provider, disabled, saving, perform }: {
+  session: Session;
+  provider?: ProviderInfo;
+  disabled: boolean;
+  saving: boolean;
+  perform: Perform;
+}) {
+  const { t } = useTranslation('workspace');
+  const efforts = provider?.models?.find(item => item.id === session.modelId)?.efforts ?? provider?.efforts ?? [];
+  const hint = saving ? t('chat.savingSettings') : t('chat.settingsAfterTask');
+  const change = (patch: Parameters<typeof window.workbench.updateSession>[1]) =>
+    void perform(`session-settings-${session.id}`, () => window.workbench.updateSession(session.id, patch));
+  const modelLabel = session.modelId ? modelName(provider, session.modelId) : t('chat.modelDefault', { provider: provider?.name ?? session.providerId });
+  const effortLabel = (effort: string) => t(`chat.effort.${effort}`, { defaultValue: effort });
+  return <>
+    <ComposerSelect className="composer-select-model" label={t('chat.model')} icon={<AgentIcon providerId={session.providerId} size={14} />}
+      value={session.modelId ?? ''} display={modelLabel} disabled={disabled || !provider?.models?.length}
+      hint={disabled ? hint : t('chat.cliDefault')} onChange={value => change({ modelId: value || null })}>
+      <option value="">{provider?.defaultModelId ? t('chat.defaultModelName', { model: modelName(provider, provider.defaultModelId) }) : t('chat.cliDefault')}</option>
+      {session.modelId && !provider?.models?.some(model => model.id === session.modelId)
+        && <option value={session.modelId} disabled>{session.modelId}{t('chat.modelUnavailable')}</option>}
+      {provider?.models?.map(model => <option key={model.id} value={model.id}>
+        {model.name}{model.free ? t('chat.modelFree') : session.providerId === 'codex' ? t('chat.modelAccount') : t('chat.modelMetered')}
+      </option>)}
+    </ComposerSelect>
+    {provider?.capabilities.effort && efforts.length > 0 && <ComposerSelect label={t('chat.effort')} icon={<Brain size={13} />}
+      value={session.settings?.effort ?? ''} display={session.settings?.effort ? effortLabel(session.settings.effort) : t('chat.defaultEffort')}
+      disabled={disabled} hint={hint} onChange={value => change({ settings: { effort: value || null } })}>
+      <option value="">{t('chat.runtimeDefault')}</option>
+      {efforts.map(effort => <option key={effort} value={effort}>{effortLabel(effort)}</option>)}
+    </ComposerSelect>}
+    {provider?.capabilities.permissions && <ComposerSelect label={t('chat.permissions')} icon={<ShieldCheck size={13} />}
+      value={session.settings?.permission ?? 'review'} display={session.settings?.permission === 'read-only' ? t('common.readOnly') : t('chat.reviewPermissionShort')}
+      disabled={disabled} hint={hint} onChange={value => change({ settings: { permission: value as 'review' | 'read-only' } })}>
+      <option value="review">{t('chat.reviewPermission')}</option>
+      <option value="read-only">{t('common.readOnly')}</option>
+    </ComposerSelect>}
+    {saving && <span className="composer-settings-saving" role="status" aria-label={t('chat.savingSettings')}><LoaderCircle size={13} className="spin" /></span>}
+  </>;
 }
 
 function AttachmentChips({ attachments, onRemove }: {
@@ -318,6 +347,7 @@ export function SessionChat({
 
   const active = activeStatuses.has(session.status);
   const busy = pending.has(`send-${session.id}`);
+  const settingsBusy = pending.has(`session-settings-${session.id}`);
   const messages = session.messages.filter(message => message.role !== 'activity' || message.event);
   const activity = session.messages.filter(message => message.role === 'activity' && !message.event);
   const matches = find?.trim()
@@ -363,7 +393,7 @@ export function SessionChat({
 
   const send = () => {
     const prompt = draft.text.trim();
-    if ((!prompt && !attachments.length) || unsupportedAttachments || active || busy || sendLock.current || !provider?.available) return;
+    if ((!prompt && !attachments.length) || unsupportedAttachments || active || busy || settingsBusy || sendLock.current || !provider?.available) return;
     sendLock.current = true;
     void perform(`send-${session.id}`, async () => {
       try {
@@ -421,7 +451,7 @@ export function SessionChat({
     </AnimatePresence>
     <CollapsibleRegion expanded={showSettings} id={settingsId} className="chat-settings-region"
       regionRef={settingsRegion} onClose={() => setShowSettings(false)}>
-      <SessionSettings session={session} provider={provider} workspaceId={workspaceId} active={active} visible={showSettings}
+      <SessionSettings session={session} workspaceId={workspaceId} active={active} visible={showSettings}
         perform={perform} openSession={openSession} onClose={() => setShowSettings(false)} />
     </CollapsibleRegion>
 
@@ -540,16 +570,11 @@ export function SessionChat({
                   onDraftChange({ ...currentDraft.current, attachments: [...(currentDraft.current.attachments ?? []), ...selected].slice(0, 8) });
                 })}><Paperclip size={16} /></IconButton>
               <span className="composer-divider" />
-              <button className="composer-model-button" title={t('chat.settings')} aria-expanded={showSettings} aria-controls={settingsId}
-                onClick={() => setShowSettings(value => !value)}>
-                <AgentIcon providerId={session.providerId} size={14} />
-                <span>{session.modelId ? modelName(provider, session.modelId) : provider?.name ?? session.providerId}</span>
-                <ChevronDown size={12} />
-              </button>
-              {session.settings?.permission === 'read-only' && <span className="composer-permission"><ShieldCheck size={12} />{t('common.readOnly')}</span>}
+              <ComposerSettings session={session} provider={provider} disabled={active || busy || settingsBusy}
+                saving={settingsBusy} perform={perform} />
             </div>
             <motion.button className="send-button" aria-label={t('chat.sendTask')}
-              disabled={(!draft.text.trim() && !attachments.length) || unsupportedAttachments || active || busy || !provider?.available}
+              disabled={(!draft.text.trim() && !attachments.length) || unsupportedAttachments || active || busy || settingsBusy || !provider?.available}
               whileTap={reducedMotion ? undefined : { scale: 0.98 }} transition={transition} onClick={send}>
               {busy ? <LoaderCircle className="spin" size={17} /> : <ArrowUp size={18} />}
             </motion.button>
