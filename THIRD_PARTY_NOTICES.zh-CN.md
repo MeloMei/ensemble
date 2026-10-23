@@ -55,3 +55,10 @@
 - `framer-motion@11.18.2`：MIT。
 
 其余直接依赖与传递依赖保留各自许可。精确版本以 `package-lock.json` 为准，各依赖包保留其许可文件。应用打包保留生产依赖和本仓库的 `licenses/` 目录。本文件记录来源，不替代适用的许可证。
+
+## 运行时品牌素材
+
+`src/renderer/assets/providers/` 下的 Logo 用于标识受支持的运行时。相关商标及图形归 OpenAI 和 Anthropic 所有，不属于 Ensemble 的 MIT 授权范围。展示这些标识不代表官方背书。
+
+- `codex-light.png` 与 `codex-dark.png`：原样取自 OpenAI 官方 macOS 应用 `26.1016.61520`（构建 `21421`，标识 `com.openai.codex`）中的 `icon-codex-light.png` 和 `icon-codex-dark-color.png`。参见 [Codex](https://openai.com/codex/) 与 [OpenAI 品牌规范](https://openai.com/brand/)。
+- `claude.svg`：原样取自 [Anthropic 官方媒体素材包](https://www.anthropic.com/press-kit)中的 `Claude Spark - Clay.svg`，获取日期为 2026 年 10 月 23 日。[原始压缩包](https://www-cdn.anthropic.com/ae59ca4ca194dac9c9dc3bc78c5829468cb0e8af.zip)。

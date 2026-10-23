@@ -1,3 +1,4 @@
+import { AgentIcon } from './AgentIcon';
 import { useTranslation } from 'react-i18next';
 import { formatDate, formatNumber, renderDisplayText } from '../shared/i18n';
 import { validQuestionAnswers } from '../shared/question-answers';
@@ -541,7 +542,7 @@ export function SessionChat({
               <span className="composer-divider" />
               <button className="composer-model-button" title={t('chat.settings')} aria-expanded={showSettings} aria-controls={settingsId}
                 onClick={() => setShowSettings(value => !value)}>
-                <TerminalSquare size={14} />
+                <AgentIcon providerId={session.providerId} size={14} />
                 <span>{session.modelId ? modelName(provider, session.modelId) : provider?.name ?? session.providerId}</span>
                 <ChevronDown size={12} />
               </button>

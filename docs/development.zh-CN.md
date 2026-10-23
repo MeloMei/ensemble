@@ -43,7 +43,7 @@ npm run dev
 | `npm start` | 通过 Electron 打开已有构建，需要先构建。 |
 | `npm run package:mac` | 构建应用，并按当前机器的架构生成 macOS App。 |
 
-打包输出位于 `release/<version>/Ensemble-darwin-<arch>/`。脚本执行 ad hoc 签名，再用 `codesign` 验证签名。产物是本机包，没有 Developer ID 签名和公证。脚本会拒绝非 macOS 主机。
+打包输出为 `release/<version>/Ensemble-<version>-macOS-<arch>.zip`。脚本在临时目录中生成应用，执行 ad hoc 签名并用 `codesign` 验证，压缩后清理临时文件。解压后将 `Ensemble.app` 移到 `/Applications`，更新时替换原来的应用。产物是本机包，没有 Developer ID 签名和公证。脚本会拒绝非 macOS 主机。
 
 包内仅包含构建后的应用、CLI 入口、生产依赖、包信息和许可记录。源码、文档及历史 `release/` 产物不会进入安装包。新增顶层运行时资源时，需要同步更新打包输入清单。
 

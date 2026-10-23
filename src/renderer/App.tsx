@@ -1,9 +1,9 @@
 import { useTranslation } from 'react-i18next';
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import {
-  Aperture, ArrowUpRight, CheckCircle2, Circle, CircleAlert, CircleDot,
+  ArrowUpRight, CheckCircle2, Circle, CircleAlert, CircleDot,
   Folder, GitBranch, Globe, History, Layers2, LoaderCircle, MessageSquare,
-  Network, PanelsTopLeft, PanelRight, Pin, Plus, Search, Settings2, Sparkles, TerminalSquare, X, LayoutGrid, Moon, Sun, Palette, FolderOpen,
+  Network, PanelRight, Pin, Plus, Search, Settings2, TerminalSquare, X, LayoutGrid, Moon, Sun, Palette, FolderOpen,
 } from 'lucide-react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { useAppearance, ThemeOptions } from './appearance';
@@ -12,6 +12,8 @@ import { SPRING_SNAPPY, motionPopover } from './vendor/open-claude-ui/ClaudeMoti
 import type { PromptInput, ProviderInfo, Session, Snapshot, Workspace, WorkspaceTab } from '../shared/types';
 import { searchableMessageText } from '../shared/message-text';
 import { PRODUCT_NAME } from '../shared/app-identity';
+import ensembleLogo from '../../docs/brand/ensemble-avatar.png';
+import { AgentIcon } from './AgentIcon';
 import { FileReviewPanel } from './FileReviewPanel';
 import { WorkspaceTools } from './WorkspaceTools';
 import './features.css';
@@ -23,10 +25,6 @@ import { BusyIcon, DirectoryField, EmptyState, ErrorToast, IconButton, Modal, Mo
 type Page = 'workspace' | 'history' | 'workflows' | 'providers' | 'collaboration';
 type Dialog = 'workspace' | 'agent' | 'preview' | 'codex' | 'tools' | 'appearance' | 'providers' | null;
 const CollaborationViews = lazy(() => import('./CollaborationViews').then(module => ({ default: module.CollaborationViews })));
-
-function AgentIcon({ providerId, size = 16 }: { providerId: string; size?: number }) {
-  return providerId === 'claude' ? <Sparkles size={size} /> : providerId === 'codex' ? <Aperture size={size} /> : <TerminalSquare size={size} />;
-}
 
 function workspaceGroup(workspace: Workspace, sessions: Session[]) {
   const relevant = sessions.filter(session => session.cwd === workspace.cwd);
@@ -152,7 +150,7 @@ export function App() {
   ];
 
   return <div className="workbench">
-    <aside className="workspace-sidebar"><div className="sidebar-titlebar"><span className="brand-symbol"><PanelsTopLeft /></span><span>{PRODUCT_NAME}<span className="brand-period">.</span></span></div>
+    <aside className="workspace-sidebar"><div className="sidebar-titlebar"><img className="brand-symbol" src={ensembleLogo} alt="" /><span>{PRODUCT_NAME}<span className="brand-period">.</span></span></div>
       <nav className="sidebar-navigation" aria-label={t('app.navigation')}><button className="new-workspace-button" onClick={() => setDialog('workspace')}><Plus size={17} /><span>{t('app.newWorkspace')}</span></button><button className={page === 'workspace' ? 'selected' : ''} aria-current={page === 'workspace' ? 'page' : undefined} onClick={() => setPage('workspace')}><LayoutGrid size={17} /><span>{t('app.workspace')}</span><small>{workspaces.length || ''}</small></button><button className={page === 'history' ? 'selected' : ''} aria-current={page === 'history' ? 'page' : undefined} onClick={() => setPage('history')}><History size={17} />{t('app.history')}</button><button className={page === 'collaboration' ? 'selected' : ''} aria-current={page === 'collaboration' ? 'page' : undefined} onClick={() => setPage('collaboration')}><Network size={17} />{t('app.collaboration')}</button><button className={page === 'workflows' ? 'selected' : ''} aria-current={page === 'workflows' ? 'page' : undefined} onClick={() => setPage('workflows')}><GitBranch size={17} />{t('app.workflows')}</button></nav>
       <div className="workspace-sidebar-scroll">{visibleWorkspaces.some(item => item.pinned) && <section className="sidebar-section pinned-section"><div className="sidebar-section-title">{t('app.pinned')}</div>{visibleWorkspaces.filter(item => item.pinned).map(workspaceRow)}</section>}
         <div className="sidebar-section-title workspace-section-heading"><span>{t('app.localProjects')}</span><IconButton label={t('app.searchWorkspaces')} onClick={() => { setSearching(value => !value); setQuery(''); }}><Search size={13} /></IconButton></div>{searching && <div className="workspace-search"><Search size={13} /><input aria-label={t('app.searchWorkspaces')} autoFocus value={query} onChange={event => setQuery(event.target.value)} placeholder={t('app.searchPlaceholder')} /></div>}

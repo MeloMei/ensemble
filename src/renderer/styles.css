@@ -152,9 +152,9 @@ a { color: var(--accent); text-underline-offset: 3px; }
 .workspace-sidebar { width: var(--sidebar-width); flex-shrink: 0; background: var(--sidebar); border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
 .sidebar-titlebar { height: 48px; flex-shrink: 0; display: flex; align-items: center; padding: 0 10px 0 97px; gap: 6px; -webkit-app-region: drag; border-bottom: 1px solid var(--border); }
 .sidebar-titlebar > span { font-weight: 620; font-size: 13px; letter-spacing: -.4px; }
-.brand-symbol { width: 21px; height: 23px; display: grid; place-items: center; border-radius: 6px; background: var(--text); color: var(--bg); transform: rotate(-5deg); }
-.brand-symbol svg { width: 15px; height: 15px; }
+.brand-symbol { display: block; width: 25px; height: 25px; flex-shrink: 0; border-radius: 6px; object-fit: contain; }
 .brand-period { color: var(--accent); }
+.agent-icon { display: block; flex-shrink: 0; object-fit: contain; }
 .sidebar-navigation { padding: 14px 10px 12px; display: flex; flex-direction: column; gap: 2px; }
 .sidebar-navigation button { position: relative; display: flex; align-items: center; gap: 9px; min-height: 32px; padding: 6px 10px; border-radius: var(--radius-control); color: var(--muted); font-size: 12px; text-align: left; }
 .sidebar-navigation button > span { flex: 1; }
@@ -356,13 +356,13 @@ a { color: var(--accent); text-underline-offset: 3px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (max-width: 1250px) {
   :root { --sidebar-width: 215px; --file-width: 290px; }
-  .sidebar-titlebar { padding-left: 99px; gap: 6px; }.sidebar-titlebar > span { font-size: 13px; }.brand-symbol { width: 21px; height: 23px; }
+  .sidebar-titlebar { padding-left: 99px; gap: 6px; }.sidebar-titlebar > span { font-size: 13px; }.brand-symbol { width: 23px; height: 23px; }
   .workspace-header { padding-left: 18px; }.workspace-header-actions { gap: 5px; }.workspace-heading > span { max-width: 90px; }
   .header-button span { display: none; }.item-sidebar { width: 196px; }.history-page { padding: 27px; }
 }
 @media (max-width: 1080px) {
   :root { --sidebar-width: 205px; --file-width: 280px; }
-  .sidebar-titlebar > .brand-symbol { display: none; }.sidebar-titlebar > span { font-size: 14px; }
+  .sidebar-titlebar > span { font-size: 14px; }
   .workspace-heading > span { display: none; }.local-indicator { display: none; }.workspace-tab { max-width: 190px; }
   .history-search { width: 220px; }.history-row { gap: 10px; }.item-sidebar { width: 185px; }.heading-actions { flex-wrap: wrap; }
 }

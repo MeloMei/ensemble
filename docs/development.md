@@ -43,7 +43,7 @@ Stop the backend after closing the desktop application. An open desktop client r
 | `npm start` | Open the already built application with Electron. Run a build first. |
 | `npm run package:mac` | Build and package a macOS application for the current machine's architecture. |
 
-The packaging script writes to `release/<version>/Ensemble-darwin-<arch>/`. It applies an ad hoc signature and verifies that signature with `codesign`. This is a local package, without Developer ID signing or notarization. The script rejects non-macOS hosts.
+The packaging script writes `release/<version>/Ensemble-<version>-macOS-<arch>.zip`. It builds the app in a temporary directory, applies an ad hoc signature, verifies that signature with `codesign`, then archives the app and removes the temporary files. Unzip the archive and move `Ensemble.app` to `/Applications`, replacing the existing copy when updating. This is a local package, without Developer ID signing or notarization. The script rejects non-macOS hosts.
 
 The package includes only the built application, CLI entry point, production dependencies, package metadata, and license records. Source files, documentation, and previous `release/` outputs are excluded. Add any new top-level runtime resource to the packaging input list.
 

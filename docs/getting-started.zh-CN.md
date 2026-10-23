@@ -37,7 +37,7 @@ npm start
 npm run package:mac
 ```
 
-打包脚本按本机架构构建，输出到 `release/<version>/`。脚本会做 ad hoc 签名并校验签名，不做 Developer ID 签名或公证。
+打包脚本按本机架构构建，输出为 `release/<version>/Ensemble-<version>-macOS-<arch>.zip`。解压后将 `Ensemble.app` 移到 `/Applications`，更新时替换原来的应用。打包结束后会清理临时文件。脚本会做 ad hoc 签名并校验签名，不做 Developer ID 签名或公证。
 
 ## 选择界面语言
 

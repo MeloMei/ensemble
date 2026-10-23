@@ -37,7 +37,7 @@ To create a macOS application:
 npm run package:mac
 ```
 
-The packaging script builds for the host architecture and writes to `release/<version>/`. It applies an ad hoc signature and verifies it. It does not perform Developer ID signing or notarization.
+The packaging script builds for the host architecture and writes `release/<version>/Ensemble-<version>-macOS-<arch>.zip`. Unzip it and move `Ensemble.app` to `/Applications`, replacing the existing copy when updating. Temporary build files are removed after packaging. The script applies an ad hoc signature and verifies it. It does not perform Developer ID signing or notarization.
 
 ## Choose the interface language
 
