@@ -19,8 +19,10 @@ let threadId = 'new-owned-thread';
 let approvals = 0;
 let turnNumber = 0;
 let turnId = '';
+let batch;
 if (trace) appendFileSync(trace, JSON.stringify({ fixture: 'spawn', pid: process.pid }) + '\n');
-const send = message => process.stdout.write(JSON.stringify(message) + '\n');
+const send = message => batch ? batch.push(message) : process.stdout.write(JSON.stringify(message) + '\n');
+const flush = () => { const messages = batch; batch = undefined; process.stdout.write(messages.map(message => JSON.stringify(message)).join('\n') + '\n'); };
 const response = (id, result) => send({ id, result });
 const event = (method, params) => send({ method, params: { threadId, ...params } });
 let item = { type: 'agentMessage', id: 'answer', text: 'Hello world' };
@@ -73,6 +75,7 @@ createInterface({ input: process.stdin }).on('line', line => {
     if (mode === 'lost-confirmation') { process.exit(7); }
     if (mode === 'routing') item = { ...item, text: message.params.input[0].text };
     if (turnNumber > 1) event('item/agentMessage/delta', { turnId: 'turn-1', itemId: 'answer', delta: 'stale-turn' });
+    if (mode === 'approval' || mode === 'approval-stale') batch = [];
     response(message.id, { turn: { id: turnId, status: 'inProgress', items: [] } });
     event('turn/started', { turn: { id: turnId, status: 'inProgress', items: [] } });
     if (mode === 'exit') { process.exit(7); }
@@ -98,14 +101,15 @@ createInterface({ input: process.stdin }).on('line', line => {
       event('thread/tokenUsage/updated', { turnId, tokenUsage: { last: { inputTokens: 12, outputTokens: 3, cachedInputTokens: 4, totalTokens: 15 }, total: { inputTokens: 100 }, modelContextWindow: 1000 } });
       event('item/completed', { turnId, item: { type: 'collabAgentToolCall', id: 'collab', tool: 'spawnAgent', receiverThreadIds: ['native-child'], agentsStates: { 'native-child': { status: 'completed', message: 'child result' } }, status: 'completed' } });
     }
-    if (mode === 'approval') {
+    if (mode === 'approval' || mode === 'approval-stale') {
       event('item/started', { turnId, item: { type: 'fileChange', id: 'file', changes: [{ path: '/fixture/result.txt', diff: '+result' }] } });
       send({ id: 'approval-command', method: 'item/commandExecution/requestApproval', params: {
-        threadId, turnId, itemId: 'command', command: 'fixture command', availableDecisions: ['decline'],
+        threadId, turnId: mode === 'approval-stale' ? 'stale-turn' : turnId, itemId: 'command', command: 'fixture command', availableDecisions: ['decline'],
       } });
       send({ id: 'approval-file', method: 'item/fileChange/requestApproval', params: {
-        threadId, turnId, itemId: 'file', availableDecisions: ['accept', 'cancel'],
+        threadId, turnId: mode === 'approval-stale' ? 'stale-turn' : turnId, itemId: 'file', availableDecisions: ['accept', 'cancel'],
       } });
+      flush();
       return;
     }
     stream();
@@ -229,6 +233,10 @@ test('Codex provider uses the app-server protocol and cleans up owned processes'
       assert.deepEqual(inputs.map(input => input.choices.map(choice => choice.id)), [['decline'], ['accept', 'cancel']]);
       assert.match(inputs[1].detail, /\/fixture\/result\.txt/);
       assert.match(inputs[1].detail, /\+result/);
+      process.env.CODEX_ADAPTER_FIXTURE_MODE = 'approval-stale';
+      const staleInputs: ApprovalInput[] = [];
+      await assert.rejects((await createProvider()).run(context({ approve: async input => { staleInputs.push(input); return input.choices[0].id; } })), /审批请求不属于当前任务/);
+      assert.deepEqual(staleInputs, []);
     });
     await t.test('does not treat structured questions as permissions', async () => {
       process.env.CODEX_ADAPTER_FIXTURE_MODE = 'question';
