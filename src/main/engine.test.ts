@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, rename, symlink, realpath } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorkbenchEngine, validateWorkflow } from './engine';
@@ -14,13 +15,110 @@ async function fixture(run: (context: TurnContext) => Promise<void>) {
   const cwd = await mkdtemp(join(tmpdir(), 'workbench-engine-'));
   const store = new StateStore(join(cwd, 'state.json'));
   const engine = new WorkbenchEngine(store, join(cwd, 'plugins'), () => {});
-  new CollaborationCore(store, engine);
+  const core = new CollaborationCore(store, engine);
   const adapter: ProviderAdapter = {
     info: { id: 'test', name: 'Test', source: 'plugin', available: true, detail: 'fixture', capabilities: { approvals: true, resume: true } }, run,
   };
   engine.setProviders([adapter], [], []);
-  return { cwd, store, engine };
+  return { cwd, store, engine, core };
 }
+
+test('rejected transactions preserve live output, native identity, approvals, attempts and persisted results', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const { engine, store, core, cwd } = await fixture(async context => {
+    context.emit({ type: 'text', itemId: 'answer', text: 'before rollback' });
+    await gate;
+    context.emit({ type: 'external-id', id: 'native-after-rollback' });
+    await context.approve({ title: 'After rollback', detail: 'original disclosure', choices: [{ id: 'allow', label: 'Allow' }] });
+    context.emit({ type: 'usage', usage: { id: 'usage', source: 'fixture', scope: 'turn', outputTokens: 3, createdAt: new Date().toISOString() } });
+    context.emit({ type: 'text', itemId: 'answer', text: '\nAFTER ROLLBACK OUTPUT' });
+  });
+  const user = { kind: 'user' } as const;
+  try {
+    const { runId } = await core.call(user, 'create_run', { requestId: 'create', name: 'rollback', cwd, start: true, relationships: [], participants: [{ id: 'work', name: 'work', roles: [], mode: 'managed', providerId: 'test', permissions: { submitTasks: false, sendMessages: false, configureRun: false, publishArtifacts: false } }] }) as { runId: string };
+    const { taskId } = await core.call(user, 'submit_task', { requestId: 'task', runId, participantId: 'work', title: 'live work', prompt: 'go' }) as { taskId: string };
+    await until(() => engine.snapshot().sessions.some(session => session.messages.some(message => message.text === 'before rollback')));
+    const session = store.state.sessions[0], attempt = session.attempts![0];
+    await assert.rejects(core.call(user, 'control_task', { requestId: 'invalid-retry', runId, taskId, action: 'retry' }), /只能重试/);
+    assert.equal(store.state.sessions[0], session); assert.equal(session.attempts![0], attempt);
+    release();
+    await until(() => session.approvals.length === 1);
+    const approval = session.approvals[0];
+    assert.throws(() => store.atomic(state => { state.sessions = []; session.approvals = []; attempt.status = 'failed'; throw new Error('rejected while approving'); }), /rejected while approving/);
+    assert.equal(store.state.sessions[0], session); assert.equal(session.approvals[0], approval); assert.equal(attempt.status, 'waiting_approval');
+    engine.decideApproval(approval.id, 'allow'); await engine.waitSession(session.id);
+    await until(() => store.state.collaboration.tasks[0].status === 'completed');
+    assert.equal(session.status, 'completed'); assert.equal(attempt.status, 'completed'); assert.equal(session.externalId, 'native-after-rollback');
+    assert.equal(session.approvals.length, 0); assert.equal(session.usage?.[0].outputTokens, 3);
+    assert.match(store.state.collaboration.tasks[0].result ?? '', /AFTER ROLLBACK OUTPUT/);
+    await engine.shutdown();
+    const reopened = new StateStore(store.path);
+    try { await reopened.load(); assert.equal(reopened.state.sessions[0].attempts![0].status, 'completed'); assert.match(reopened.state.collaboration.tasks[0].result ?? '', /AFTER ROLLBACK OUTPUT/); assert.equal(reopened.state.sessions[0].externalId, 'native-after-rollback'); }
+    finally { await reopened.close(); }
+  } finally { release(); await engine.shutdown(); await rm(cwd, { recursive: true, force: true }); }
+});
+
+test('project mutation release wakes pending collaboration without another command', async () => {
+  let release!: () => void; let holding = false; let calls = 0;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const { engine, core, store, cwd } = await fixture(async () => { calls++; });
+  let mutation: Promise<void> | undefined;
+  try {
+    const user = { kind: 'user' } as const;
+    const { runId } = await core.call(user, 'create_run', { requestId: 'create', name: 'lock release', cwd, start: true, relationships: [], participants: [{ id: 'work', name: 'work', roles: [], mode: 'managed', providerId: 'test', permissions: { submitTasks: false, sendMessages: false, configureRun: false, publishArtifacts: false } }] }) as { runId: string };
+    mutation = engine.withProjectMutation(cwd, async () => { holding = true; await gate; });
+    await until(() => holding);
+    await core.call(user, 'submit_task', { requestId: 'task', runId, participantId: 'work', title: 'waiting for mutation', prompt: 'go' });
+    assert.equal(store.state.collaboration.tasks[0].status, 'pending'); assert.equal(calls, 0);
+    release(); await mutation;
+    await until(() => store.state.collaboration.tasks[0].status === 'completed');
+    assert.equal(calls, 1);
+  } finally { release(); await mutation; await engine.shutdown(); await rm(cwd, { recursive: true, force: true }); }
+});
+
+test('physical execution revalidates directory and Git identity before provider startup', async t => {
+  for (const replacement of ['before-send', 'during-enrichment', 'git-root'] as const) await t.test(replacement, async () => {
+    let release!: () => void; let enriching = false;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const seen: string[] = [];
+    const { engine, cwd } = await fixture(async context => { seen.push(await realpath(context.session.cwd)); });
+    try {
+      const a = join(cwd, 'a'), b = join(cwd, 'b'); await mkdir(a); await mkdir(b);
+      const sa = await engine.createSession({ title: 'a', providerId: 'test', cwd: a });
+      const sb = await engine.createSession({ title: 'b', providerId: 'test', cwd: b });
+      if (replacement === 'during-enrichment') {
+        engine.setTurnEnricher(async session => { if (session.id === sa) { enriching = true; await gate; } return {}; });
+        engine.sendMessage(sa, 'go'); await until(() => enriching);
+      }
+      if (replacement === 'git-root') execFileSync('git', ['init', '--quiet', cwd]);
+      else { await rename(a, a + '-old'); await symlink(b, a, 'dir'); }
+      if (replacement !== 'during-enrichment') engine.sendMessage(sa, 'go');
+      engine.sendMessage(sb, 'go'); release();
+      await Promise.all([engine.waitSession(sa), engine.waitSession(sb)]);
+      assert.equal(engine.getSession(sa).status, 'failed');
+      assert.match(engine.getSession(sa).error ?? '', /实际路径已变化|Git 根已变化/);
+      assert.deepEqual(seen, replacement === 'git-root' ? [] : [await realpath(b)]);
+    } finally { release(); await engine.shutdown(); await rm(cwd, { recursive: true, force: true }); }
+  });
+});
+
+test('settings patches retain permission across rapid edits and explicitly reset effort', async () => {
+  const { engine, cwd } = await fixture(async () => {});
+  engine.setProviders([{ info: { id: 'test', name: 'Test', source: 'builtin', available: true, detail: '', capabilities: { resume: true, approvals: true, effort: true, permissions: true } }, async run() {} }], [], []);
+  try {
+    const id = await engine.createSession({ title: 'settings', providerId: 'test', cwd });
+    engine.updateSession(id, { settings: { permission: 'review', effort: 'low' } });
+    engine.updateSession(id, { settings: { permission: 'read-only' } });
+    engine.updateSession(id, { settings: { effort: 'high' } });
+    engine.updateSession(id, { settings: { skillIds: ['selected-skill'] } });
+    assert.deepEqual(engine.getSession(id).settings, { permission: 'read-only', effort: 'high', skillIds: ['selected-skill'] });
+    engine.updateSession(id, { settings: { effort: null } });
+    assert.deepEqual(engine.getSession(id).settings, { permission: 'read-only', skillIds: ['selected-skill'] });
+    engine.updateSession(id, { settings: { permission: null, skillIds: null } });
+    assert.deepEqual(engine.getSession(id).settings, {});
+  } finally { await engine.shutdown(); await rm(cwd, { recursive: true, force: true }); }
+});
 
 async function until(predicate: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt++) {

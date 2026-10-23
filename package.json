@@ -11,7 +11,8 @@
     "build": "npm run typecheck && node scripts/build.mjs",
     "start": "electron .",
     "test:core": "tsx --test src/main/engine.test.ts src/main/providers/plugins.test.ts src/main/providers/codex.test.ts",
-    "package:mac": "npm run build && node scripts/package-mac.mjs"
+    "package:mac": "npm run build && node scripts/package-mac.mjs",
+    "test": "node --import tsx --test src/main/*.test.ts src/main/providers/*.test.ts src/renderer/*.test.ts src/shared/*.test.ts"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.9.0",

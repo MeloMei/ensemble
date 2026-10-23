@@ -43,6 +43,8 @@ App 向 stdin 写入一条 UTF-8 JSONL 消息，启动本次 turn：
 
 `externalId` 只在续接已有 Provider 会话时出现。声明 `resume: true` 的插件负责把这个 ID 交给自己的运行时，并为新建的 Provider 会话输出 `external-id`。不支持 resume 的插件不能输出 `external-id`，也不能续接已有 `externalId` 的会话。
 
+`apiVersion: 1` 只接收文字任务，不支持文件或图片附件。带附件的任务会在插件进程启动前明确拒绝，不会丢掉附件后报告成功。请移除附件，或选择支持附件的内置运行时。
+
 ## 输出与审批
 
 stdout 只用于协议事件，每行一个 JSON 对象。诊断日志写 stderr。

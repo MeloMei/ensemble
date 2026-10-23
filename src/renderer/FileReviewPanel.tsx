@@ -71,7 +71,17 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
     if (mode === 'content') {
       const cached = fileDrafts.get(workspace.id, filePath);
       let contents: FileContent;
-      try { contents = await window.workbench.readFile(workspace.id, filePath); }
+      try {
+        const read = await window.workbench.readFile(workspace.id, filePath);
+        if (read === null) {
+          if (token !== fileGeneration.current) return;
+          if (!force) throw new Error(t('files.missing'));
+          if (cached && !fileDrafts.discard(workspace.id, filePath, cached)) throw new Error(t('files.changedDraft'));
+          setSelected(null); setLoadedPath(null); setDiff(null); setExpanded(false);
+          return;
+        }
+        contents = read;
+      }
       catch (failure) {
         const retained = fileDrafts.get(workspace.id, filePath);
         if (force || !retained || (retained.text === retained.original.content && !fileDrafts.isSaving(workspace.id, filePath))) throw failure;
@@ -179,7 +189,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
     {selected && <section className="file-inspector review-inspector" hidden={view === 'pr'}>
       <div className="inspector-title"><FileCode2 size={14} /><span title={selected.path}>{selected.path}</span>{dirty && <span className="review-unsaved" title={t('files.unsavedTitle')}>{t('files.unsaved')}</span>}
         <IconButton label={expanded ? t('files.restorePanel') : t('files.expandPanel')} onClick={() => setExpanded(value => !value)}>{expanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}</IconButton>
-        <IconButton label={t('files.close')} disabled={dirty} onClick={() => { fileGeneration.current++; setSelected(null); setLoadedPath(null); setDiff(null); setExpanded(false); }}><X size={13} /></IconButton>
+        <IconButton label={t('files.close')} disabled={dirty || !!busy} onClick={() => { fileGeneration.current++; setSelected(null); setLoadedPath(null); setDiff(null); setExpanded(false); }}><X size={13} /></IconButton>
       </div>
       <div className="inspector-tabs">
         <button className={selected.mode === 'content' ? 'active' : ''} disabled={!!busy || dirty} onClick={() => run('open', () => load(selected.path, 'content'))}>{t('files.edit')}</button>

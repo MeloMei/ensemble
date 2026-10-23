@@ -43,6 +43,8 @@ The app writes one UTF-8 JSONL message to stdin to start the turn:
 
 `externalId` is included only when resuming an existing provider session. A plugin declaring `resume: true` is responsible for passing this ID to its runtime and emitting `external-id` for a newly created provider session. A plugin without resume support cannot emit `external-id` or resume a session that already has an `externalId`.
 
+Protocol `apiVersion: 1` accepts text prompts only. File and image attachments are not supported. The app rejects a turn containing attachments before starting the plugin process; it never drops them from a successful turn. Remove the attachments or select a built-in provider that supports them.
+
 ## Output and approvals
 
 Use stdout only for protocol events, with one JSON object per line. Write diagnostic logs to stderr.

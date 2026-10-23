@@ -42,9 +42,10 @@ export class CollaborationCore {
   private pumping?: Promise<void>;
   private pumpAgain = false;
   private closing = false;
-  private active = new Map<string, { sessionId: string; engineAttemptId: string; messageIds: string[]; inputArtifactIds: string[] }>();
+  private active = new Map<string, { sessionId: string; engineAttemptId: string; attemptId: string; messageIds: string[]; inputArtifactIds: string[] }>();
   private listeners = new Set<() => void>();
   private unsubscribe: () => void;
+  private unsubscribeProjectAvailability: () => void;
   private deadlines = new Map<string, { at: string; timer: ReturnType<typeof setTimeout> }>();
   private artifacts: AttachmentService;
   private executionAttachments: AttachmentService;
@@ -55,6 +56,7 @@ export class CollaborationCore {
     this.artifacts = new AttachmentService(join(dirname(store.path), 'collaboration-artifacts'));
     this.executionAttachments = options.attachments ?? new AttachmentService(join(dirname(store.path), 'attachments'));
     this.unsubscribe = engine.subscribeExecution(event => this.observe(event));
+    this.unsubscribeProjectAvailability = engine.subscribeProjectAvailability(() => this.schedulePump());
     engine.setWorkflowExecution({ start: id => this.startLegacyWorkflow(id), cancel: id => this.cancelLegacyWorkflow(id),
       retry: (id, stepId) => this.retryLegacyWorkflow(id, stepId), resume: id => this.resumeLegacyWorkflow(id), close: () => this.close() });
   }
@@ -313,7 +315,7 @@ export class CollaborationCore {
     }
     if ((principal.kind === 'session' || principal.kind === 'managed') && operation === 'create_run') {
       const attached = this.store.state.collaboration.tasks.find(task => task.runId === (result as Args).runId && task.sessionId === principal.sessionId && task.status === 'running');
-      if (attached) this.active.set(attached.id, { sessionId: principal.sessionId, engineAttemptId: principal.attemptId, messageIds: [], inputArtifactIds: [] });
+      if (attached) this.active.set(attached.id, { sessionId: principal.sessionId, engineAttemptId: principal.attemptId, attemptId: attached.attemptId!, messageIds: [], inputArtifactIds: [] });
     }
     this.changed();
     this.cancelStoppedExecutions();
@@ -471,10 +473,10 @@ export class CollaborationCore {
     const task = this.task(args.taskId);
     if (task.runId !== run.id || task.participantId !== actor.participantId || task.participantSnapshot.mode !== 'external') throw new Error('此任务未分配给当前外部参与者。');
     if (run.status !== 'running' || task.status !== 'queued') throw new Error('任务尚未就绪或已经被领取。');
+    if (!this.taskCapacityAvailable(run.id)) throw new Error('已达到用户设置的任务并发限制。');
     const attempt = this.newAttempt(task, 'running'); this.moveTask(task, 'running', tx);
     this.event(tx, run.id, 'task.claimed', { source: 'external', participantId: actor.participantId, taskId: task.id, attemptId: attempt.id });
-    const messages = this.store.state.collaboration.messages.filter(message => message.runId === run.id && message.toParticipantId === actor.participantId
-      && ['accepted', 'queued'].includes(message.delivery) && (!message.targetTaskId || message.targetTaskId === task.id));
+    const messages = this.queuedMessages(task, true);
     for (const message of messages) { message.delivery = 'reported'; message.deliveredAt = now(); message.targetTaskId = task.id; message.targetAttemptId = attempt.id;
       this.event(tx, run.id, 'message.reported', { source: 'external', participantId: message.fromParticipantId, targetParticipantId: actor.participantId,
         taskId: task.id, attemptId: attempt.id, messageId: message.id, data: { disposition: 'returned_to_external_client' } }); }
@@ -500,6 +502,7 @@ export class CollaborationCore {
     if (args.targetTaskId && (this.task(args.targetTaskId).runId !== run.id || this.task(args.targetTaskId).participantId !== target.id)) throw new Error('消息目标任务与参与者不一致。');
     this.assertArtifactVersions(run.id, args.artifactIds ?? []);
     const targetTask = args.targetTaskId ? this.task(args.targetTaskId) : this.tasks(run.id).find(task => task.participantId === target.id && !terminal.has(task.status));
+    if (targetTask && terminal.has(targetTask.status)) throw new Error('消息目标任务已经结束，请明确指定仍可接收消息的任务。');
     const message: CollaborationMessage = { id: randomUUID(), runId: run.id, fromParticipantId: actor.participantId, toParticipantId: target.id,
       ...(actor.task ? { taskId: actor.task.id, attemptId: actor.task.attemptId } : {}),
       ...(targetTask ? { targetTaskId: targetTask.id, targetAttemptId: targetTask.attemptId } : {}),
@@ -645,6 +648,13 @@ export class CollaborationCore {
       .finally(() => { this.pumping = undefined; if (this.pumpAgain && !this.closing) this.schedulePump(); });
   }
 
+  private taskCapacityAvailable(runId: string): boolean {
+    const limit = this.run(runId).definitionSnapshot.limits.maxConcurrentTasks;
+    if (limit === undefined) return true;
+    return this.tasks(runId).filter(task => this.active.has(task.id) || task.status === 'running'
+      || task.status === 'queued' && task.participantSnapshot.mode === 'managed').length < limit;
+  }
+
   private async pump(): Promise<void> {
     for (const run of this.store.state.collaboration.runs.filter(item => item.status === 'running')) {
       const candidates = this.tasks(run.id).filter(task => task.status === 'pending' || task.status === 'waiting');
@@ -660,12 +670,10 @@ export class CollaborationCore {
           }
           if (dependencies.some(item => item.status !== 'completed')) continue;
         }
-        const limits = run.definitionSnapshot.limits;
-        const running = this.tasks(run.id).filter(item => item.status === 'running' || item.status === 'queued' && item.participantSnapshot.mode === 'managed');
-        if (limits.maxConcurrentTasks !== undefined && running.length >= limits.maxConcurrentTasks) continue;
         if (task.participantSnapshot.mode === 'external') {
           this.store.atomic((_state, tx) => this.moveTask(this.task(task.id), 'queued', tx)); this.changed(); continue;
         }
+        if (!this.taskCapacityAvailable(run.id)) continue;
         if (this.tasks(run.id).some(item => item.id !== task.id && item.participantId === task.participantId && this.active.has(item.id))) continue;
         try { await this.dispatch(task.id); }
         catch (error) {
@@ -680,7 +688,8 @@ export class CollaborationCore {
 
   private dispatchAllowed(taskId: string): boolean {
     const task = this.task(taskId);
-    return ['pending', 'waiting'].includes(task.status) && this.run(task.runId).status === 'running' && !this.closing;
+    return ['pending', 'waiting'].includes(task.status) && !this.active.has(taskId)
+      && this.run(task.runId).status === 'running' && this.taskCapacityAvailable(task.runId) && !this.closing;
   }
 
   private async dispatch(taskId: string): Promise<void> {
@@ -697,10 +706,12 @@ export class CollaborationCore {
     if (!this.dispatchAllowed(taskId)) return;
     const session = this.engine.getSession(sessionId);
     if (!this.engine.projectAvailable(session.cwd, owner) || ['queued', 'running', 'waiting_approval', 'waiting_children'].includes(session.status)) return;
-    this.engine.updateSession(sessionId, { settings: participant.settings ?? {}, modelId: participant.modelId });
-    const messages = this.store.state.collaboration.messages.filter(message => message.runId === run.id && message.toParticipantId === participant.id
-      && ['accepted', 'queued'].includes(message.delivery) && (!message.targetTaskId || message.targetTaskId === task.id)
-      && (!message.targetAttemptId || message.targetAttemptId === task.attemptId));
+    this.engine.updateSession(sessionId, { settings: {
+      effort: participant.settings?.effort ?? null,
+      permission: participant.settings?.permission ?? null,
+      skillIds: participant.settings?.skillIds ?? null,
+    }, modelId: participant.modelId });
+    const messages = this.queuedMessages(task, true);
     const artifacts = this.inputArtifacts(task, messages.flatMap(message => message.artifactIds));
     const awaiting = (task.waitingForTaskIds ?? []).map(id => this.task(id));
     const artifactText: string[] = [];
@@ -738,7 +749,7 @@ export class CollaborationCore {
           this.store.atomic((_state, tx) => { const task = this.task(taskId); const attempt = task.attempts.at(-1)!; attempt.engineAttemptId = handle.attemptId;
             this.event(tx, run.id, 'task.dispatched', { participantId: participant.id, taskId, attemptId: attempt.id,
               data: { sessionId: handle.sessionId, engineAttemptId: handle.attemptId, definitionVersion: task.definitionVersion } }); });
-          this.active.set(taskId, { sessionId: handle.sessionId, engineAttemptId: handle.attemptId, messageIds: messages.map(item => item.id), inputArtifactIds: artifacts.map(item => item.id) });
+          this.active.set(taskId, { sessionId: handle.sessionId, engineAttemptId: handle.attemptId, attemptId: this.task(taskId).attemptId!, messageIds: messages.map(item => item.id), inputArtifactIds: artifacts.map(item => item.id) });
         } });
     } finally {
       const referenced = new Set(this.store.state.sessions.flatMap(session => session.messages.flatMap(message => message.attachments?.map(attachment => attachment.id) ?? [])));
@@ -751,8 +762,8 @@ export class CollaborationCore {
     if (!entry) { if (observation.type === 'settled') this.schedulePump(); return; }
     const [taskId, active] = entry;
     this.store.atomic((_state, tx) => {
-      const task = this.task(taskId); const attempt = task.attempts.at(-1)!;
-      if (terminal.has(task.status)) return;
+      const task = this.task(taskId); const attempt = task.attempts.find(item => item.id === active.attemptId);
+      if (!attempt || task.attemptId !== active.attemptId || terminal.has(attempt.status) || terminal.has(task.status)) return;
       if (observation.type === 'input') {
         const limits = this.run(task.runId).definitionSnapshot.limits;
         const turns = task.attempts.reduce((sum, item) => sum + (item.physicalTurns ?? 0), 0);
@@ -776,7 +787,8 @@ export class CollaborationCore {
         else if (event.type === 'structured' || event.type === 'usage') this.event(tx, task.runId, `runtime.${event.type}`, { source: 'managed', participantId: task.participantId, taskId, attemptId: attempt.id, data: { turnId: observation.turnId, event } });
       } else {
         const waiting = task.waitingForTaskIds ?? [];
-        if (observation.status === 'completed' && waiting.length) {
+        const messages = this.queuedMessages(task);
+        if (observation.status === 'completed' && (waiting.length || messages.length)) {
           attempt.status = 'completed'; attempt.endedAt = now();
           this.recordOutput(task, attempt, observation.output, tx, 'managed');
           task.result = observation.output; this.moveTask(task, 'waiting', tx);
@@ -784,7 +796,7 @@ export class CollaborationCore {
           observation.output, this.closing && observation.status === 'cancelled' ? '后台停止，任务中断，等待用户明确恢复。' : observation.error, tx, 'managed');
       }
     });
-    if (observation.type === 'settled') this.active.delete(taskId);
+    if (observation.type === 'settled' && this.active.get(taskId) === active) this.active.delete(taskId);
     this.changed();
     if (observation.type === 'settled') this.schedulePump();
   }
@@ -799,6 +811,17 @@ export class CollaborationCore {
       this.recordOutput(task, attempt, output, tx, source);
     }
     task.waitingForTaskIds = []; this.moveTask(task, status, tx);
+    for (const message of this.queuedMessages(task)) {
+      message.delivery = 'failed'; message.error = error ?? `目标任务已${status === 'cancelled' ? '取消' : status === 'interrupted' ? '中断' : status === 'failed' ? '失败' : '结束'}，消息未注入。`;
+      this.event(tx, task.runId, 'message.failed', { participantId: message.fromParticipantId, targetParticipantId: task.participantId,
+        taskId: task.id, attemptId: task.attemptId, messageId: message.id, data: { error: message.error } });
+    }
+  }
+
+  private queuedMessages(task: CollaborationTask, includeUnassigned = false): CollaborationMessage[] {
+    return this.store.state.collaboration.messages.filter(message => message.runId === task.runId
+      && message.toParticipantId === task.participantId && ['accepted', 'queued'].includes(message.delivery)
+      && (message.targetTaskId === task.id || includeUnassigned && !message.targetTaskId));
   }
 
   private recordOutput(task: CollaborationTask, attempt: CollaborationAttempt, output: string, tx: StoreTransaction, source: Source): void {
@@ -926,21 +949,27 @@ export class CollaborationCore {
   private retryLegacyWorkflow(workflowId: string, stepId: string): void {
     const run = this.legacyRun(workflowId); const task = this.tasks(run.id).find(item => item.templateId === stepId);
     if (!task) throw new Error('流程任务不存在。');
-    this.ensureLegacyReservation(run);
-    this.store.atomic((_state, tx) => { this.controlTask({ kind: 'user' }, run, { taskId: task.id, action: 'retry' }, tx);
+    this.updateLegacyRun(run, tx => { this.controlTask({ kind: 'user' }, run, { taskId: task.id, action: 'retry' }, tx);
       const reset = new Set([task.id]);
       for (let changed = true; changed;) { changed = false; for (const task of this.tasks(run.id)) if (task.status === 'failed' && task.error === '依赖任务未成功完成。'
         && task.dependsOn.some(id => reset.has(id))) { reset.add(task.id); task.error = undefined; this.moveTask(task, 'pending', tx); changed = true; } } });
     this.changed(); this.schedulePump();
   }
   private resumeLegacyWorkflow(workflowId: string): void {
-    const run = this.legacyRun(workflowId); this.ensureLegacyReservation(run); this.store.atomic((_state, tx) => {
+    const run = this.legacyRun(workflowId); this.updateLegacyRun(run, tx => {
       if (run.status !== 'running') this.moveRun(run, 'running', tx);
       for (const task of this.tasks(run.id)) if (['failed', 'cancelled', 'interrupted'].includes(task.status)) { task.error = undefined; this.moveTask(task, 'pending', tx); }
     }); this.changed(); this.schedulePump();
   }
-  private ensureLegacyReservation(run: CollaborationRun): void {
-    if (!this.legacyReservations.has(run.id)) this.legacyReservations.set(run.id, this.engine.reserveProject(run.definitionSnapshot.cwd, `collaboration:${run.id}`));
+  private updateLegacyRun(run: CollaborationRun, update: (tx: StoreTransaction) => void): void {
+    let release: (() => void) | undefined;
+    try {
+      this.store.atomic((_state, tx) => {
+        update(tx);
+        if (!this.legacyReservations.has(run.id)) release = this.engine.reserveProject(run.definitionSnapshot.cwd, `collaboration:${run.id}`);
+      });
+    } catch (error) { release?.(); throw error; }
+    if (release) this.legacyReservations.set(run.id, release);
   }
   private syncLegacyTask(task: CollaborationTask): void {
     const run = this.run(task.runId); if (!run.legacyWorkflowId) return;
@@ -979,6 +1008,7 @@ export class CollaborationCore {
       });
       for (const release of this.legacyReservations.values()) release(); this.legacyReservations.clear();
       this.unsubscribe();
+      this.unsubscribeProjectAvailability();
     })();
     return this.closePromise;
   }

@@ -71,3 +71,28 @@ test('an in-flight save preserves later edits, including a return to the old bas
     assert.equal(drafts.open(workspace, file, undefined).original.revision, 'saved-newer');
   }
 });
+
+test('discard removes only the confirmed draft and never a newer edit or an in-flight save', async () => {
+  let summary: UnsavedFileSummary = { count: 0, names: [] };
+  const drafts = new FileDraftStore(value => { summary = value; });
+  const workspace = { id: 'first', name: 'First project' };
+  drafts.open(workspace, file, undefined);
+  drafts.edit(workspace.id, file.path, 'first draft');
+  const confirmed = drafts.get(workspace.id, file.path)!;
+  drafts.open({ id: 'second', name: 'Second project' }, file, undefined);
+  drafts.edit('second', file.path, 'other project');
+  drafts.edit(workspace.id, file.path, 'newer draft');
+  assert.equal(drafts.discard(workspace.id, file.path, confirmed), false);
+  assert.equal(drafts.get(workspace.id, file.path)?.text, 'newer draft');
+  const latest = drafts.get(workspace.id, file.path)!;
+  let finish!: (value: FileContent) => void;
+  const saving = drafts.save(workspace.id, file.path, async () => new Promise(resolve => { finish = resolve; }));
+  await Promise.resolve();
+  assert.equal(drafts.discard(workspace.id, file.path, latest), false);
+  finish({ ...file, content: 'newer draft', revision: 'saved' });
+  await saving;
+  assert.equal(drafts.discard(workspace.id, file.path, drafts.get(workspace.id, file.path)!), true);
+  assert.equal(drafts.get(workspace.id, file.path), undefined);
+  assert.equal(drafts.get('second', file.path)?.text, 'other project');
+  assert.deepEqual(summary, { count: 1, names: ['Second project · notes.txt'] });
+});

@@ -3,12 +3,59 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createServer } from 'node:net';
 import { startBackend } from './backend-server';
 import { BackendClient, connectBackend } from './backend-client';
 import { createWorkbenchService } from './workbench-service';
 import type { Snapshot } from '../shared/types';
 import type { CollaborationArtifactVersion } from '../shared/collaboration';
 import type { LoadedPromptAttachment } from './providers/types';
+
+test('backend restarts on a free port after stale or invalid discovery without displacing an owner', async () => {
+  const dataPath = await mkdtemp(join(tmpdir(), 'workbench-port-recovery-'));
+  const options = { dataPath, command: process.execPath, bridgePath: join(dataPath, 'bridge.cjs'), providers: [] };
+  const holder = createServer();
+  let backend: Awaited<ReturnType<typeof startBackend>> | undefined;
+  try {
+    backend = await startBackend(options);
+    const oldPort = Number(new URL(backend.endpoint.url).port);
+    await backend.close(); backend = undefined;
+    await new Promise<void>((resolve, reject) => { holder.once('error', reject); holder.listen(oldPort, '127.0.0.1', resolve); });
+    backend = await startBackend(options);
+    assert.notEqual(Number(new URL(backend.endpoint.url).port), oldPort);
+    const client = await connectBackend(dataPath);
+    assert.equal(client.endpoint.instanceId, backend.endpoint.instanceId);
+    const source = await readFile(join(dataPath, 'backend.json'), 'utf8');
+    await assert.rejects(startBackend(options), /已有后台持有/);
+    assert.equal(await readFile(join(dataPath, 'backend.json'), 'utf8'), source);
+    await backend.close(); backend = undefined;
+    await writeFile(join(dataPath, 'backend.json'), '{broken');
+    backend = await startBackend(options);
+    assert.equal((await connectBackend(dataPath)).endpoint.instanceId, backend.endpoint.instanceId);
+    await backend.close(); backend = undefined;
+    await writeFile(join(dataPath, 'backend.json'), JSON.stringify({ version: 1, url: 'http://127.0.0.1:999999' }));
+    backend = await startBackend(options);
+    assert.ok(Number(new URL(backend.endpoint.url).port) <= 65535);
+  } finally {
+    await backend?.close();
+    if (holder.listening) await new Promise<void>((resolve, reject) => holder.close(error => error ? reject(error) : resolve()));
+    await rm(dataPath, { recursive: true, force: true });
+  }
+});
+
+test('file reads distinguish missing content from other filesystem and path errors', async () => {
+  const dataPath = await realpath(await mkdtemp(join(tmpdir(), 'workbench-file-missing-')));
+  const service = await createWorkbenchService({ dataPath, command: process.execPath, bridgePath: join(dataPath, 'bridge.cjs'), publish() {}, providers: [] });
+  try {
+    const workspace = await service.engine.createWorkspace({ name: 'files', cwd: dataPath });
+    await writeFile(join(dataPath, 'notes.txt'), 'keep this draft');
+    assert.equal((await service.call('workbench:read-file', [workspace, 'notes.txt']) as { content: string }).content, 'keep this draft');
+    await assert.rejects(service.call('workbench:read-file', [workspace, 'notes.txt/child']), { code: 'ENOTDIR' });
+    await assert.rejects(service.call('workbench:read-file', [workspace, '../outside.txt']), /outside the workspace/);
+    await rm(join(dataPath, 'notes.txt'));
+    assert.equal(await service.call('workbench:read-file', [workspace, 'notes.txt']), null);
+  } finally { await service.shutdown(); await rm(dataPath, { recursive: true, force: true }); }
+});
 
 test('session drafts restore text and attachments, survive a rejected send and clear only on accepted input', async () => {
   const dataPath = await realpath(await mkdtemp(join(tmpdir(), 'workbench-drafts-')));

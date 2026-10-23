@@ -56,6 +56,7 @@ function QuestionApproval({ approval, pending, perform }: ApprovalProps) {
 
   return <form className="approval-card question-approval" onSubmit={submit}>
     <ApprovalHeading title={renderDisplayText(approval.title || t('approval.answerTitle'), approval.titleI18n)} caption={t('approval.answerCaption')} busy={busy} />
+    {approval.detail && <p className="approval-detail">{approval.detail}</p>}
     {questions.map(question => <fieldset key={question.id}>
       <legend>{question.header && <span>{renderDisplayText(question.header, question.headerI18n)}</span>}{question.question}</legend>
       {question.multiSelect && <p className="question-hint">{t('approval.multiple')}</p>}
@@ -170,7 +171,7 @@ function SessionSettings({ session, provider, workspaceId, active, visible, perf
       </label>
       {efforts.length > 0 && <label>{t('chat.effort')}<select disabled={active} value={session.settings?.effort ?? ''}
           onChange={event => void perform('session-effort', () => window.workbench.updateSession(session.id, {
-            settings: { ...session.settings, effort: event.target.value || undefined },
+            settings: { effort: event.target.value || null },
           }))}>
           <option value="">{t('chat.runtimeDefault')}</option>
           {efforts.map(effort => <option key={effort}>{effort}</option>)}
@@ -178,7 +179,7 @@ function SessionSettings({ session, provider, workspaceId, active, visible, perf
       </label>}
       {provider?.capabilities.permissions && <label>{t('chat.permissions')}<select disabled={active} value={session.settings?.permission ?? 'review'}
           onChange={event => void perform('session-permission', () => window.workbench.updateSession(session.id, {
-            settings: { ...session.settings, permission: event.target.value as 'review' | 'read-only' },
+            settings: { permission: event.target.value as 'review' | 'read-only' },
           }))}>
           <option value="review">{t('chat.reviewPermission')}</option>
           <option value="read-only">{t('common.readOnly')}</option>
@@ -192,7 +193,6 @@ function SessionSettings({ session, provider, workspaceId, active, visible, perf
           <input type="checkbox" disabled={active} checked={session.settings?.skillIds?.includes(skill.id) ?? false}
             onChange={event => void perform('session-skill', () => window.workbench.updateSession(session.id, {
               settings: {
-                ...session.settings,
                 skillIds: event.target.checked
                   ? [...(session.settings?.skillIds ?? []), skill.id]
                   : session.settings?.skillIds?.filter(id => id !== skill.id),
@@ -288,6 +288,8 @@ export function SessionChat({
   const [find, setFind] = useState<string | null>(null);
   const [matchIndex, setMatchIndex] = useState(0);
   const attachments = draft.attachments ?? [];
+  const attachmentsSupported = provider?.source !== 'plugin';
+  const unsupportedAttachments = !attachmentsSupported && attachments.length > 0;
   const [rewindMessage, setRewindMessage] = useState<string>();
   const [nativeAgentId, setNativeAgentId] = useState<string>();
   const composing = useRef(false);
@@ -360,7 +362,7 @@ export function SessionChat({
 
   const send = () => {
     const prompt = draft.text.trim();
-    if ((!prompt && !attachments.length) || active || busy || sendLock.current || !provider?.available) return;
+    if ((!prompt && !attachments.length) || unsupportedAttachments || active || busy || sendLock.current || !provider?.available) return;
     sendLock.current = true;
     void perform(`send-${session.id}`, async () => {
       try {
@@ -531,7 +533,7 @@ export function SessionChat({
             }} />
           <div className="composer-bottom">
             <div className="composer-controls">
-              <IconButton label={t('chat.attach')} disabled={active || busy || attachments.length >= 8 || pending.has('attachments')}
+              <IconButton label={attachmentsSupported ? t('chat.attach') : t('chat.pluginAttachmentsUnsupported')} disabled={!attachmentsSupported || active || busy || attachments.length >= 8 || pending.has('attachments')}
                 onClick={() => void perform('attachments', async () => {
                   const selected = await window.workbench.chooseAttachments();
                   onDraftChange({ ...currentDraft.current, attachments: [...(currentDraft.current.attachments ?? []), ...selected].slice(0, 8) });
@@ -546,7 +548,7 @@ export function SessionChat({
               {session.settings?.permission === 'read-only' && <span className="composer-permission"><ShieldCheck size={12} />{t('common.readOnly')}</span>}
             </div>
             <motion.button className="send-button" aria-label={t('chat.sendTask')}
-              disabled={(!draft.text.trim() && !attachments.length) || active || busy || !provider?.available}
+              disabled={(!draft.text.trim() && !attachments.length) || unsupportedAttachments || active || busy || !provider?.available}
               whileTap={reducedMotion ? undefined : { scale: 0.98 }} transition={transition} onClick={send}>
               {busy ? <LoaderCircle className="spin" size={17} /> : <ArrowUp size={18} />}
             </motion.button>
@@ -558,6 +560,7 @@ export function SessionChat({
           <span className="composer-shortcut"><CornerDownLeft size={11} />{t('chat.send')}<span>·</span>{t('chat.newLine')}</span>
         </div>
         {draftError && <p className="composer-note" role="alert"><CircleAlert size={13} />{t('chat.draftError', { error: draftError })}<button className="text-button" onClick={() => onDraftChange(draft)}>{t('chat.retrySave')}</button></p>}
+        {unsupportedAttachments && <p className="composer-note" role="alert"><CircleAlert size={13} />{t('chat.pluginAttachmentsRemove')}</p>}
         {!provider?.available && <p className="composer-note"><CircleAlert size={13} />{t('chat.providerUnavailable')}</p>}
       </div>
     </div>

@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { translate as t, formatDate, renderDisplayText } from '../shared/i18n';
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
 import { ArrowUpRight, Check, Copy, CircleAlert, CircleStop, Folder, FolderOpen, GitBranch, LoaderCircle, MessageSquare, Plug, Plus, RefreshCw, ShieldCheck, TerminalSquare, Trash2, X } from 'lucide-react';
 import type { ProviderInfo, Session, Snapshot, Workflow, WorkflowInput, WorkflowStep, WorkflowStepInput } from '../shared/types';
@@ -64,10 +64,14 @@ export function WorkflowView({ workflow, providers, sessions = [], perform, pend
   const reducedMotion = useReducedMotion();
   const completed = workflow.steps.filter(step => step.status === 'completed').length;
   const displayedSteps = workflow.steps.map(step => ({ step, status: stepDisplayStatus(step, sessions) }));
-  const [resumeConfirmed, setResumeConfirmed] = useState(false);
   const resumable = ['failed', 'cancelled', 'interrupted'].includes(workflow.status);
+  const recoveryKey = JSON.stringify([workflow.id, workflow.updatedAt, workflow.status]);
+  const [confirmedRecovery, setConfirmedRecovery] = useState<string>();
+  const resumeConfirmed = resumable && confirmedRecovery === recoveryKey;
+  useEffect(() => { setConfirmedRecovery(undefined); }, [recoveryKey]);
   const resume = () => void perform(`resume-${workflow.id}`, async () => {
-    await window.workbench.resumeWorkflow(workflow.id); setResumeConfirmed(false);
+    if (!resumeConfirmed) return;
+    await window.workbench.resumeWorkflow(workflow.id); setConfirmedRecovery(undefined);
   });
   return <section className="workflow-detail">
     <div className="detail-heading">
@@ -85,7 +89,7 @@ export function WorkflowView({ workflow, providers, sessions = [], perform, pend
       {workflow.status === 'draft' && <div className="info-note"><GitBranch size={16} />{t('workflow.readyNote')}</div>}
       {resumable && <div className="workflow-recovery">
         <p>{t('workflow.resumeNote')}</p>
-        <label className="dependency-option"><input type="checkbox" checked={resumeConfirmed} onChange={event => setResumeConfirmed(event.target.checked)} /><span>{t('workflow.resumeConfirm')}</span></label>
+        <label className="dependency-option"><input type="checkbox" checked={resumeConfirmed} onChange={event => setConfirmedRecovery(event.target.checked ? recoveryKey : undefined)} /><span>{t('workflow.resumeConfirm')}</span></label>
         <button className="button primary small" disabled={!resumeConfirmed || pending.has(`resume-${workflow.id}`)} onClick={resume}><RefreshCw size={14} />{t('workflow.resume')}</button>
       </div>}
       <div className="run-steps">{displayedSteps.map(({ step, status }, index) => <motion.article className={`run-step step-${status}`} key={step.id} variants={motionMessageFadeUp} initial={reducedMotion ? false : 'initial'} animate="animate">

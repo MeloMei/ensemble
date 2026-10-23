@@ -54,6 +54,9 @@ function cancelled(): Error {
 
 function runPlugin(manifest: Manifest, executable: string, context: TurnContext): Promise<void> {
   if (context.signal.aborted) return Promise.reject(cancelled());
+  if (context.attachments?.length) {
+    return Promise.reject(new Error(`${manifest.name}: plugin protocol apiVersion 1 does not support attachments`));
+  }
   if (context.session.externalId && !manifest.capabilities.resume) {
     return Promise.reject(new Error(`${manifest.name} does not support resuming sessions`));
   }

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { getEventListeners } from 'node:events';
@@ -93,6 +93,23 @@ test('plugin receives literal turn input and forwards text, activity and externa
   });
   assert.deepEqual(events.slice(1), [{ type: 'external-id', id: 'new-id' }, { type: 'text', itemId: 'answer', text: '中文回答' }]);
   assert.equal(getEventListeners(turn.signal, 'abort').length, 0);
+});
+
+test('plugin protocol v1 rejects text and image attachments before starting the process', async () => {
+  const { loaded, root } = await fixture(`import { writeFileSync } from 'node:fs'; writeFileSync('started', 'yes'); ${readTurn} ${send}
+    lines.once('line', line => { send({ type: 'activity', text: line }); send({ type: 'result', status: 'completed' }); lines.close(); });`);
+  for (const kind of ['text', 'image'] as const) {
+    const turn = context({
+      prompt: '',
+      attachments: [{ id: 'attachment', kind, name: kind === 'text' ? 'note.txt' : 'screen.png',
+        mimeType: kind === 'text' ? 'text/plain' : 'image/png', size: 22, sha256: 'fixture',
+        ownedPath: path.join(root, 'attachment'), data: Buffer.from('IMPORTANT_FILE_CONTENT') }],
+    });
+    turn.session.cwd = root;
+    await assert.rejects(loaded.adapters[0].run(turn), /apiVersion 1 does not support attachments/);
+    assert.equal(getEventListeners(turn.signal, 'abort').length, 0);
+  }
+  await assert.rejects(readFile(path.join(root, 'started')), { code: 'ENOENT' });
 });
 
 test('approval response retains the plugin request ID and selected choice', async () => {

@@ -150,6 +150,99 @@ test('external tasks require a user-granted identity and exact attempt, and revo
   } finally { await f.close(); }
 });
 
+test('external claims and managed dispatch share one atomic concurrency allowance', async () => {
+  let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; }); let managedCalls = 0;
+  const f = await fixture(async context => { managedCalls++; await gate; context.emit({ type: 'text', itemId: 'result', text: 'done' }); });
+  try {
+    f.store.atomic(state => state.collaboration.identities.push({ id: 'external', name: 'remote client', tokenHash: 'fixture', createdAt: new Date().toISOString(), policy: { createRuns: false, workspaceRoots: [f.cwd] } }));
+    const external = { kind: 'external', identityId: 'external' } as const;
+    const { runId } = await f.create([{ ...participant('remote', 'external'), binding: { identityId: 'external' } }, participant('work')], { limits: { maxConcurrentTasks: 1 } });
+    const ids: string[] = [];
+    for (let index = 0; index < 3; index++) ids.push((await f.core.call(user, 'submit_task', { requestId: `external-${index}`, runId, participantId: 'remote', title: 'external', prompt: 'work' }) as { taskId: string }).taskId);
+    await until(() => f.store.state.collaboration.tasks.every(task => task.status === 'queued'));
+    const claims = await Promise.allSettled(ids.map((taskId, index) => f.core.call(external, 'claim_task', { requestId: `claim-${index}`, runId, taskId })));
+    assert.equal(claims.filter(result => result.status === 'fulfilled').length, 1);
+    for (const result of claims) if (result.status === 'rejected') assert.match(result.reason.message, /并发限制/);
+    const claimed = f.store.state.collaboration.tasks.find(task => task.status === 'running')!;
+    const remaining = ids.find(id => id !== claimed.id)!;
+    await f.core.call(user, 'submit_task', { requestId: 'managed', runId, participantId: 'work', title: 'managed', prompt: 'work' });
+    assert.equal(managedCalls, 0);
+    await f.core.call(external, 'submit_result', { requestId: 'external-done', runId, taskId: claimed.id, attemptId: claimed.attemptId, status: 'completed', text: 'done' });
+    await until(() => managedCalls === 1);
+    await assert.rejects(f.core.call(external, 'claim_task', { requestId: 'during-managed', runId, taskId: remaining }), /并发限制/);
+    release(); await until(() => f.store.state.collaboration.tasks.find(task => task.participantId === 'work')?.status === 'completed');
+    await f.core.call(external, 'claim_task', { requestId: 'after-managed', runId, taskId: remaining });
+    assert.equal(f.store.state.collaboration.tasks.filter(task => task.status === 'running').length, 1);
+  } finally { release(); await f.close(); }
+});
+
+test('messages received during managed execution resume only their original task at a safe turn', async () => {
+  let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; }); const prompts: string[] = [];
+  const f = await fixture(async context => { prompts.push(context.prompt); if (prompts.length === 1) await gate; context.emit({ type: 'text', itemId: 'result', text: `done-${prompts.length}` }); });
+  try {
+    const { runId } = await f.create(undefined, { limits: { maxAttemptsPerTask: 1, maxTaskTurns: 2 } });
+    const { taskId } = await f.core.call(user, 'submit_task', { requestId: 'first', runId, participantId: 'work', title: 'first', prompt: 'original task' }) as { taskId: string };
+    await until(() => prompts.length === 1);
+    const message = await f.core.call(user, 'send_message', { requestId: 'requirement', runId, toParticipantId: 'work', text: 'IMPORTANT NEW REQUIREMENT' }) as { messageId: string };
+    assert.equal(f.store.state.collaboration.messages[0].delivery, 'queued'); assert.equal(prompts.length, 1);
+    release(); await until(() => f.store.state.collaboration.tasks[0].status === 'completed');
+    const task = f.store.state.collaboration.tasks[0];
+    assert.equal(prompts.length, 2); assert.match(prompts[1], /IMPORTANT NEW REQUIREMENT/);
+    assert.equal(task.attempts[1].continuationOf, task.attempts[0].id); assert.equal(task.attempts[1].retryOf, undefined);
+    assert.equal(f.store.state.collaboration.messages[0].delivery, 'injected');
+    assert.equal(f.store.state.collaboration.messages[0].targetTaskId, taskId);
+    assert.equal(f.store.state.collaboration.messages[0].targetAttemptId, task.attempts[1].id);
+    assert.equal(f.core.queryEvents(user, { runId }).filter(event => event.type === 'message.injected' && event.messageId === message.messageId).length, 1);
+    await assert.rejects(f.core.call(user, 'send_message', { requestId: 'ended-target', runId, toParticipantId: 'work', targetTaskId: taskId, text: 'cannot deliver' }), /已经结束/);
+    await f.core.call(user, 'submit_task', { requestId: 'second', runId, participantId: 'work', title: 'second', prompt: 'unrelated task' });
+    await until(() => f.store.state.collaboration.tasks[1]?.status === 'completed');
+    assert.doesNotMatch(prompts[2], /IMPORTANT NEW REQUIREMENT/);
+  } finally { release(); await f.close(); }
+});
+
+test('messages become explicitly failed when cancellation or a turn limit prevents delivery', async () => {
+  for (const cancel of [false, true]) {
+    let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; }); let calls = 0;
+    const f = await fixture(async context => { calls++; await gate; context.emit({ type: 'text', itemId: 'result', text: 'done' }); });
+    try {
+      const { runId } = await f.create(undefined, { limits: { maxTaskTurns: 1 } });
+      const { taskId } = await f.core.call(user, 'submit_task', { requestId: 'task', runId, participantId: 'work', title: 'one turn', prompt: 'work' }) as { taskId: string };
+      await until(() => calls === 1);
+      await f.core.call(user, 'send_message', { requestId: 'requirement', runId, toParticipantId: 'work', targetTaskId: taskId, text: 'new requirement' });
+      if (cancel) await f.core.call(user, 'control_task', { requestId: 'cancel', runId, taskId, action: 'cancel' });
+      release(); await until(() => f.store.state.collaboration.tasks[0].status === (cancel ? 'cancelled' : 'failed'));
+      const message = f.store.state.collaboration.messages[0];
+      assert.equal(message.delivery, 'failed'); assert.match(message.error!, cancel ? /取消/ : /回合限制/); assert.equal(calls, 1);
+      assert.equal(f.core.queryEvents(user, { runId }).filter(event => event.type === 'message.failed').length, 1);
+    } finally { release(); await f.close(); }
+  }
+});
+
+test('retry accepted during cancellation waits for old physical settlement and ignores its stale callbacks', async () => {
+  let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; }); let calls = 0; let writers = 0; let maximumWriters = 0;
+  const f = await fixture(async context => {
+    calls++; maximumWriters = Math.max(maximumWriters, ++writers);
+    try {
+      if (calls === 1) { await gate; context.emit({ type: 'external-id', id: 'stale-native-id' }); context.emit({ type: 'text', itemId: 'stale', text: 'stale output' }); }
+      else context.emit({ type: 'text', itemId: 'result', text: 'new intent completed' });
+    } finally { writers--; }
+  });
+  try {
+    const { runId } = await f.create(undefined, { limits: { maxConcurrentTasks: 1 } });
+    const { taskId } = await f.core.call(user, 'submit_task', { requestId: 'task', runId, participantId: 'work', title: 'work', prompt: 'work' }) as { taskId: string };
+    await until(() => calls === 1);
+    await f.core.call(user, 'control_task', { requestId: 'cancel', runId, taskId, action: 'cancel' });
+    await f.core.call(user, 'control_task', { requestId: 'retry', runId, taskId, action: 'retry' });
+    assert.equal(f.store.state.collaboration.tasks[0].status, 'pending'); assert.equal(calls, 1); assert.equal(writers, 1);
+    release(); await until(() => f.store.state.collaboration.tasks[0].status === 'completed');
+    const task = f.store.state.collaboration.tasks[0];
+    assert.equal(calls, 2); assert.equal(maximumWriters, 1); assert.equal(task.result, 'new intent completed');
+    assert.deepEqual(task.attempts.map(attempt => attempt.status), ['cancelled', 'completed']);
+    assert.equal(task.attempts[1].retryOf, task.attempts[0].id); assert.equal(task.attempts[0].nativeId, undefined);
+    assert.equal(f.core.queryEvents(user, { runId }).some(event => event.type === 'runtime.bound' && event.data.nativeId === 'stale-native-id'), false);
+  } finally { release(); await f.close(); }
+});
+
 test('actual failed retries consume attempt allowance while normal continuation does not', async () => {
   const f = await fixture(async () => { throw new Error('controlled runtime failure'); });
   try {
@@ -217,6 +310,26 @@ test('new role versions affect new tasks while hard limits without provider supp
     assert.deepEqual(f.store.state.collaboration.tasks.map(task => task.definitionVersion), [1, 2]);
     assert.deepEqual(f.store.state.collaboration.tasks.map(task => task.participantSnapshot.roles), [['用户职责 a'], ['全新职责']]);
     assert.deepEqual(f.store.state.collaboration.tasks.map(task => task.participantSnapshot.permissions.submitTasks), [true, false]);
+  } finally { await f.close(); }
+});
+
+test('managed dispatch clears omitted participant settings from its bound reused session', async () => {
+  let dispatchedSessionId = ''; let dispatchedSettings: TurnContext['session']['settings'];
+  const f = await fixture(async context => {
+    dispatchedSessionId = context.session.id; dispatchedSettings = context.session.settings;
+    context.emit({ type: 'text', itemId: 'result', text: 'done' });
+  });
+  try {
+    const sessionId = await f.engine.createSession({ title: 'existing session', providerId: 'fixture', cwd: f.cwd });
+    f.store.atomic(state => { state.sessions.find(session => session.id === sessionId)!.settings = {
+      effort: 'high', permission: 'read-only', skillIds: ['previous-task-skill'],
+    }; });
+    const { runId } = await f.create([{ ...participant('work'), binding: { sessionId } }]);
+    await f.core.call(user, 'submit_task', { requestId: 'bound-settings', runId, participantId: 'work', title: 'new task', prompt: 'use current task settings' });
+    await until(() => f.store.state.collaboration.tasks[0].status === 'completed');
+    assert.equal(dispatchedSessionId, sessionId);
+    assert.deepEqual(dispatchedSettings, {});
+    assert.deepEqual(f.engine.getSession(sessionId).settings, {});
   } finally { await f.close(); }
 });
 

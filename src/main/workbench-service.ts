@@ -24,7 +24,7 @@ const idSchema = z.string().min(1).max(200);
 const cwdSchema = z.string().min(1).max(4096);
 const promptSchema = z.string().trim().min(1).max(200_000);
 const modelIdSchema = z.string().min(1).max(1000).optional();
-const settingsSchema = z.object({ effort: z.string().min(1).max(100).optional(), permission: z.enum(['review', 'read-only']).optional(), skillIds: z.array(idSchema).max(8).optional() }).strict();
+const settingsSchema = z.object({ effort: z.string().min(1).max(100).nullable().optional(), permission: z.enum(['review', 'read-only']).nullable().optional(), skillIds: z.array(idSchema).max(8).nullable().optional() }).strict();
 const attachmentSchema = z.object({ id: idSchema, name: z.string().min(1).max(300), kind: z.enum(['image', 'text']), mimeType: z.string().min(1).max(100), size: z.number().int().min(0).max(20_000_000), sha256: z.string().regex(/^[a-f0-9]{64}$/), ownedPath: cwdSchema }).strict();
 const promptInputSchema = z.object({ text: z.string().max(200_000), attachments: z.array(attachmentSchema).max(8).optional() }).strict();
 const sessionInputSchema = z.object({ title: z.string().max(200), providerId: idSchema, cwd: cwdSchema, modelId: modelIdSchema }).strict();
@@ -143,7 +143,10 @@ export async function createWorkbenchService(options: {
       engine.addTab(id, { id: randomUUID(), kind: 'preview', url: url.toString() });
     });
     handle('workbench:list-files', (_event, workspaceId: unknown, path: unknown) => workspaceFiles.list(engine.workspace(idSchema.parse(workspaceId)).cwd, z.string().max(4096).optional().parse(path)));
-    handle('workbench:read-file', (_event, workspaceId: unknown, path: unknown) => workspaceFiles.read(engine.workspace(idSchema.parse(workspaceId)).cwd, z.string().min(1).max(4096).parse(path)));
+    handle('workbench:read-file', async (_event, workspaceId: unknown, path: unknown) => {
+      try { return await workspaceFiles.read(engine.workspace(idSchema.parse(workspaceId)).cwd, z.string().min(1).max(4096).parse(path)); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
+    });
     handle('workbench:git-state', (_event, workspaceId: unknown) => workspaceFiles.gitState(engine.workspace(idSchema.parse(workspaceId)).cwd));
     handle('workbench:file-diff', (_event, workspaceId: unknown, path: unknown) => workspaceFiles.diff(engine.workspace(idSchema.parse(workspaceId)).cwd, z.string().min(1).max(4096).parse(path)));
     handle('workbench:send-prompt', (_event, id, input) => engine.sendPrompt(idSchema.parse(id), promptInputSchema.parse(input)));

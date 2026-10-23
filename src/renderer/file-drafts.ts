@@ -36,6 +36,14 @@ export class FileDraftStore {
     this.publish();
   }
 
+  discard(workspaceId: string, path: string, expected: FileDraft): boolean {
+    const key = this.key(workspaceId, path);
+    if (this.entries.get(key) !== expected || this.saves.has(key)) return false;
+    this.entries.delete(key);
+    this.publish();
+    return true;
+  }
+
   save(workspaceId: string, path: string, write: WriteFile): Promise<FileContent> {
     const key = this.key(workspaceId, path);
     const submitted = this.require(workspaceId, path);

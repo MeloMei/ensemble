@@ -387,6 +387,70 @@ test('ACP stop cancels an outstanding approval and removes abort listeners', { t
   } finally { await f.cleanup(); }
 });
 
+test('ACP cancellation before launch acquires no resources', async () => {
+  const f = await fixture();
+  let launches = 0;
+  f.descriptor.launch = async () => { launches++; throw new Error('unexpected launch'); };
+  try {
+    f.controller.abort();
+    await assert.rejects(f.provider.run(f.context), { name: 'AbortError' });
+    assert.equal(launches, 0);
+    assert.equal(f.cleaned(), 0);
+    assert.equal(getEventListeners(f.context.signal, 'abort').length, 0);
+    assert.deepEqual(await f.trace(), []);
+  } finally { await f.cleanup(); }
+});
+
+test('ACP cancellation waits for a slow launch cleanup without spawning its runtime', { timeout: 8000 }, async () => {
+  const f = await fixture();
+  const launch = f.descriptor.launch;
+  let release!: () => void;
+  const preparing = new Promise<void>(resolve => { release = resolve; });
+  let started = false;
+  f.descriptor.launch = async (session, servers) => {
+    started = true;
+    await preparing;
+    return launch(session, servers);
+  };
+  try {
+    const done = f.provider.run(f.context);
+    const rejected = assert.rejects(done, { name: 'AbortError' });
+    await waitFor(() => started, 'launch preparation did not start');
+    f.controller.abort();
+    await new Promise(resolve => setTimeout(resolve, 2100));
+    assert.equal(f.cleaned(), 0);
+    release();
+    await rejected;
+    assert.equal(f.cleaned(), 1);
+    assert.deepEqual(await f.trace(), []);
+    assert.equal(getEventListeners(f.context.signal, 'abort').length, 0);
+  } finally { release(); await f.cleanup(); }
+});
+
+test('ACP disposal owns a pending launch and never starts its runtime', { timeout: 8000 }, async () => {
+  const f = await fixture();
+  const launch = f.descriptor.launch;
+  let release!: () => void;
+  const preparing = new Promise<void>(resolve => { release = resolve; });
+  let started = false;
+  f.descriptor.launch = async (session, servers) => {
+    started = true;
+    await preparing;
+    return launch(session, servers);
+  };
+  try {
+    const done = f.provider.run(f.context);
+    const rejected = assert.rejects(done, { name: 'AbortError' });
+    await waitFor(() => started, 'launch preparation did not start');
+    const disposed = f.provider.dispose!();
+    release();
+    await Promise.all([disposed, rejected]);
+    assert.equal(f.cleaned(), 1);
+    assert.deepEqual(await f.trace(), []);
+    assert.equal(getEventListeners(f.context.signal, 'abort').length, 0);
+  } finally { release(); await f.cleanup(); }
+});
+
 test('ACP dispose withdraws pending approvals and reclaims its process tree', { timeout: 10000 }, async () => {
   const f = await fixture('dispose');
   let asked = false;

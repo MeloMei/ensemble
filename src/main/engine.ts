@@ -4,7 +4,7 @@ import { isAbsolute, relative, sep } from 'node:path';
 import { z } from 'zod';
 import type {
   AgentMail, ApprovalInput, CollaborationCaller, McpServerConfig, PromptInput, ProviderInfo,
-  Session, SessionAttempt, SessionSettings, SessionStatus, Snapshot, TerminalInfo, Workflow,
+  Session, SessionAttempt, SessionSettingsPatch, SessionStatus, Snapshot, TerminalInfo, Workflow,
   WorkflowInput, Workspace, WorkspaceTab,
 } from '../shared/types';
 import type { LoadedPromptAttachment, ProviderAdapter, ProviderEvent } from './providers/types';
@@ -32,6 +32,7 @@ export type TurnEnricher = (session: Session, prompt: string, userMessageId: str
 
 interface LogicalTask {
   sessionId: string; attempt: SessionAttempt; owner: string; controller: AbortController;
+  projectKey: string; releaseProject: () => void;
   done: Promise<void>; resolve: () => void; children: Set<string>; workersCreated: number;
   executing: boolean; queued: boolean; turnKey?: string; rounds: number; maxPhysicalTurns?: number;
 }
@@ -108,6 +109,7 @@ export class WorkbenchEngine {
   private terminals: TerminalInfo[] = [];
   private shutdownPromise?: Promise<void>;
   private observers = new Set<(event: ExecutionObservation) => void>();
+  private projectObservers = new Set<() => void>();
   private workflowExecution?: WorkflowExecution;
 
   constructor(readonly store: StateStore, readonly pluginPath: string, private publish: (snapshot: Snapshot) => void) {}
@@ -133,17 +135,22 @@ export class WorkbenchEngine {
 
   setTurnEnricher(enricher: TurnEnricher): void { this.enricher = enricher; }
   subscribeExecution(observer: (event: ExecutionObservation) => void): () => void { this.observers.add(observer); return () => this.observers.delete(observer); }
+  subscribeProjectAvailability(observer: () => void): () => void { this.projectObservers.add(observer); return () => this.projectObservers.delete(observer); }
   setWorkflowExecution(execution: WorkflowExecution): void { this.workflowExecution = execution; }
   publishState(): void { this.changed(); }
   getSession(id: string): Session { return structuredClone(this.session(id)); }
   assertActiveCaller(caller: CollaborationCaller): void { this.activeCaller(caller); }
   waitSession(id: string): Promise<void> { return this.active.get(id)?.done ?? Promise.resolve(); }
   async prepareSessionExecution(id: string): Promise<void> {
-    const session = this.session(id); const cwd = await validateWorkspace(session.cwd);
-    if (cwd !== session.cwd) throw new Error('项目目录的实际路径已变化，请重新配置执行目录。');
-    await this.prepareExecutionKey(cwd);
+    await this.prepareDirectoryExecution(this.session(id).cwd);
   }
-  reserveProject(cwd: string, owner: string): () => void { this.claimProject(cwd, owner); return () => this.releaseProject(cwd, owner); }
+  private async prepareDirectoryExecution(directory: string): Promise<void> {
+    const cwd = await validateWorkspace(directory);
+    if (cwd !== directory) throw new Error('项目目录的实际路径已变化，请重新配置执行目录。');
+    await this.prepareExecutionKey(cwd);
+    if (await workspaceExecutionKey(cwd) !== this.executionKey(cwd)) throw new Error('项目目录的 Git 根已变化，请重新配置执行目录。');
+  }
+  reserveProject(cwd: string, owner: string): () => void { return this.claimProject(cwd, owner); }
   projectAvailable(cwd: string, owner: string): boolean {
     try { this.assertProjectAvailable(cwd, owner); return true; }
     catch (error) { if (error instanceof ProjectBusyError) return false; throw error; }
@@ -269,7 +276,7 @@ export class WorkbenchEngine {
     this.publish(this.snapshot());
   }
 
-  updateSession(id: string, input: { title?: string; archived?: boolean; settings?: SessionSettings; modelId?: string | null }): void {
+  updateSession(id: string, input: { title?: string; archived?: boolean; settings?: SessionSettingsPatch; modelId?: string | null }): void {
     const session = this.session(id);
     if (this.active.has(id)) throw new Error('请等当前任务结束后修改会话。');
     const provider = this.adapters.get(session.providerId)?.info;
@@ -278,10 +285,19 @@ export class WorkbenchEngine {
       if (!provider) throw new Error('这个 Agent 目前不可用。');
       modelId = selectProviderModel(provider, input.modelId ?? undefined);
     }
-    if (input.settings?.effort !== undefined && !provider?.capabilities.effort) throw new Error('这个运行时未提供思考档设置。');
-    if (input.settings?.permission !== undefined && !provider?.capabilities.permissions) throw new Error('这个运行时未提供权限设置。');
+    if (typeof input.settings?.effort === 'string' && !provider?.capabilities.effort) throw new Error('这个运行时未提供思考档设置。');
+    if (typeof input.settings?.permission === 'string' && !provider?.capabilities.permissions) throw new Error('这个运行时未提供权限设置。');
     session.modelId = modelId;
-    if (input.settings) session.settings = structuredClone(input.settings);
+    if (input.settings) {
+      const patch = structuredClone(input.settings);
+      const settings = { ...session.settings };
+      for (const key of ['effort', 'permission', 'skillIds'] as const) {
+        const value = patch[key];
+        if (value === null) delete settings[key];
+        else if (value !== undefined) Object.assign(settings, { [key]: value });
+      }
+      session.settings = settings;
+    }
     if (input.title !== undefined) session.title = input.title.trim() || '新会话';
     if (input.archived !== undefined) session.archived = input.archived;
     session.updatedAt = now(); this.changed();
@@ -310,14 +326,17 @@ export class WorkbenchEngine {
     const adapter = this.adapters.get(session.providerId);
     if (!message?.nativeTurnId || !adapter?.rewind || !adapter.info.capabilities.rewind) throw new Error('这个回合没有可用的原生对话回退入口。');
     const owner = `rewind:${id}`;
-    this.claimProject(session.cwd, owner);
+    await this.prepareSessionExecution(id);
+    this.assertOpen();
+    if (this.active.has(id)) throw new Error('请先停止任务再回退。');
+    const release = this.claimProject(session.cwd, owner);
     try {
       await adapter.rewind(structuredClone(session), message.nativeTurnId);
       session.messages.splice(index);
       session.draft = { text: message.text, attachments: structuredClone(message.attachments) };
       session.error = undefined; this.transition(session, 'idle');
       return structuredClone(session.draft);
-    } finally { this.releaseProject(session.cwd, owner); }
+    } finally { release(); }
   }
 
   private acceptEvent(session: Session, task: LogicalTask, job: QueuedTurn, turnKey: string, event: ProviderEvent): void {
@@ -393,17 +412,18 @@ export class WorkbenchEngine {
   async withProjectMutation<T>(cwd: string, operation: () => Promise<T>): Promise<T> {
     this.assertOpen();
     const canonical = await validateWorkspace(cwd);
-    await this.prepareExecutionKey(canonical);
+    await this.prepareDirectoryExecution(canonical);
     this.assertOpen();
     const owner = 'mutation:' + randomUUID();
-    this.claimProject(canonical, owner);
+    const key = this.executionKey(canonical);
+    const release = this.claimProject(canonical, owner);
     const pending = Promise.resolve().then(operation);
     this.projectMutations.add(pending);
     try { return await pending; }
     finally {
       this.projectMutations.delete(pending);
-      this.releaseProject(canonical, owner);
-      this.drain(this.executionKey(canonical));
+      release();
+      this.drain(key);
     }
   }
 
@@ -417,15 +437,20 @@ export class WorkbenchEngine {
     const existing = this.projectClaims.get(key);
     if (existing && existing.owner !== owner) throw new ProjectBusyError('这个项目已有会话或编排运行，请等它结束后再开始。');
   }
-  private claimProject(cwd: string, owner: string): void {
+  private claimProject(cwd: string, owner: string): () => void {
     this.assertProjectAvailable(cwd, owner);
-    const existing = this.projectClaims.get(this.executionKey(cwd));
-    this.projectClaims.set(this.executionKey(cwd), { owner, count: (existing?.count ?? 0) + 1 });
+    const key = this.executionKey(cwd);
+    const existing = this.projectClaims.get(key);
+    this.projectClaims.set(key, { owner, count: (existing?.count ?? 0) + 1 });
+    let released = false;
+    return () => { if (!released) { released = true; this.releaseProject(key, owner); } };
   }
-  private releaseProject(cwd: string, owner: string): void {
-    const existing = this.projectClaims.get(this.executionKey(cwd));
+  private releaseProject(key: string, owner: string): void {
+    const existing = this.projectClaims.get(key);
     if (existing?.owner !== owner) return;
-    if (existing.count === 1) this.projectClaims.delete(this.executionKey(cwd)); else existing.count--;
+    if (existing.count > 1) { existing.count--; return; }
+    this.projectClaims.delete(key);
+    for (const observer of this.projectObservers) observer();
   }
 
   private startTask(id: string, input: PromptInput, owner = id): Promise<void> {
@@ -439,7 +464,8 @@ export class WorkbenchEngine {
     if (!input.text.trim() && !input.attachments?.length) throw new Error('请输入任务。');
     if (this.active.has(id)) throw new Error('这个会话正在运行。');
     if (!this.adapters.get(session.providerId)?.info.available) throw new Error('这个 Agent 目前不可用。');
-    this.claimProject(session.cwd, owner);
+    const projectKey = this.executionKey(session.cwd);
+    const releaseProject = this.claimProject(session.cwd, owner);
     const userMessageId = randomUUID();
     const previous = session.attempts?.at(-1);
     const attempt: SessionAttempt = { id: randomUUID(), status: 'queued', prompt: input.text, userMessageId,
@@ -447,21 +473,21 @@ export class WorkbenchEngine {
     session.attempts ??= []; session.attempts.push(attempt);
     let resolve!: () => void;
     const done = new Promise<void>(accept => { resolve = accept; });
-    const task: LogicalTask = { sessionId: id, attempt, owner, controller: new AbortController(), done, resolve,
+    const task: LogicalTask = { sessionId: id, attempt, owner, projectKey, releaseProject, controller: new AbortController(), done, resolve,
       children: new Set(), workersCreated: 0, executing: false, queued: false, rounds: 0, maxPhysicalTurns: options.maxPhysicalTurns };
     this.active.set(id, task); session.error = undefined;
     if (session.draft?.text.trim() === input.text.trim()
       && JSON.stringify(session.draft.attachments ?? []) === JSON.stringify(input.attachments ?? [])) delete session.draft;
     const handle = { sessionId: id, attemptId: attempt.id, done };
     try { options.accepted?.(handle); }
-    catch (error) { this.active.delete(id); session.attempts.pop(); this.releaseProject(session.cwd, owner); throw error; }
+    catch (error) { this.active.delete(id); session.attempts.pop(); releaseProject(); throw error; }
     this.enqueue(task, input, userMessageId); return handle;
   }
 
   private enqueue(task: LogicalTask, input: PromptInput, userMessageId = randomUUID()): void {
     const session = this.session(task.sessionId);
     session.messages.push({ id: userMessageId, role: 'user', text: input.text, attachments: structuredClone(input.attachments), createdAt: now() });
-    const key = this.executionKey(session.cwd);
+    const key = task.projectKey;
     const queue = this.queues.get(key) ?? [];
     queue.push({ task, input: structuredClone(input), userMessageId }); this.queues.set(key, queue);
     task.queued = true; this.transition(session, 'queued'); this.drain(key);
@@ -490,6 +516,7 @@ export class WorkbenchEngine {
     try {
       if (task.maxPhysicalTurns !== undefined && task.rounds > task.maxPhysicalTurns) throw new Error(`协作已达到 ${task.maxPhysicalTurns} 个回合，请检查结果后手动继续。`);
       enrichment = await this.enricher?.(structuredClone(session), job.input.text, job.userMessageId, task.controller.signal);
+      await this.prepareSessionExecution(session.id);
       if (task.controller.signal.aborted) throw new Error('任务已停止。');
       const adapter = this.adapters.get(session.providerId);
       if (!adapter?.info.available) throw new Error('这个 Agent 目前不可用。');
@@ -531,7 +558,7 @@ export class WorkbenchEngine {
     const session = this.session(task.sessionId);
     session.error = error; task.attempt.error = error; task.attempt.endedAt = now();
     this.transition(session, status); this.active.delete(session.id);
-    this.releaseProject(session.cwd, task.owner);
+    task.releaseProject();
     const parent = session.parentSessionId ? this.active.get(session.parentSessionId) : undefined;
     if (parent && session.parentAttemptId === parent.attempt.id && parent.children.delete(session.id)) {
       this.store.state.mails.push({ id: randomUUID(), fromSessionId: session.id, toSessionId: parent.sessionId,
