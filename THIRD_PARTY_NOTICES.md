@@ -55,3 +55,10 @@ The adaptation uses an exclusive temporary file in the same directory, write-and
 - `framer-motion@11.18.2`: MIT.
 
 Additional direct and transitive dependencies retain their respective licenses. Exact versions are recorded in `package-lock.json`; dependency packages carry their own license files. The application package retains production dependencies and the repository `licenses/` directory. This notice is an attribution record and does not replace any applicable license.
+
+## Runtime brand assets
+
+The logos under `src/renderer/assets/providers/` identify supported runtimes. They remain the trademarks and artwork of OpenAI and Anthropic and are not covered by Ensemble's MIT license. Their display does not imply endorsement.
+
+- `codex-light.png` and `codex-dark.png`: unmodified `icon-codex-light.png` and `icon-codex-dark-color.png` from OpenAI's official macOS app, version `26.1016.61520` (build `21421`, bundle `com.openai.codex`). See [Codex](https://openai.com/codex/) and [OpenAI brand guidelines](https://openai.com/brand/).
+- `claude.svg`: unmodified `Claude Spark - Clay.svg` from the [Anthropic press kit](https://www.anthropic.com/press-kit), retrieved October 23, 2026. [Source archive](https://www-cdn.anthropic.com/ae59ca4ca194dac9c9dc3bc78c5829468cb0e8af.zip).
