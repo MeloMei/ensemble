@@ -3,9 +3,11 @@ import type { Snapshot, UnsavedFileSummary, WorkbenchAPI } from '../shared/types
 import { DraftWriter } from '../shared/draft-writer';
 import { TerminalInputWriter } from '../shared/terminal-input-writer';
 import type { LanguageState } from '../shared/i18n';
+import type { BackendConnectionState, TerminalOutputEvent } from '../shared/backend';
 
 const drafts = new DraftWriter((id, input) => ipcRenderer.invoke('workbench:save-session-draft', id, input));
 const terminalInputs = new TerminalInputWriter((id, data) => ipcRenderer.invoke('workbench:write-terminal', id, data));
+const terminalObservers = new Map<string, number>();
 let unsavedFiles: UnsavedFileSummary = { count: 0, names: [] };
 window.addEventListener('beforeunload', event => {
   if (unsavedFiles.count || drafts.hasPending || terminalInputs.hasPending) {
@@ -20,6 +22,35 @@ ipcRenderer.on('workbench:prepare-close', (_event, requestId: string) => {
 });
 
 const api: WorkbenchAPI = {
+  getConnection: () => ipcRenderer.invoke('workbench:get-connection'),
+  onConnectionChanged: listener => {
+    const receive = (_event: Electron.IpcRendererEvent, state: BackendConnectionState) => listener(state);
+    ipcRenderer.on('workbench:connection-changed', receive);
+    return () => ipcRenderer.removeListener('workbench:connection-changed', receive);
+  },
+  watchSessions: ids => ipcRenderer.invoke('workbench:watch-sessions', ids),
+  sessionHistory: (id, before, limit) => ipcRenderer.invoke('workbench:session-history', id, before, limit),
+  sessionHistoryAround: (id, messageId, limit) => ipcRenderer.invoke('workbench:session-history-around', id, messageId, limit),
+  sessionHistoryAfter: (id, after, limit) => ipcRenderer.invoke('workbench:session-history-after', id, after, limit),
+  sessionSearch: (id, query, limit) => ipcRenderer.invoke('workbench:session-search', id, query, limit),
+  searchSessions: (query, includeArchived) => ipcRenderer.invoke('workbench:search-sessions', query, includeArchived),
+  onTerminalOutput: (id, listener) => {
+    const receive = (_event: Electron.IpcRendererEvent, event: TerminalOutputEvent) => {
+      if (event.terminalId === id) listener(event);
+    };
+    ipcRenderer.on('workbench:terminal-output', receive);
+    const observers = terminalObservers.get(id) ?? 0;
+    terminalObservers.set(id, observers + 1);
+    ipcRenderer.send('workbench:watch-terminal', id);
+    let released = false;
+    return () => {
+      if (released) return; released = true;
+      ipcRenderer.removeListener('workbench:terminal-output', receive);
+      const remaining = (terminalObservers.get(id) ?? 1) - 1;
+      if (remaining) terminalObservers.set(id, remaining);
+      else { terminalObservers.delete(id); ipcRenderer.send('workbench:unwatch-terminal', id); }
+    };
+  },
   markSessionSeen: (id, revision) => ipcRenderer.invoke('workbench:mark-session-seen', id, revision),
   commandReceipt: id => ipcRenderer.invoke('workbench:command-receipt', id),
   updateQueuedPrompt: (id, itemId, input) => ipcRenderer.invoke('workbench:update-queued-prompt', id, itemId, input),

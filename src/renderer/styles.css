@@ -192,6 +192,10 @@ a { color: var(--accent); text-underline-offset: 3px; }
 .sidebar-connection { display: flex; align-items: center; gap: 7px; color: var(--muted); padding: 12px 19px; font-size: 11px; }
 .sidebar-connection i { width: 5px; height: 5px; border-radius: 50%; background: var(--success); }
 .sidebar-connection small { margin-left: auto; color: var(--dim); font-size: 11px; }
+.sidebar-connection:not(.connection-connected) i { background: var(--warning); }
+.sidebar-connection.connection-failed i, .sidebar-connection.connection-stopped i { background: var(--danger); }
+.connection-banner { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; flex-shrink: 0; padding: 8px 20px; color: var(--warning); border-bottom: 1px solid var(--border); background: var(--surface); font-size: 11px; }
+.connection-banner small { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
 .session-attention { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; color: var(--accent); font-size: 10px; line-height: 1.7; white-space: nowrap; }
 .session-attention i, .workspace-unread { display: inline-block; flex-shrink: 0; background: currentColor; }
 .session-attention i { width: 4px; height: 4px; border-radius: 50%; }
@@ -313,6 +317,8 @@ a { color: var(--accent); text-underline-offset: 3px; }
 .history-archive { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); margin-bottom: 20px; }
 .history-list { display: flex; flex-direction: column; }
 .history-row { display: flex; align-items: center; gap: 14px; min-height: 68px; padding: 11px 10px; border-bottom: 1px solid var(--border); border-radius: var(--radius-control); }
+.history-session-view { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.history-session-toolbar { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; gap: 12px; padding: 7px 20px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 11px; }
 .history-row:hover { background: var(--surface); }
 .history-open { flex: 1; min-width: 0; display: flex; align-items: center; gap: 14px; text-align: left; padding: 0; }
 .history-icon { width: 30px; height: 32px; display: grid; place-items: center; color: var(--muted); border-radius: var(--radius-control); background: var(--surface); flex-shrink: 0; }

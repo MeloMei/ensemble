@@ -1,6 +1,7 @@
 import type { CollaborationEvent, CollaborationState, CollaborationIdentity } from './collaboration';
 import type { LanguagePreference, LanguageState } from './i18n';
 import type { DisplayText } from './display-text';
+import type { BackendConnectionState, SessionHistoryPage, TerminalOutputEvent } from './backend';
 
 export type SessionStatus = 'idle' | 'queued' | 'running' | 'waiting_approval' | 'waiting_children' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
 export type StepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'blocked' | 'cancelled';
@@ -109,6 +110,9 @@ export interface Session {
   approvals: Approval[];
   createdAt: string;
   updatedAt: string;
+  messageCount?: number;
+  historyCursor?: string;
+  historyLoaded?: boolean;
   queue?: SessionQueueItem[];
   queuePaused?: boolean;
   queueHoldReason?: string;
@@ -178,6 +182,15 @@ export interface Snapshot {
 export interface UnsavedFileSummary { count: number; names: string[] }
 
 export interface WorkbenchAPI {
+  getConnection(): Promise<BackendConnectionState>;
+  onConnectionChanged(listener: (state: BackendConnectionState) => void): () => void;
+  watchSessions(ids: string[]): Promise<void>;
+  sessionHistory(id: string, before?: string, limit?: number): Promise<SessionHistoryPage>;
+  sessionHistoryAround(id: string, messageId: string, limit?: number): Promise<SessionHistoryPage & { afterCursor?: string; hasAfter: boolean }>;
+  sessionHistoryAfter(id: string, after: string, limit?: number): Promise<SessionHistoryPage & { afterCursor?: string; hasAfter: boolean }>;
+  sessionSearch(id: string, query: string, limit?: number): Promise<{ messages: Message[]; truncated: boolean }>;
+  searchSessions(query: string, includeArchived?: boolean): Promise<{ sessionIds: string[] }>;
+  onTerminalOutput(id: string, listener: (event: TerminalOutputEvent) => void): () => void;
   markSessionSeen(id: string, revision: number): Promise<void>;
   commandReceipt(commandId: string): Promise<SessionCommandReceipt | undefined>;
   updateQueuedPrompt(id: string, itemId: string, input: PromptInput): Promise<void>;

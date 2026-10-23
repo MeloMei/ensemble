@@ -53,6 +53,7 @@ The adaptation uses an exclusive temporary file in the same directory, write-and
 - `@xyflow/react@12.12.0`: MIT; Copyright (c) 2019-2025 webkid GmbH. See [licenses/React-Flow-MIT.txt](licenses/React-Flow-MIT.txt).
 - `elkjs@0.12.0`: EPL-2.0, used without modification. See [licenses/ELK-EPL-2.0.md](licenses/ELK-EPL-2.0.md). Corresponding source is available from [kieler/elkjs at 0.12.0](https://github.com/kieler/elkjs/tree/v0.12.0).
 - `framer-motion@11.18.2`: MIT.
+- `@tanstack/react-virtual@3.14.22` and `@tanstack/virtual-core`: MIT; Copyright (c) 2021-present Tanner Linsley. Used for variable-height conversation virtualization.
 
 Additional direct and transitive dependencies retain their respective licenses. Exact versions are recorded in `package-lock.json`; dependency packages carry their own license files. The application package retains production dependencies and the repository `licenses/` directory. This notice is an attribution record and does not replace any applicable license.
 

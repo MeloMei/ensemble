@@ -2,7 +2,8 @@ import { AgentIcon } from './AgentIcon';
 import { useTranslation } from 'react-i18next';
 import { formatDate, formatNumber, renderDisplayText } from '../shared/i18n';
 import { validQuestionAnswers } from '../shared/question-answers';
-import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode, type Ref } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode, type Ref } from 'react';
+import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -15,10 +16,10 @@ import {
 import type {
   Approval, Message, ProcessEvent, PromptAttachment, PromptInput, ProviderInfo, Session, SkillInfo, UsageRecord,
 } from '../shared/types';
-import { searchableMessageText } from '../shared/message-text';
 import { IconButton, Modal, Status, modelName, pathName, type Perform } from './ui';
 import { SPRING_SNAPPY } from './vendor/open-claude-ui/ClaudeMotionPresets';
 import { useClaudeScrollPinning } from './vendor/open-claude-ui/useClaudeScrollPinning';
+import { useSessionHistory, type IndexedMessages } from './useSessionHistory';
 import { promptCommandInput, runSessionCommand, runSessionStopCommand } from './session-command';
 import { sessionIsUnread } from './session-attention';
 import './SessionChat.css';
@@ -31,9 +32,11 @@ interface SessionChatProps {
   draft: PromptInput;
   draftError?: string;
   onDraftChange: (value: PromptInput, expected?: PromptInput) => void;
-  workspaceId: string;
+  workspaceId?: string;
+  readOnly?: boolean;
   sessions?: Session[];
   openSession: (id: string) => void;
+  connected?: boolean;
 }
 
 type ApprovalProps = Pick<SessionChatProps, 'pending' | 'perform'> & { approval: Approval };
@@ -313,16 +316,16 @@ function UsageBadge({ usage }: { usage?: UsageRecord }) {
   return <span className="session-usage">{t('usage.outputTokens', { tokens: usage.outputTokens === undefined ? '—' : formatNumber(usage.outputTokens) })}</span>;
 }
 
-function DeliveryState({ message, sessionId, pending, perform }: {
-  message: Message; sessionId: string; pending: Set<string>; perform: Perform;
+function DeliveryState({ message, sessionId, pending, perform, connected, readOnly }: {
+  message: Message; sessionId: string; pending: Set<string>; perform: Perform; connected: boolean; readOnly: boolean;
 }) {
   const { t } = useTranslation('workspace');
   const delivery = message.delivery;
   if (!delivery) return null;
   return <div className={`message-delivery delivery-${delivery.status}`}>
     <span title={delivery.reason}>{t(`chat.delivery.${delivery.status}`)}</span>
-    {(delivery.status === 'unknown' || delivery.status === 'pending') && <button
-      disabled={pending.has(`reconcile-${sessionId}`)}
+    {!readOnly && (delivery.status === 'unknown' || delivery.status === 'pending') && <button
+      disabled={!connected || pending.has(`reconcile-${sessionId}`)}
       onClick={() => void perform(`reconcile-${sessionId}`, () => window.workbench.reconcileSessionDelivery(sessionId))}>
       {t('chat.checkDelivery')}
     </button>}
@@ -330,7 +333,7 @@ function DeliveryState({ message, sessionId, pending, perform }: {
   </div>;
 }
 
-function PromptQueue({ session, provider, pending, perform }: Pick<SessionChatProps, 'session' | 'provider' | 'pending' | 'perform'>) {
+function PromptQueue({ session, provider, pending, perform, connected }: Pick<SessionChatProps, 'session' | 'provider' | 'pending' | 'perform'> & { connected: boolean }) {
   const { t } = useTranslation('workspace');
   const [editing, setEditing] = useState<{ id: string; input: PromptInput }>();
   const queue = session.queue ?? [];
@@ -338,7 +341,7 @@ function PromptQueue({ session, provider, pending, perform }: Pick<SessionChatPr
   const pauseKey = `queue-pause-${session.id}`;
   return <section className="prompt-queue" aria-label={t('chat.queueTitle')}>
     <header><strong><ListChecks size={14} />{t('chat.queueCount', { count: queue.length })}</strong>
-      <button disabled={pending.has(pauseKey)} onClick={() => void perform(pauseKey,
+      <button disabled={!connected || pending.has(pauseKey)} onClick={() => void perform(pauseKey,
         () => window.workbench.setSessionQueuePaused(session.id, !session.queuePaused))}>
         {session.queuePaused ? <Play size={12} /> : <Pause size={12} />}{session.queuePaused ? t('chat.resumeQueue') : t('chat.pauseQueue')}
       </button>
@@ -349,7 +352,7 @@ function PromptQueue({ session, provider, pending, perform }: Pick<SessionChatPr
       return <li key={item.id} data-queue-id={item.id}>
         {editing?.id === item.id ? <form onSubmit={event => {
           event.preventDefault();
-          if (changing || (!editing.input.text.trim() && !editing.input.attachments?.length)) return;
+          if (changing || !connected || (!editing.input.text.trim() && !editing.input.attachments?.length)) return;
           const input = promptCommandInput(editing.input);
           void perform(`queue-item-${item.id}`, async () => {
             await window.workbench.updateQueuedPrompt(session.id, item.id, input);
@@ -360,15 +363,15 @@ function PromptQueue({ session, provider, pending, perform }: Pick<SessionChatPr
             onChange={event => setEditing(current => current && ({ ...current, input: { ...current.input, text: event.target.value } }))} />
           <AttachmentChips attachments={editing.input.attachments ?? []} onRemove={changing ? undefined : id =>
             setEditing(current => current && ({ ...current, input: { ...current.input, attachments: current.input.attachments?.filter(attachment => attachment.id !== id) } }))} />
-          <div className="queue-item-actions"><button type="submit" disabled={changing || (!editing.input.text.trim() && !editing.input.attachments?.length)}>{t('chat.saveQueued')}</button>
+          <div className="queue-item-actions"><button type="submit" disabled={changing || !connected || (!editing.input.text.trim() && !editing.input.attachments?.length)}>{t('chat.saveQueued')}</button>
             <button type="button" onClick={() => setEditing(undefined)}>{t('common.cancel')}</button></div>
         </form> : <>
           <div className="queue-item-content"><p>{item.input.text || t('chat.queuedAttachments')}</p>
             <small>{item.modelId ? modelName(provider, item.modelId) : t('chat.runtimeDefault')}{item.settings?.effort ? ` · ${item.settings.effort}` : ''}</small>
             <AttachmentChips attachments={item.input.attachments ?? []} />
           </div>
-          <div className="queue-item-actions"><button disabled={changing} onClick={() => setEditing({ id: item.id, input: item.input })}>{t('chat.editQueued')}</button>
-            <button disabled={changing} onClick={() => void perform(`queue-item-${item.id}`,
+          <div className="queue-item-actions"><button disabled={changing || !connected} onClick={() => setEditing({ id: item.id, input: item.input })}>{t('chat.editQueued')}</button>
+            <button disabled={changing || !connected} onClick={() => void perform(`queue-item-${item.id}`,
               () => window.workbench.removeQueuedPrompt(session.id, item.id))}>{t('chat.removeQueued')}</button></div>
         </>}
       </li>;
@@ -376,15 +379,44 @@ function PromptQueue({ session, provider, pending, perform }: Pick<SessionChatPr
   </section>;
 }
 
+function ActivityEntries({ messages }: { messages: IndexedMessages }) {
+  const { t } = useTranslation('workspace');
+  const scroll = useRef<HTMLDivElement>(null);
+  const source = useRef(messages);
+  source.current = messages;
+  const getItemKey = useCallback((index: number) => source.current.at(index)!.id, [messages.structure]);
+  const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
+    count: messages.length, getScrollElement: () => scroll.current, getItemKey, estimateSize: () => 56, overscan: 3,
+  });
+  return <div className="activity-entries" ref={scroll}>
+    {messages.length ? <div className="virtual-conversation" style={{ height: virtualizer.getTotalSize() }}>
+      {virtualizer.getVirtualItems().map(item => {
+        const message = messages.at(item.index)!;
+        return <div className="virtual-conversation-row" key={item.key} data-index={item.index} ref={virtualizer.measureElement}
+          style={{ transform: `translateY(${item.start}px)` }}>
+          <div className="activity-entry"><span className="activity-dot" /><p>{message.text}</p>
+            <time dateTime={message.createdAt}>{formatDate(message.createdAt, { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</time>
+          </div>
+        </div>;
+      })}
+    </div> : <p className="pane-note">{t('chat.activityEmpty')}</p>}
+  </div>;
+}
+
 export function SessionChat({
-  session, provider, perform, pending, draft, draftError, onDraftChange, workspaceId, sessions = [], openSession,
+  session, provider, perform, pending, draft, draftError, onDraftChange, workspaceId, sessions = [], openSession, connected = true, readOnly = false,
 }: SessionChatProps) {
   const { t } = useTranslation('workspace');
   const [showActivity, setShowActivity] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [find, setFind] = useState<string | null>(null);
   const [matchIndex, setMatchIndex] = useState(0);
+  const [searchResult, setSearchResult] = useState<{ sessionId: string; query: string; messages: Message[]; truncated: boolean }>();
+  const [searchError, setSearchError] = useState('');
+  const [searching, setSearching] = useState(false);
+  const [scrollTarget, setScrollTarget] = useState<string>();
   const [sendError, setSendError] = useState('');
+  const [expandedProcesses, setExpandedProcesses] = useState<Set<string>>(new Set());
   const attachments = draft.attachments ?? [];
   const attachmentsSupported = provider?.source !== 'plugin';
   const unsupportedAttachments = !attachmentsSupported && attachments.length > 0;
@@ -414,30 +446,94 @@ export function SessionChat({
   currentDraft.current = draft;
 
   const active = activeStatuses.has(session.status);
+  const historyReady = session.historyLoaded !== false;
   const busy = pending.has(`send-${session.id}`);
   const settingsBusy = pending.has(`session-settings-${session.id}`);
-  const messages = session.messages.filter(message => message.role !== 'activity' || message.event);
-  const activity = session.messages.filter(message => message.role === 'activity' && !message.event);
-  const matches = find?.trim()
-    ? messages.filter(message => searchableMessageText(message).toLocaleLowerCase().includes(find.toLocaleLowerCase()))
-    : [];
+  const history = useSessionHistory(session);
+  const messages = history.messages;
+  const activity = history.activities;
+  const searchQuery = find?.trim() ?? '';
+  const matches = searchQuery && searchResult?.sessionId === session.id && searchResult.query === searchQuery ? searchResult.messages : [];
   const selectedMatch = matches[matchIndex % Math.max(matches.length, 1)];
   const children = sessions.filter(item => item.parentSessionId === session.id);
   const parent = sessions.find(item => item.id === session.parentSessionId);
-  const nativeAgent = nativeAgentId
-    ? messages.find(message => message.event?.kind === 'subagent' && message.event.nativeId === nativeAgentId)?.event
-    : undefined;
-  const nativeEvents = nativeAgentId
-    ? messages.flatMap(message => message.event && (message.event.nativeId === nativeAgentId || message.event.parentId === nativeAgentId) ? [message.event] : [])
-    : [];
-  const outputRevision = useMemo(() => JSON.stringify({
-    messages: session.messages,
-    approvals: session.approvals,
-    status: session.status,
-    error: session.error,
-  }), [session.messages, session.approvals, session.status, session.error]);
+  const nativeEvents = nativeAgentId ? history.eventsFor(nativeAgentId) : [];
+  const nativeAgent = nativeEvents.find(event => event.kind === 'subagent' && event.nativeId === nativeAgentId);
+  const virtualScroll = useRef<{ scrollToEnd(options: { behavior: 'smooth' | 'auto' }): void } | null>(null);
   const { containerRef: scroll, isPinned, showJumpControl, markUserInput, handleScroll, scrollToBottom } =
-    useClaudeScrollPinning([session.id, outputRevision]);
+    useClaudeScrollPinning([session.id, history.showingHistory ? null : history.messages,
+      history.showingHistory ? null : session.approvals, history.showingHistory ? null : session.status,
+      history.showingHistory ? null : session.error], smooth => virtualScroll.current?.scrollToEnd({ behavior: smooth ? 'smooth' : 'auto' }));
+  type ChatRow = { kind: 'message'; key: string; message: Message; index: number } | { kind: 'notices'; key: string } | { kind: 'empty'; key: string };
+  const rowCount = Math.max(messages.length, 1) + 1;
+  const rowAt = (index: number): ChatRow => {
+    const message = messages.at(index);
+    if (message) return { kind: 'message', key: message.id, message, index };
+    return index === 0 ? { kind: 'empty', key: 'conversation-empty' } : { kind: 'notices', key: 'conversation-notices' };
+  };
+  const messageSource = useRef(messages);
+  messageSource.current = messages;
+  const getItemKey = useCallback((index: number) => messageSource.current.at(index)?.id ?? (index === 0 ? 'conversation-empty' : 'conversation-notices'), [messages.structure]);
+  const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
+    count: rowCount,
+    getScrollElement: () => scroll.current,
+    getItemKey,
+    estimateSize: index => {
+      const row = rowAt(index);
+      if (row.kind === 'empty') return 360;
+      if (row.kind === 'notices') return 80 + session.approvals.length * 240;
+      return row.message.event ? 45 : Math.min(1000, 100 + Math.ceil(row.message.text.length / 100) * 22);
+    },
+    overscan: 5,
+    paddingStart: 20,
+    rangeExtractor: range => {
+      const indices = defaultRangeExtractor(range);
+      if (!indices.includes(rowCount - 1)) indices.push(rowCount - 1);
+      return indices;
+    },
+    anchorTo: 'end',
+    followOnAppend: false,
+    scrollEndThreshold: 40,
+  });
+  virtualScroll.current = virtualizer;
+  const closeFind = () => { history.cancelJump(); setScrollTarget(undefined); setFind(null); };
+  const moveMatch = (direction: number) => {
+    if (!matches.length) return;
+    history.cancelJump();
+    setScrollTarget(undefined);
+    setMatchIndex(value => (value + direction + matches.length) % matches.length);
+  };
+
+  useEffect(() => {
+    if (!searchQuery) { setSearching(false); setSearchError(''); return; }
+    let active = true;
+    setSearching(true);
+    setSearchError('');
+    const timer = window.setTimeout(() => {
+      void window.workbench.sessionSearch(session.id, searchQuery, 200).then(result => {
+        if (active) setSearchResult({ sessionId: session.id, query: searchQuery, ...result });
+      }, error => { if (active) setSearchError(error instanceof Error ? error.message : String(error)); })
+        .finally(() => { if (active) setSearching(false); });
+    }, 180);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [session.id, searchQuery]);
+
+  useEffect(() => {
+    if (!selectedMatch) return;
+    let active = true;
+    markUserInput();
+    void history.locateMessage(selectedMatch.id).then(found => { if (active && found) setScrollTarget(selectedMatch.id); });
+    return () => { active = false; history.cancelJump(); };
+  }, [session.id, selectedMatch?.id, history.cancelJump]);
+
+  useLayoutEffect(() => {
+    if (!scrollTarget) return;
+    const index = messages.indexOf(scrollTarget);
+    if (index < 0) return;
+    virtualizer.scrollToIndex(index, { align: 'center', behavior: 'auto' });
+    const frame = requestAnimationFrame(() => { handleScroll(); setScrollTarget(undefined); });
+    return () => cancelAnimationFrame(frame);
+  }, [scrollTarget, messages]);
 
   const seenInFlight = useRef<number | undefined>(undefined);
   const [visibilityRevision, setVisibilityRevision] = useState(0);
@@ -449,7 +545,7 @@ export function SessionChat({
   }, []);
   useEffect(() => {
     const revision = session.attention?.revision;
-    if (!revision || !sessionIsUnread(session) || !isPinned || seenInFlight.current === revision) return;
+    if (!revision || !sessionIsUnread(session) || !connected || !isPinned || history.showingHistory || history.waitingForTail || seenInFlight.current === revision) return;
     const frame = requestAnimationFrame(() => {
       const element = scroll.current;
       if (!element || document.visibilityState !== 'visible' || !document.hasFocus() || element.clientHeight <= 0
@@ -458,7 +554,7 @@ export function SessionChat({
       void window.workbench.markSessionSeen(session.id, revision).catch(() => { seenInFlight.current = undefined; });
     });
     return () => cancelAnimationFrame(frame);
-  }, [session.attention?.revision, session.attention?.seenRevision, isPinned, visibilityRevision, messages]);
+  }, [session.attention?.revision, session.attention?.seenRevision, connected, isPinned, history.showingHistory, history.waitingForTail, visibilityRevision, messages, virtualizer.getTotalSize()]);
 
   useEffect(() => {
     if (!showSettings && !showActivity) return;
@@ -472,17 +568,9 @@ export function SessionChat({
     return () => document.removeEventListener('pointerdown', dismiss);
   }, [showSettings, showActivity, settingsId, activityId]);
 
-  useEffect(() => {
-    if (!selectedMatch) return;
-    markUserInput();
-    scroll.current?.querySelector(`[data-message-id="${CSS.escape(selectedMatch.id)}"]`)?.scrollIntoView({
-      block: 'center', behavior: reducedMotion ? 'auto' : 'smooth',
-    });
-  }, [find, matchIndex]);
-
   const send = () => {
     const prompt = draft.text.trim();
-    if ((!prompt && !attachments.length) || unsupportedAttachments || busy || settingsBusy || sendLock.current || !provider?.available) return;
+    if (readOnly || (!prompt && !attachments.length) || unsupportedAttachments || !connected || !historyReady || busy || settingsBusy || sendLock.current || !provider?.available) return;
     sendLock.current = true;
     setSendError('');
     void perform(`send-${session.id}`, async () => {
@@ -491,6 +579,7 @@ export function SessionChat({
         await runSessionCommand(`send:${session.id}`, input, async commandId => {
           await window.workbench.sendPrompt(session.id, input, commandId);
           if (currentDraft.current === draft) { setSendError(''); onDraftChange({ text: '' }, draft); }
+          history.showLatest();
           scrollToBottom();
         });
       } catch (error) {
@@ -502,7 +591,7 @@ export function SessionChat({
     });
   };
 
-  return <section className="chat-pane" aria-label={session.title}>
+  return <section className={`chat-pane${readOnly ? ' chat-pane-readonly' : ''}`} aria-label={session.title}>
     <header className="chat-toolbar">
       <div className="chat-toolbar-heading">
         <MessageCircle size={14} /><h2 title={session.title}>{session.title}</h2>
@@ -510,14 +599,14 @@ export function SessionChat({
       <Status value={session.status} />
       <div className="chat-toolbar-actions">
         <IconButton label={find === null ? t('chat.find') : t('chat.closeFind')} aria-pressed={find !== null}
-          onClick={() => setFind(find === null ? '' : null)}><Search size={15} /></IconButton>
-        <IconButton label={t('chat.settings')} aria-expanded={showSettings} aria-controls={settingsId}
-          onClick={() => setShowSettings(value => !value)}><Settings2 size={15} /></IconButton>
+          onClick={() => find === null ? setFind('') : closeFind()}><Search size={15} /></IconButton>
+        {!readOnly && <IconButton label={t('chat.settings')} aria-expanded={showSettings} aria-controls={settingsId}
+          onClick={() => setShowSettings(value => !value)}><Settings2 size={15} /></IconButton>}
         <button className={`text-button chat-activity-button ${showActivity ? 'selected' : ''}`}
           aria-expanded={showActivity} aria-controls={activityId} onClick={() => setShowActivity(value => !value)}>
           <Activity size={14} /><span className="chat-activity-label">{t('chat.activity')}</span>{activity.length > 0 && <span className="chat-count">{activity.length}</span>}
         </button>
-        {active && <button className="text-button stop-action" disabled={pending.has(`cancel-${session.id}`)}
+        {!readOnly && active && <button className="text-button stop-action" disabled={!connected || pending.has(`cancel-${session.id}`)}
           onClick={() => void perform(`cancel-${session.id}`, () => runSessionStopCommand(session,
             (commandId, expectedAttemptId) => window.workbench.cancelSession(session.id, commandId, expectedAttemptId)))}>
           <CircleStop size={14} />{t('common.stop')}</button>}
@@ -530,62 +619,77 @@ export function SessionChat({
         <div className="conversation-find">
           <Search size={15} />
           <input aria-label={t('chat.find')} value={find} autoFocus placeholder={t('chat.findPlaceholder')}
-            onChange={event => { setFind(event.target.value); setMatchIndex(0); }}
+            onChange={event => { history.cancelJump(); setScrollTarget(undefined); setFind(event.target.value); setMatchIndex(0); }}
             onKeyDown={event => {
-              if (event.key === 'Escape') setFind(null);
+              if (event.key === 'Escape') closeFind();
               if (event.key === 'Enter' && !event.nativeEvent.isComposing && event.keyCode !== 229 && matches.length) {
-                setMatchIndex(value => event.shiftKey ? (value + matches.length - 1) % matches.length : value + 1);
+                moveMatch(event.shiftKey ? -1 : 1);
               }
             }} />
-          <small aria-live="polite">{matches.length ? `${matchIndex % matches.length + 1} / ${matches.length}` : '0'}</small>
+          <small aria-live="polite">{searching ? <LoaderCircle className="spin" size={12} /> : matches.length ? `${matchIndex % matches.length + 1} / ${matches.length}${searchResult?.query === searchQuery && searchResult.truncated ? '+' : ''}` : '0'}</small>
           <IconButton label={t('chat.previousMatch')} disabled={!matches.length}
-            onClick={() => setMatchIndex(value => (value + matches.length - 1) % matches.length)}><ArrowUp size={14} /></IconButton>
+            onClick={() => moveMatch(-1)}><ArrowUp size={14} /></IconButton>
           <IconButton label={t('chat.nextMatch')} disabled={!matches.length}
-            onClick={() => setMatchIndex(value => value + 1)}><ArrowDown size={14} /></IconButton>
-          <IconButton label={t('chat.closeFind')} onClick={() => setFind(null)}><X size={14} /></IconButton>
+            onClick={() => moveMatch(1)}><ArrowDown size={14} /></IconButton>
+          <IconButton label={t('chat.closeFind')} onClick={closeFind}><X size={14} /></IconButton>
         </div>
+        {searchError && <p className="chat-history-error" role="alert">{searchError}</p>}
       </motion.div>}
     </AnimatePresence>
-    <CollapsibleRegion expanded={showSettings} id={settingsId} className="chat-settings-region"
+    {!readOnly && workspaceId && <CollapsibleRegion expanded={showSettings} id={settingsId} className="chat-settings-region"
       regionRef={settingsRegion} onClose={() => setShowSettings(false)}>
       <SessionSettings session={session} workspaceId={workspaceId} active={active} visible={showSettings}
         perform={perform} openSession={openSession} onClose={() => setShowSettings(false)} />
-    </CollapsibleRegion>
+    </CollapsibleRegion>}
 
+    {(parent || children.length > 0) && <nav className="session-children" aria-label={t('chat.relatedSessions')}>
+      {parent && <button onClick={() => openSession(parent.id)}><ArrowUpLeft size={13} />{t('chat.coordinator', { title: parent.title })}</button>}
+      {children.map(child => <button key={child.id} onClick={() => openSession(child.id)}>
+        <GitFork size={13} /><span>{child.title}</span><small>{child.providerId}</small><Status value={child.status} />
+      </button>)}
+    </nav>}
+    {(history.hasMore || history.showingHistory || history.loading || history.error) && <div className="conversation-history-controls">
+      {history.hasMore && <button disabled={history.loading || !connected} onClick={() => { markUserInput(); void history.loadOlder(); }}>
+        {history.loading ? <LoaderCircle className="spin" size={12} /> : <ArrowUp size={12} />}{t('chat.loadEarlier')}
+      </button>}
+      {history.showingHistory && <><span>{t('chat.historyWindow')}</span>
+        {history.hasAfter && <button disabled={history.loading || !connected} onClick={() => void history.loadNewer()}><ArrowDown size={12} />{t('chat.loadLater')}</button>}
+        <button onClick={() => { closeFind(); history.showLatest(); scrollToBottom(); }}><ArrowDown size={12} />{t('chat.returnLatest')}</button></>}
+      {history.error && <span className="chat-history-error" role="alert">{history.error}</span>}
+    </div>}
     <div className="message-scroll" ref={scroll} tabIndex={0} aria-label={t('chat.conversation')}
       onScroll={handleScroll} onWheel={markUserInput} onTouchStart={markUserInput}
       onKeyDown={event => {
         if (event.target === event.currentTarget && ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) markUserInput();
       }}>
-      {(parent || children.length > 0) && <nav className="session-children" aria-label={t('chat.relatedSessions')}>
-        {parent && <button onClick={() => openSession(parent.id)}><ArrowUpLeft size={13} />{t('chat.coordinator', { title: parent.title })}</button>}
-        {children.map(child => <button key={child.id} onClick={() => openSession(child.id)}>
-          <GitFork size={13} /><span>{child.title}</span><small>{child.providerId}</small><Status value={child.status} />
-        </button>)}
-      </nav>}
-      {messages.length === 0
-        ? <div className="conversation-empty">
+      <div className="virtual-conversation" style={{ height: virtualizer.getTotalSize() }}>
+        {virtualizer.getVirtualItems().map(item => {
+          const row = rowAt(item.index);
+          const message = row.kind === 'message' ? row.message : undefined;
+          const index = item.index;
+          return <div className="virtual-conversation-row" data-index={item.index} key={item.key} ref={virtualizer.measureElement}
+            style={{ transform: `translateY(${item.start}px)` }}>
+          {row.kind === 'empty' ? <div className="conversation-empty">
           <div className="agent-mark"><PanelsTopLeft size={27} strokeWidth={1.5} /></div>
           <span className="conversation-empty-caption">{provider?.name ?? session.providerId} · {provider?.available ? t('chat.ready') : t('chat.notReady')}</span>
           <h2>{session.title}</h2>
-          <p>{t('chat.describeTask', { provider: provider?.name ?? session.providerId })}</p>
+          <p>{history.waitingForTail ? t('chat.loadingHistory') : t('chat.describeTask', { provider: provider?.name ?? session.providerId })}</p>
           <div className="conversation-project"><FolderOpen size={14} /><code>{session.cwd}</code></div>
         </div>
-        : <div className="messages">
-          <AnimatePresence initial={false}>
-            {messages.map((message, index) => <motion.article data-message-id={message.id} key={message.id}
-              className={`message message-${message.role}${message.event ? ` message-process${messages[index - 1]?.event ? '' : ' process-start'}${messages[index + 1]?.event ? '' : ' process-end'}` : ''}${selectedMatch?.id === message.id ? ' conversation-match' : ''}`}
-              initial={reducedMotion ? false : { opacity: 0, y: 4 }}
-              animate={{ opacity: 1, y: 0 }} transition={transition}>
+        : message ? <div className="messages"><article data-message-id={message.id}
+              className={`message message-${message.role}${message.event ? ` message-process${index > 0 && messages.at(index - 1)?.event ? '' : ' process-start'}${messages.at(index + 1)?.event ? '' : ' process-end'}` : ''}${selectedMatch?.id === message.id ? ' conversation-match' : ''}`}>
               {message.event
-                ? <ProcessCard event={message.event} openSession={openSession} openNativeAgent={setNativeAgentId} />
+                ? <ProcessCard event={message.event} openSession={openSession} openNativeAgent={setNativeAgentId}
+                  expanded={expandedProcesses.has(message.id)} onExpandedChange={expanded => setExpandedProcesses(current => {
+                    const next = new Set(current); if (expanded) next.add(message.id); else next.delete(message.id); return next;
+                  })} />
                 : message.role === 'user'
                   ? <>
                     <div className="user-message">{message.text}
                       {message.attachments && <AttachmentChips attachments={message.attachments} />}
                     </div>
-                    <DeliveryState message={message} sessionId={session.id} pending={pending} perform={perform} />
-                    {!active && provider?.capabilities.rewind && message.nativeTurnId && <div className="message-tools">
+                    <DeliveryState message={message} sessionId={session.id} connected={connected} readOnly={readOnly} pending={pending} perform={perform} />
+                    {!readOnly && !active && provider?.capabilities.rewind && message.nativeTurnId && <div className="message-tools">
                       <button onClick={() => setRewindMessage(message.id)}><ArrowUpLeft size={12} />{t('chat.rewindBefore')}</button>
                     </div>}
                   </>
@@ -603,24 +707,26 @@ export function SessionChat({
                     </div>
                     <div className="message-tools">
                       <CopyAnswer message={message} perform={perform} />
-                      {!active && <button onClick={() => void perform('fork-session',
+                      {!readOnly && !active && <button onClick={() => void perform('fork-session',
                         async () => openSession(await window.workbench.forkSession(session.id, message.id)))}>
                         <GitFork size={12} />{t('chat.forkHere')}</button>}
                     </div>
                   </>}
-            </motion.article>)}
-          </AnimatePresence>
-        </div>}
-      <div className="conversation-notices">
-        <SessionProgress status={session.status} />
-        {session.error && <div className="inline-error" role="alert"><CircleAlert size={15} /><span>{session.error}</span></div>}
+            </article></div>
+        : <div className="conversation-notices">
+        {!history.showingHistory && <SessionProgress status={session.status} />}
+        {!history.showingHistory && session.error && <div className="inline-error" role="alert"><CircleAlert size={15} /><span>{session.error}</span></div>}
+        {history.showingHistory && session.approvals.length > 0 && <p className="pane-note">{t('chat.currentApprovals')}</p>}
         <AnimatePresence initial={false}>
           {session.approvals.map(approval => <motion.div key={approval.id}
             initial={reducedMotion ? false : { opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -4 }} transition={transition}>
-            <ApprovalCard approval={approval} pending={pending} perform={perform} />
+            <fieldset className="approval-availability" disabled={readOnly || !connected}><ApprovalCard approval={approval} pending={pending} perform={perform} /></fieldset>
           </motion.div>)}
         </AnimatePresence>
+        </div>}
+          </div>;
+        })}
       </div>
     </div>
 
@@ -637,20 +743,15 @@ export function SessionChat({
           <header><span><Activity size={14} />{t('chat.activityLog')}<small>{activity.length}</small></span>
             <IconButton label={t('chat.closeActivity')} onClick={() => setShowActivity(false)}><ChevronDown size={15} /></IconButton>
           </header>
-          <div className="activity-entries">
-            {activity.length ? activity.map(message => <div className="activity-entry" key={message.id}>
-              <span className="activity-dot" /><p>{message.text}</p>
-              <time dateTime={message.createdAt}>{formatDate(message.createdAt, { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</time>
-            </div>) : <p className="pane-note">{t('chat.activityEmpty')}</p>}
-          </div>
+          {showActivity && <ActivityEntries messages={activity} />}
         </section>
       </CollapsibleRegion>
-      <div className="composer-area">
-        <PromptQueue session={session} provider={provider} pending={pending} perform={perform} />
+      {!readOnly && <div className="composer-area">
+        {historyReady && <PromptQueue session={session} provider={provider} pending={pending} perform={perform} connected={connected} />}
         <div className={`composer${active ? ' composer-task-active' : ''}`}>
           <AttachmentChips attachments={attachments}
-            onRemove={busy ? undefined : id => onDraftChange({ ...currentDraft.current, attachments: attachments.filter(attachment => attachment.id !== id) })} />
-          <textarea aria-label={t('chat.taskContent')} value={draft.text} rows={3} maxLength={200_000} disabled={busy}
+            onRemove={busy || !historyReady ? undefined : id => onDraftChange({ ...currentDraft.current, attachments: attachments.filter(attachment => attachment.id !== id) })} />
+          <textarea aria-label={t('chat.taskContent')} value={draft.text} rows={3} maxLength={200_000} disabled={busy || !historyReady}
             onChange={event => onDraftChange({ ...currentDraft.current, text: event.target.value })}
             placeholder={active ? t('chat.nextPromptPlaceholder') : t('chat.promptPlaceholder')}
             onCompositionStart={() => { composing.current = true; }}
@@ -663,18 +764,18 @@ export function SessionChat({
             }} />
           <div className="composer-bottom">
             <div className="composer-controls">
-              <IconButton label={attachmentsSupported ? t('chat.attach') : t('chat.pluginAttachmentsUnsupported')} disabled={!attachmentsSupported || busy || attachments.length >= 8 || pending.has('attachments')}
+              <IconButton label={attachmentsSupported ? t('chat.attach') : t('chat.pluginAttachmentsUnsupported')} disabled={!historyReady || !attachmentsSupported || busy || attachments.length >= 8 || pending.has('attachments')}
                 onClick={() => void perform('attachments', async () => {
                   const selected = await window.workbench.chooseAttachments();
                   onDraftChange({ ...currentDraft.current, attachments: [...(currentDraft.current.attachments ?? []), ...selected].slice(0, 8) });
                 })}><Paperclip size={16} /></IconButton>
               <span className="composer-divider" />
-              <ComposerSettings session={session} provider={provider} disabled={active || busy || settingsBusy}
+              <ComposerSettings session={session} provider={provider} disabled={!historyReady || !connected || active || busy || settingsBusy}
                 saving={settingsBusy} perform={perform} />
             </div>
             <motion.button className="send-button" aria-label={t('chat.sendTask')}
               title={active || session.queuePaused ? t('chat.queueNextTurn') : t('chat.sendTask')}
-              disabled={(!draft.text.trim() && !attachments.length) || unsupportedAttachments || busy || settingsBusy || !provider?.available}
+              disabled={(!draft.text.trim() && !attachments.length) || unsupportedAttachments || !historyReady || !connected || busy || settingsBusy || !provider?.available}
               whileTap={reducedMotion ? undefined : { scale: 0.98 }} transition={transition} onClick={send}>
               {busy ? <LoaderCircle className="spin" size={17} /> : <ArrowUp size={18} />}
             </motion.button>
@@ -685,14 +786,16 @@ export function SessionChat({
           <UsageBadge usage={session.usage?.at(-1)} />
           <span className="composer-shortcut"><CornerDownLeft size={11} />{active || session.queuePaused ? t('chat.queueNextTurn') : t('chat.send')}<span>·</span>{t('chat.newLine')}</span>
         </div>
+        {!connected && <p className="composer-note" role="status"><CircleAlert size={13} />{t('chat.connectionUnavailable')}</p>}
+        {!historyReady && <p className="composer-note" role="status"><LoaderCircle className="spin" size={13} />{t('chat.loadingHistory')}</p>}
         {sendError && <p className="composer-note" role="alert"><CircleAlert size={13} />{t('chat.sendUnconfirmed', { error: sendError })}</p>}
         {draftError && <p className="composer-note" role="alert"><CircleAlert size={13} />{t('chat.draftError', { error: draftError })}<button className="text-button" onClick={() => onDraftChange(draft)}>{t('chat.retrySave')}</button></p>}
         {unsupportedAttachments && <p className="composer-note" role="alert"><CircleAlert size={13} />{t('chat.pluginAttachmentsRemove')}</p>}
         {!provider?.available && <p className="composer-note"><CircleAlert size={13} />{t('chat.providerUnavailable')}</p>}
-      </div>
+      </div>}
     </div>
 
-    {rewindMessage && <Modal title={t('chat.rewindTitle')} subtitle={t('chat.rewindDescription')}
+    {!readOnly && rewindMessage && <Modal title={t('chat.rewindTitle')} subtitle={t('chat.rewindDescription')}
       onClose={() => setRewindMessage(undefined)}>
       <div className="modal-actions">
         <button className="button" onClick={() => setRewindMessage(undefined)}>{t('common.cancel')}</button>
@@ -721,13 +824,14 @@ export function SessionChat({
   </section>;
 }
 
-function ProcessCard({ event, openSession, openNativeAgent }: {
+function ProcessCard({ event, openSession, openNativeAgent, expanded, onExpandedChange }: {
   event: ProcessEvent;
   openSession: (id: string) => void;
   openNativeAgent: (id: string) => void;
+  expanded: boolean;
+  onExpandedChange: (expanded: boolean) => void;
 }) {
   const { t } = useTranslation('workspace');
-  const [expanded, setExpanded] = useState(false);
   const bodyId = useId();
   const icon = event.kind === 'plan' ? <ListChecks size={15} />
     : event.kind === 'subagent' || event.kind === 'task' ? <Users size={15} />
@@ -738,7 +842,7 @@ function ProcessCard({ event, openSession, openNativeAgent }: {
       <span className="process-node" aria-hidden="true">
         {event.status === 'completed' ? <Check size={11} /> : event.status === 'failed' ? <CircleAlert size={13} /> : <span />}
       </span>
-      <button className="process-toggle" aria-expanded={expanded} aria-controls={bodyId} onClick={() => setExpanded(value => !value)}>
+      <button className="process-toggle" aria-expanded={expanded} aria-controls={bodyId} onClick={() => onExpandedChange(!expanded)}>
         <span className="process-symbol">{icon}</span><strong>{event.title}</strong>
         <Status value={event.status} /><ChevronDown className="process-chevron" size={14} />
       </button>
@@ -747,7 +851,7 @@ function ProcessCard({ event, openSession, openNativeAgent }: {
         {event.kind === 'subagent' && event.nativeId && <button onClick={() => openNativeAgent(event.nativeId!)}>{t('chat.openNative')}<ArrowUpLeft size={12} /></button>}
       </div>}
     </div>
-    <CollapsibleRegion expanded={expanded} id={bodyId} className="process-reveal" onClose={() => setExpanded(false)}>
+    <CollapsibleRegion expanded={expanded} id={bodyId} className="process-reveal" onClose={() => onExpandedChange(false)}>
       <ProcessBody event={event} />
     </CollapsibleRegion>
   </section>;

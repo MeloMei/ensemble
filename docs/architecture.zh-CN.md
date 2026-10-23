@@ -31,8 +31,8 @@ Ensemble 在 Electron 窗口中展示本机 Agent 会话、文件、终端和协
 2. preload 桥接调用指定的 Electron IPC 命令。renderer 没有 Node 集成，窗口启用了上下文隔离和 Electron sandbox。
 3. Electron 主进程检查请求来源，再通过 `BackendClient` 转发服务命令。原生窗口操作、对话框、链接和通知留在 Electron 进程。
 4. 后台认证请求，调用 `createWorkbenchService` 注册的处理函数。
-5. 处理函数调用 engine、协作核心、工作区文件或运行时设置等服务。状态变化后发布快照。
-6. 后台通过 `/events` 发送快照，Electron 再通过 IPC 转给 renderer 的订阅者。
+5. 处理函数调用 engine、协作核心、工作区文件或运行时设置等服务。状态变化交给按订阅范围组织的投影，不复制所有会话历史。
+6. 后台通过 `/events` 发送有版本的 reset 和 delta，Electron 重建订阅视图后通过 IPC 转给 renderer。连接状态与缓存内容分开，终端使用独立的 tail/append 流。
 
 preload 只暴露应用 API。参数校验和执行权限由后台服务、Provider 适配器负责。
 
@@ -71,6 +71,14 @@ macOS 数据目录保留兼容名称 `Agent Workbench`。SQLite 尚无状态快�
 普通会话创建、发送、取消和问答共用 SQLite 事务收据。运行中的补充消息保存在下一轮队列，保留当时模型、设置和附件；停止、失败或后台重启后暂停。Codex 依据 clientUserMessageId 核对原生历史，失去确认时保留 unknown，不因文本相同去重或自动重发。attention 与 seen revision 单独持久化，阅读不会改变任务结果。
 
 桌面 Stop 请求携带点击时的 attempt ID，后台在同一事务内核对后才取消任务或暂停队列。尚未进入物理执行的 Codex pending 消息，在取消或排队状态恢复后标为 rejected；执行开始后中断的消息仍保持 unknown。普通、托管和协作执行共用投递守卫。并行新增的每一条审批都会推进 attention revision。
+
+选中会话取得有界最近历史，旧消息和搜索窗口按需读取；未订阅会话省略草稿与排队消息正文。
+
+订阅尾部按消息条数限制，单条正文保持完整。帧超过 8 MiB 时会明确说明大小限制并断开该订阅，保留旧内容；切换到较小会话后可以恢复同步。已回收工作区的历史会话仍可临时只读查看，不会重新创建目录。
+
+watch 更新失败会中止它所属的订阅，再按期望会话重连；renderer 重载或退出会释放视图订阅。实时尾部重置会使基于旧尾部的分页请求失效。
+
+桌面状态订阅要求 stream version 2。不兼容的旧后台保留其任务继续运行；管理 CLI 仍可连接旧实例，用户可在合适时间停止旧后台再启动新版。
 
 ## 构建和许可
 

@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import test from 'node:test';
-import type { ProviderInfo } from '../shared/types';
+import type { Message, ProviderInfo } from '../shared/types';
+import type { SessionHistoryWindow } from '../shared/backend';
 import type { ProviderAdapter } from './providers/types';
 import { createWorkbenchService, type WorkbenchService } from './workbench-service';
 
@@ -26,6 +27,84 @@ async function createFixture(run: ProviderAdapter['run'] = async () => {}) {
   };
 }
 
+const timestamp = '2026-10-23T00:00:00Z';
+const sorted = (values: string[]) => [...values].sort();
+
+test('service history cursors and search preserve bounded views and recover full matching messages', async () => {
+  const fixture = await createFixture();
+  const { service } = fixture;
+  try {
+    const id = await service.engine.createSession({ title: 'History fixture', providerId: fixture.info.id, cwd: fixture.firstProject });
+    const archivedId = await service.engine.createSession({ title: 'Archived needle title', providerId: fixture.info.id, cwd: fixture.firstProject });
+    service.engine.updateSession(archivedId, { archived: true });
+    const logId = await service.engine.createSession({ title: 'Activity-only fixture', providerId: fixture.info.id, cwd: fixture.secondProject });
+    const longId = `native-message-${'long-'.repeat(60)}`;
+    assert(longId.length > 200 && longId.length < 4096);
+    const messages: Message[] = Array.from({ length: 450 }, (_, index) => ({ id: index === 225 ? longId : `message-${index}`,
+      role: index % 3 ? 'assistant' : 'user', text: `History row ${index}`, createdAt: timestamp }));
+    const fullText = `${'Long prefix. '.repeat(2500)}NEEDLE body match${' Long suffix.'.repeat(2500)}`;
+    messages[300] = { ...messages[300], text: fullText };
+    messages[301] = { ...messages[301], role: 'activity', text: '', event: { id: 'large-tool', kind: 'tool', title: 'Large tool', status: 'completed',
+      input: `${'tool input '.repeat(2000)}needle event match`, output: 'tool output '.repeat(3000) }, attachments: [{
+      id: 'attachment', name: 'large-note.txt', kind: 'text', ownedPath: join(fixture.directory, 'not-opened.txt'),
+      mimeType: 'text/plain', size: 3000, sha256: 'a'.repeat(64),
+    }] };
+    service.store.atomic(state => {
+      state.sessions.find(session => session.id === id)!.messages = messages;
+      state.sessions.find(session => session.id === logId)!.messages = [{ id: 'plain-activity', role: 'activity', text: 'activity-only-secret', createdAt: timestamp }];
+    });
+
+    let page = await service.call('workbench:session-history', [id, undefined, 73]) as SessionHistoryWindow;
+    assert.deepEqual(page.messages.map(message => message.id), messages.slice(-73).map(message => message.id));
+    let all = page.messages;
+    while (page.hasMore) {
+      assert(page.beforeCursor);
+      const next = await service.call('workbench:session-history', [id, page.beforeCursor, 73]) as SessionHistoryWindow;
+      assert(next.messages.length > 0 && next.messages.length <= 73);
+      assert.equal(next.messages.some(message => all.some(existing => existing.id === message.id)), false);
+      all = [...next.messages, ...all]; page = next;
+    }
+    assert.deepEqual(all.map(message => message.id), messages.map(message => message.id));
+    assert.equal(new Set(all.map(message => message.id)).size, 450);
+
+    const around = await service.call('workbench:session-history-around', [id, longId, 21]) as SessionHistoryWindow;
+    assert.deepEqual(around.messages.map(message => message.id), messages.slice(215, 236).map(message => message.id));
+    assert(around.beforeCursor && around.afterCursor && around.hasMore && around.hasAfter);
+    const beforeLongId = await service.call('workbench:session-history', [id, longId, 10]) as SessionHistoryWindow;
+    const afterLongId = await service.call('workbench:session-history-after', [id, longId, 10]) as SessionHistoryWindow;
+    assert.deepEqual(beforeLongId.messages.map(message => message.id), messages.slice(215, 225).map(message => message.id));
+    assert.deepEqual(afterLongId.messages.map(message => message.id), messages.slice(226, 236).map(message => message.id));
+    const before = await service.call('workbench:session-history', [id, around.beforeCursor, 21]) as SessionHistoryWindow;
+    const after = await service.call('workbench:session-history-after', [id, around.afterCursor, 21]) as SessionHistoryWindow;
+    assert.deepEqual([...before.messages, ...around.messages, ...after.messages].map(message => message.id), messages.slice(194, 257).map(message => message.id));
+
+    const search = await service.call('workbench:session-search', [id, 'needle', 10]) as { messages: Message[]; truncated: boolean };
+    assert.equal(search.truncated, false);
+    assert.deepEqual(search.messages.map(message => message.id), [messages[300].id, messages[301].id]);
+    for (const summary of search.messages) {
+      assert(summary.text.length <= 2000 && /needle/i.test(summary.text));
+      assert.deepEqual(Object.keys(summary).sort(), ['createdAt', 'id', 'role', 'text']);
+    }
+    assert.equal((await service.call('workbench:session-search', [id, 'needle', 1]) as { truncated: boolean }).truncated, true);
+    const raw = await service.call('workbench:session-history-around', [id, messages[300].id, 5]) as SessionHistoryWindow;
+    assert.equal(raw.messages.find(message => message.id === messages[300].id)?.text, fullText);
+    assert.deepEqual(raw.messages.find(message => message.id === messages[301].id)?.event, messages[301].event);
+    assert.deepEqual(raw.messages.find(message => message.id === messages[301].id)?.attachments, messages[301].attachments);
+    assert.deepEqual(await service.call('workbench:session-search', [logId, 'activity-only-secret', 10]), { messages: [], truncated: false });
+
+    const results = await service.call('workbench:search-sessions', ['needle']) as { sessionIds: string[] };
+    assert.deepEqual(Object.keys(results), ['sessionIds']);
+    assert.deepEqual(results.sessionIds, [id]);
+    assert.deepEqual(sorted((await service.call('workbench:search-sessions', ['needle', true]) as { sessionIds: string[] }).sessionIds), sorted([id, archivedId]));
+    assert.deepEqual((await service.call('workbench:search-sessions', [basename(fixture.firstProject), true]) as { sessionIds: string[] }).sessionIds.sort(), sorted([id, archivedId]));
+
+    const expired = longId;
+    service.store.atomic(state => { const item = state.sessions.find(session => session.id === id)!; item.messages = item.messages.filter(message => message.id !== expired); });
+    await assert.rejects(service.call('workbench:session-history', [id, expired, 20]), /游标.*失效/);
+    await assert.rejects(service.call('workbench:session-history-after', [id, expired, 20]), /游标.*失效/);
+    await assert.rejects(service.call('workbench:session-history-around', [id, expired, 20]), /游标.*失效/);
+  } finally { await fixture.close(); }
+});
 test('service read acknowledgements persist exact revisions without clearing failures or newer results', async () => {
   const fixture = await createFixture(async context => {
     if (context.prompt === 'fail') throw new Error('Fixture requested failure');

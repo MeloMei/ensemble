@@ -45,6 +45,20 @@ export function TerminalPane({ info, cwd, perform }: { info: TerminalInfo; cwd: 
     terminal.open(container.current);
     instance.current = terminal;
     consumedEnd.current = null;
+    const unsubscribe = window.workbench.onTerminalOutput(info.id, event => {
+      const output = event.type === 'tail' ? event.output : event.data;
+      const offset = event.type === 'tail' ? event.outputOffset : event.offset;
+      const end = offset + output.length;
+      const previousEnd = consumedEnd.current;
+      if (event.type === 'tail' || previousEnd === null || offset > previousEnd) {
+        terminal.reset();
+        terminal.write(output);
+        consumedEnd.current = end;
+      } else if (end > previousEnd) {
+        terminal.write(output.slice(previousEnd - offset));
+        consumedEnd.current = end;
+      }
+    });
     let frame = 0;
     let previousSize = '';
     const resize = () => {
@@ -65,7 +79,7 @@ export function TerminalPane({ info, cwd, perform }: { info: TerminalInfo; cwd: 
       void performRef.current(`terminal-input-${info.id}`, () => window.workbench.writeTerminal(info.id, data));
     });
     terminal.focus();
-    return () => { observer.disconnect(); cancelAnimationFrame(frame); input.dispose(); terminal.dispose(); instance.current = null; consumedEnd.current = null; };
+    return () => { unsubscribe(); observer.disconnect(); cancelAnimationFrame(frame); input.dispose(); terminal.dispose(); instance.current = null; consumedEnd.current = null; };
   }, [info.id]);
 
   useEffect(() => {
@@ -84,18 +98,8 @@ export function TerminalPane({ info, cwd, perform }: { info: TerminalInfo; cwd: 
   useEffect(() => {
     const terminal = instance.current;
     if (!terminal) return;
-    const end = info.outputOffset + info.output.length;
-    const previousEnd = consumedEnd.current;
-    if (previousEnd === null || info.outputOffset > previousEnd) {
-      if (previousEnd !== null) terminal.reset();
-      terminal.write(info.output);
-      consumedEnd.current = end;
-    } else if (end > previousEnd) {
-      terminal.write(info.output.slice(previousEnd - info.outputOffset));
-      consumedEnd.current = end;
-    }
     terminal.options.disableStdin = info.status === 'exited';
-  }, [info.output, info.outputOffset, info.status]);
+  }, [info.status]);
 
   return <section className="terminal-pane"><div className="terminal-toolbar"><span title={cwd}><TerminalSquare size={14} /><span>{cwd}</span></span>
     <span className={`terminal-status ${info.status === 'running' ? 'running' : ''}`}><i />{info.status === 'running' ? t('terminal.running') : info.exitCode !== null ? t('terminal.exitedCode', { code: info.exitCode }) : t('terminal.exited')}</span>

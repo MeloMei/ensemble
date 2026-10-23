@@ -49,6 +49,13 @@
 .chat-pane .session-settings-footer button:hover:not(:disabled) { background: var(--bg); color: var(--text); }
 
 .chat-pane .message-scroll { flex: 1; min-height: 0; overflow: auto; overflow-anchor: none; scrollbar-gutter: stable both-edges; scroll-padding-block: 24px; outline-offset: -3px; }
+.chat-pane .virtual-conversation { position: relative; width: 100%; }
+.chat-pane .virtual-conversation-row { position: absolute; top: 0; left: 0; width: 100%; display: flow-root; }
+.chat-pane .conversation-history-controls { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 6px 14px; flex-shrink: 0; min-height: 32px; padding: 5px 20px; color: var(--dim); border-bottom: 1px solid var(--border); font-size: 11px; }
+.chat-pane .conversation-history-controls button { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
+.chat-pane .conversation-history-controls button:hover:not(:disabled) { color: var(--accent); }
+.chat-pane .chat-history-error { padding: 0 24px 7px; color: var(--danger); font-size: 11px; }
+.chat-pane .conversation-history-controls .chat-history-error { padding: 0; }
 .chat-pane .session-children { display: flex; flex-wrap: wrap; gap: 6px; width: min(100%, 850px); margin: 0 auto; padding: 4px 28px 15px; }
 .chat-pane .session-children button { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; padding: 5px 7px; border: 0; border-radius: var(--radius-control); color: var(--muted); background: var(--surface); text-align: left; font-size: 11px; transition: border-color var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out); }
 .chat-pane .session-children button:hover { background: var(--selected); color: var(--text); }
@@ -62,7 +69,7 @@
 .chat-pane .conversation-project { display: inline-flex; align-items: flex-start; gap: 7px; max-width: 100%; margin-top: 23px; padding: 8px 12px; border-radius: var(--radius-control); color: var(--dim); background: var(--surface); font-size: 11px; line-height: 1.7; }
 .chat-pane .conversation-project svg { margin-top: 2px; }
 .chat-pane .conversation-project code { overflow-wrap: anywhere; }
-.chat-pane .messages { width: min(100%, 850px); padding: 20px 28px 0; margin: 0 auto; }
+.chat-pane .messages { display: flow-root; width: min(100%, 850px); padding: 0 28px; margin: 0 auto; }
 .chat-pane .message { min-width: 0; margin: 0 0 25px; }
 .chat-pane .message-user { display: flex; flex-direction: column; align-items: flex-end; margin-bottom: 30px; }
 .chat-pane .user-message { max-width: 88%; padding: 12px 16px; border: 0; border-radius: var(--radius-panel); color: var(--text); background: var(--selected); font-size: 14px; line-height: 1.85; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
@@ -153,6 +160,7 @@
 .chat-pane .native-agent-events .process-heading strong { flex: 1; color: var(--text); font-size: 12px; font-weight: 550; overflow-wrap: anywhere; }
 
 .chat-pane .conversation-notices { width: min(100%, 850px); margin: 0 auto; padding: 0 28px 10px; }
+.chat-pane .approval-availability { min-width: 0; margin: 0; padding: 0; border: 0; }
 .chat-pane .message-delivery { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px 10px; margin-top: 6px; color: var(--dim); font-size: 10px; }
 .chat-pane .message-delivery button { color: var(--accent); }
 .chat-pane .delivery-rejected, .chat-pane .delivery-unknown { color: var(--warning); }

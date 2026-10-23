@@ -10,7 +10,7 @@ import { useAppearance, ThemeOptions } from './appearance';
 import { LanguageOptions } from './language';
 import { SPRING_SNAPPY, motionPopover } from './vendor/open-claude-ui/ClaudeMotionPresets';
 import type { PromptInput, ProviderInfo, Session, Snapshot, Workspace, WorkspaceTab } from '../shared/types';
-import { searchableMessageText } from '../shared/message-text';
+import type { BackendConnectionState } from '../shared/backend';
 import { recoverSessionCommands, runSessionCommand } from './session-command';
 import { sessionAttentionReason, sessionIsUnread } from './session-attention';
 import { PRODUCT_NAME } from '../shared/app-identity';
@@ -53,8 +53,10 @@ export function App() {
   const { theme, setPreference } = useAppearance();
   const reducedMotion = useReducedMotion();
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [connection, setConnection] = useState<BackendConnectionState>({ status: 'connecting', synced: false });
   const [loadError, setLoadError] = useState('');
   const [page, setPage] = useState<Page>('workspace');
+  const [readingSessionId, setReadingSessionId] = useState<string | null>(null);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [workflowId, setWorkflowId] = useState<string | null>(null);
   const [newWorkflow, setNewWorkflow] = useState(false);
@@ -69,12 +71,15 @@ export function App() {
   const [searching, setSearching] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, PromptInput>>({});
   const currentDrafts = useRef<Record<string, PromptInput>>({});
+  const draftReady = useRef(new Set<string>());
+  draftReady.current = new Set((snapshot?.sessions ?? []).filter(session => session.historyLoaded !== false).map(session => session.id));
   const [draftErrors, setDraftErrors] = useState<Record<string, string>>({});
   const [pending, setPending] = useState<Set<string>>(new Set());
   const [toast, setToast] = useState('');
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const updateDraft = useCallback((id: string, value: PromptInput, expected?: PromptInput) => {
+    if (!expected && !draftReady.current.has(id)) return;
     if (expected && currentDrafts.current[id] && currentDrafts.current[id] !== expected) return;
     currentDrafts.current[id] = value;
     setDrafts(current => ({ ...current, [id]: value }));
@@ -83,6 +88,18 @@ export function App() {
       if (currentDrafts.current[id] !== value) return;
       setDraftErrors(current => ({ ...current, [id]: error instanceof Error ? error.message : String(error) }));
     });
+  }, []);
+  useEffect(() => {
+    let active = true;
+    let updated = false;
+    const unsubscribe = window.workbench.onConnectionChanged(state => {
+      updated = true;
+      if (active) setConnection(state);
+    });
+    void window.workbench.getConnection().then(state => { if (active && !updated) setConnection(state); }, error => {
+      if (active && !updated) setConnection({ status: 'failed', synced: false, error: error instanceof Error ? error.message : String(error) });
+    });
+    return () => { active = false; unsubscribe(); };
   }, []);
 
   const perform = useCallback<Perform>(async (key, action) => {
@@ -117,20 +134,32 @@ export function App() {
   const activeTab = workspace?.tabs.find(tab => tab.id === workspace.activeTabId) ?? workspace?.tabs[0];
   const secondaryTab = workspace?.tabs.find(tab => tab.id === workspace.secondaryTabId && tab.id !== activeTab?.id);
   const activeSession = activeTab?.kind === 'agent' ? sessions.find(session => session.id === activeTab.sessionId) : undefined;
+  const readingSession = page === 'history' ? sessions.find(session => session.id === readingSessionId) : undefined;
+  const connected = connection.status === 'connected' && connection.synced;
   useEffect(() => {
-    if (snapshot) void recoverSessionCommands();
-  }, [snapshot]);
+    if (connected && snapshot) void recoverSessionCommands();
+  }, [connected, snapshot]);
+  const watchedIds = JSON.stringify(page === 'workspace' ? [activeTab, secondaryTab].flatMap(tab => tab?.kind === 'agent' ? [tab.sessionId] : [])
+    : readingSession ? [readingSession.id] : []);
+  useEffect(() => {
+    void window.workbench.watchSessions(JSON.parse(watchedIds) as string[]).catch(error => {
+      if (connected) setToast(error instanceof Error ? error.message : String(error));
+    });
+  }, [watchedIds, connected]);
+  useEffect(() => () => { void window.workbench.watchSessions([]).catch(() => {}); }, []);
   const visibleWorkspaces = workspaces.filter(item => `${item.name} ${item.cwd}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
   const refreshKey = sessions.filter(session => session.cwd === workspace?.cwd).map(session => `${session.id}:${session.status}`).join('|');
 
-  const selectWorkspace = useCallback((id: string) => { setWorkspaceId(id); setPage('workspace'); setTabMenu(false); }, []);
-  const openSession = useCallback((id: string) => {
+  const selectWorkspace = useCallback((id: string) => { setReadingSessionId(null); setWorkspaceId(id); setPage('workspace'); setTabMenu(false); }, []);
+  const openSession = useCallback((id: string, readOnly = false) => {
     void perform(`open-session-${id}`, async () => {
       const current = await window.workbench.snapshot();
       const session = current.sessions.find(item => item.id === id);
       if (!session) throw new Error(t('app.sessionMissing'));
-      let destination = current.workspaces.find(item => item.cwd === session.cwd)?.id;
-      if (!destination) destination = await window.workbench.createWorkspace({ name: pathName(session.cwd), cwd: session.cwd });
+      const destination = current.workspaces.find(item => item.cwd === session.cwd)?.id;
+      if (readOnly || !destination) {
+        setReadingSessionId(id); setPage('history'); setDialog(null); return;
+      }
       await window.workbench.openSessionTab(destination, id);
       selectWorkspace(destination);
       setDialog(null);
@@ -140,7 +169,7 @@ export function App() {
   const renderTab = (tab?: WorkspaceTab) => {
     const tabSession = tab?.kind === 'agent' ? sessions.find(item => item.id === tab.sessionId) : undefined;
     const tabTerminal = tab?.kind === 'terminal' ? snapshot?.terminals.find(item => item.id === tab.terminalId) : undefined;
-    if (tabSession && workspace) return <SessionChat key={tabSession.id} session={tabSession} workspaceId={workspace.id} sessions={sessions} openSession={openSession} provider={providers.find(item => item.id === tabSession.providerId)} perform={perform} pending={pending} draft={drafts[tabSession.id] ?? tabSession.draft ?? { text: '' }} draftError={draftErrors[tabSession.id]} onDraftChange={(value, expected) => updateDraft(tabSession.id, value, expected)} />;
+    if (tabSession && workspace) return <SessionChat key={tabSession.id} session={tabSession} workspaceId={workspace.id} sessions={sessions} openSession={openSession} connected={connected} provider={providers.find(item => item.id === tabSession.providerId)} perform={perform} pending={pending} draft={drafts[tabSession.id] ?? tabSession.draft ?? { text: '' }} draftError={draftErrors[tabSession.id]} onDraftChange={(value, expected) => updateDraft(tabSession.id, value, expected)} />;
     if (tabTerminal && workspace) return <TerminalPane key={tabTerminal.id} info={tabTerminal} cwd={workspace.cwd} perform={perform} />;
     if (tab?.kind === 'preview') return <PreviewPane key={tab.id} tab={tab} />;
     return <EmptyState icon={<Layers2 size={28} />} title={t('app.projectReady')} action={<div className="empty-actions"><button className="button" onClick={() => setDialog('agent')}><Plus size={14} />{t('app.addAgent')}</button><button className="button subtle" disabled={pending.has('create-terminal')} onClick={() => workspace && void perform('create-terminal', () => window.workbench.createTerminal(workspace.id))}><TerminalSquare size={14} />{t('app.openTerminal')}</button></div>}>{t('app.projectReadyNote')}</EmptyState>;
@@ -178,12 +207,13 @@ export function App() {
         })}
         {!workspaces.length && <div className="sidebar-placeholder">{t('app.chooseLocalProject')}<br />{t('app.addRuntimeNote')}</div>}{workspaces.length > 0 && !visibleWorkspaces.length && <div className="sidebar-placeholder">{t('app.noWorkspaceMatch')}</div>}
       </div>
-      <div className="sidebar-connection"><i /><span>{snapshot ? t('app.connected') : loadError ? t('app.disconnected') : t('app.connecting')}</span><small>{t('app.thisMachine')}</small></div><footer className="sidebar-footer"><button onClick={() => setDialog('workspace')}><Plus size={15} />{t('app.addProject')}</button><IconButton label={t('preferences.open')} onClick={() => setDialog('appearance')}><Palette size={16} /></IconButton><IconButton label={t('app.providers')} onClick={() => setPage('providers')}><Settings2 size={16} /></IconButton></footer>
+      <div className={`sidebar-connection connection-${connected ? 'connected' : connection.status}`}><i /><span>{connected ? t('app.connected') : t(`connection.${connection.status}`)}</span><small>{t('app.thisMachine')}</small></div><footer className="sidebar-footer"><button onClick={() => setDialog('workspace')}><Plus size={15} />{t('app.addProject')}</button><IconButton label={t('preferences.open')} onClick={() => setDialog('appearance')}><Palette size={16} /></IconButton><IconButton label={t('app.providers')} onClick={() => setPage('providers')}><Settings2 size={16} /></IconButton></footer>
     </aside>
 
     <main className={`main-workspace ${page === 'workspace' && workspace && rightPane ? 'with-file-panel' : ''}`}><header className="workspace-header"><div className="workspace-heading">{page === 'workspace' && workspace ? <><FolderOpen size={16} /><h1 title={workspace.name}>{workspace.name}</h1><span title={workspace.cwd}>{pathName(workspace.cwd)}</span><IconButton label={workspace.pinned ? t('app.unpin') : t('app.pin')} aria-pressed={workspace.pinned} onClick={() => void perform('pin-workspace', () => window.workbench.updateWorkspace(workspace.id, { pinned: !workspace.pinned }))}><Pin size={13} fill={workspace.pinned ? 'currentColor' : 'none'} /></IconButton></> : <h1>{{ workspace: PRODUCT_NAME, history: t('app.history'), workflows: t('app.workflows'), providers: t('app.providers'), collaboration: t('app.agentCollaboration') }[page]}</h1>}</div>
       <div className="workspace-header-actions">{page === 'workspace' && workspace && <><button className="header-button" onClick={() => setPage('collaboration')}><Network size={14} /><span>{t('app.collaboration')}</span></button><IconButton label={t('app.projectTools')} onClick={() => setDialog('tools')}><Settings2 size={15} /></IconButton><button className="header-button" disabled={workspace.tabs.length < 2} onClick={() => void perform('split', () => window.workbench.splitWorkspace(workspace.id, secondaryTab ? {} : { tabId: workspace.tabs.find(tab => tab.id !== activeTab?.id)?.id, direction: 'horizontal' }))}>{secondaryTab ? t('app.mergePanes') : t('app.splitPanes')}</button>{secondaryTab && <button className="header-button" onClick={() => void perform('split-direction', () => window.workbench.splitWorkspace(workspace.id, { tabId: secondaryTab.id, direction: workspace.splitDirection === 'vertical' ? 'horizontal' : 'vertical' }))}>{t('app.changeDirection')}</button>}</>}<span className="local-indicator"><i />{t('app.local')}</span><IconButton label={theme === 'light' ? t('app.switchDark') : t('app.switchLight')} onClick={() => setPreference(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={16} /> : <Sun size={16} />}</IconButton>{page === 'workspace' && <button className="header-button" onClick={() => setDialog('codex')} title={t('app.openCodexHint')}><ArrowUpRight size={13} /><span>Codex App</span></button>}{page === 'workspace' && workspace && <IconButton label={rightPane ? t('app.hideFiles') : t('app.showFiles')} aria-pressed={rightPane} onClick={() => setRightPane(value => !value)}><PanelRight size={16} /></IconButton>}</div>
     </header>
+      {snapshot && !connected && <div className="connection-banner" role="status"><CircleAlert size={14} /><span>{t('connection.stale')}{connection.lastReceivedAt && ` · ${t('connection.lastUpdate', { time: relativeTime(connection.lastReceivedAt) })}`}</span>{connection.error && <small>{connection.error}</small>}</div>}
       {!snapshot ? <div className="loading-view">{loadError ? <><CircleAlert size={23} /><p>{loadError}</p><button className="button" onClick={() => void perform('reload', async () => { setSnapshot(await window.workbench.snapshot()); setLoadError(''); })}>{t('common.reload')}</button></> : <><LoaderCircle className="spin" size={23} /><p>{t('app.loading')}</p></>}</div> : <>
         {page === 'workspace' && (workspace ? <div className="workspace-columns"><div className="workspace-center"><div className="tabbar"><div className="workspace-tabs">{workspace.tabs.map(tab => {
           const tabSession = tab.kind === 'agent' ? sessions.find(item => item.id === tab.sessionId) : undefined;
@@ -202,7 +232,12 @@ export function App() {
           }}><IconButton label={t('app.addTab')} aria-haspopup="menu" aria-expanded={tabMenu} onClick={() => setTabMenu(value => !value)}><Plus size={17} /></IconButton><AnimatePresence>{tabMenu && <><button key="dismiss" className="menu-dismiss" tabIndex={-1} aria-label={t('app.dismissAddMenu')} onClick={() => setTabMenu(false)} /><motion.div key="menu" className="tab-menu" role="menu" aria-label={t('app.addTabMenu')} initial={reducedMotion ? false : "initial"} animate="animate" exit={reducedMotion ? undefined : "exit"} variants={motionPopover}><button role="menuitem" onClick={() => { setDialog('agent'); setTabMenu(false); }}><MessageSquare size={15} />{t('app.newAgentSession')}</button><button role="menuitem" disabled={pending.has('create-terminal')} onClick={() => { setTabMenu(false); void perform('create-terminal', () => window.workbench.createTerminal(workspace.id)); }}><TerminalSquare size={15} />{t('app.openLocalTerminal')}</button><button role="menuitem" onClick={() => { setDialog('preview'); setTabMenu(false); }}><Globe size={15} />{t('app.addPreview')}</button></motion.div></>}</AnimatePresence></div></div>
           <WorkspacePanes workspace={workspace} secondary={!!secondaryTab} perform={perform} primary={renderTab(activeTab)} other={renderTab(secondaryTab)} />
         </div><motion.div className="file-panel-transition" initial={false} animate={{ width: rightPane ? 'var(--file-width)' : 0, opacity: rightPane ? 1 : 0 }} transition={reducedMotion ? { duration: 0 } : SPRING_SNAPPY} inert={!rightPane} aria-hidden={!rightPane}><FileReviewPanel key={workspace.id} workspace={workspace} refreshKey={refreshKey} perform={perform} sessions={sessions} onFeedback={activeSession ? text => { const draft = currentDrafts.current[activeSession.id] ?? activeSession.draft ?? { text: '' }; updateDraft(activeSession.id, { ...draft, text: [draft.text, text].filter(Boolean).join('\n\n') }); } : undefined} /></motion.div></div> : <EmptyState icon={<Layers2 size={30} />} title={t('app.startLocal')} action={<button className="button primary" onClick={() => setDialog('workspace')}><Plus size={15} />{t('app.newWorkspace')}</button>}>{t('app.startLocalNote')}</EmptyState>)}
-        {page === 'history' && <HistoryView sessions={sessions} providers={providers} openSession={openSession} perform={perform} />}
+        {page === 'history' && (readingSession ? <section className="history-session-view">
+          <header className="history-session-toolbar"><span>{t('history.readOnly')}</span><button className="header-button" onClick={() => setReadingSessionId(null)}><X size={13} />{t('history.closeSession')}</button></header>
+          <SessionChat key={readingSession.id} session={readingSession} readOnly connected={connected} sessions={sessions}
+            provider={providers.find(provider => provider.id === readingSession.providerId)} perform={perform} pending={pending}
+            draft={{ text: '' }} onDraftChange={() => {}} openSession={id => openSession(id, true)} />
+        </section> : <HistoryView sessions={sessions} providers={providers} openSession={openSession} perform={perform} />)}
         {page === 'collaboration' && <Suspense fallback={<div className="loading-view"><LoaderCircle className="spin" size={23} /><p>{t('app.loadingCollaboration')}</p></div>}><CollaborationViews snapshot={snapshot} perform={perform} pending={pending} openSession={openSession} initialCwd={workspace?.cwd} openProviderSettings={() => setDialog('providers')} /></Suspense>}
         {page === 'workflows' && <div className="split-page"><aside className="item-sidebar"><div className="sidebar-heading"><h2>{t('app.workflows')}</h2><IconButton label={t('workflow.new')} onClick={() => setNewWorkflow(true)}><Plus size={17} /></IconButton></div><p className="sidebar-subtitle">{t('workflow.dependenciesNote')}</p><div className="item-list">{workflows.map(item => <button key={item.id} className={`list-item ${item.id === workflow?.id && !newWorkflow ? 'selected' : ''}`} onClick={() => { setWorkflowId(item.id); setNewWorkflow(false); }}><strong>{item.name}</strong><div><span>{t('workflow.stepCount', { count: item.steps.length })}</span><Status value={item.status} /></div></button>)}</div><button className="sidebar-action" onClick={() => setNewWorkflow(true)}><Plus size={14} />{t('workflow.new')}</button></aside>{newWorkflow ? <WorkflowEditor providers={providers} perform={perform} pending={pending} onClose={() => setNewWorkflow(false)} onCreated={id => { setWorkflowId(id); setNewWorkflow(false); }} /> : workflow ? <WorkflowView workflow={workflow} providers={providers} sessions={sessions} perform={perform} pending={pending} openSession={openSession} openWorkflow={id => { setWorkflowId(id); setNewWorkflow(false); }} /> : <EmptyState icon={<GitBranch size={28} />} title={t('workflow.empty')} action={<button className="button" onClick={() => setNewWorkflow(true)}><Plus size={14} />{t('workflow.new')}</button>}>{t('workflow.emptyNote')}</EmptyState>}</div>}
         {page === 'providers' && <ProvidersView snapshot={snapshot} perform={perform} pending={pending} />}
@@ -299,6 +334,23 @@ function HistoryView({ sessions, providers, openSession, perform }: { sessions: 
   const { t } = useTranslation('shell');
   const [query, setQuery] = useState('');
   const [archived, setArchived] = useState(false);
-  const matching = sessions.filter(session => (archived || !session.archived) && `${session.title} ${session.cwd} ${session.messages.map(searchableMessageText).join(' ')}`.toLocaleLowerCase().includes(query.toLocaleLowerCase())).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  return <section className="history-page"><div className="history-intro"><div><h2>{t('history.title')}</h2><p>{t('history.note')}</p></div><div className="history-search"><Search size={14} /><input aria-label={t('history.search')} value={query} onChange={event => setQuery(event.target.value)} placeholder={t('history.placeholder')} /></div></div><label className="history-archive"><input type="checkbox" checked={archived} onChange={event => setArchived(event.target.checked)} />{t('history.archivedFilter')}</label><div className="history-list">{matching.length ? matching.map(session => <div className="history-row" key={session.id}><button className="history-open" onClick={() => openSession(session.id)}><span className="history-icon"><AgentIcon providerId={session.providerId} size={19} /></span><span className="history-row-title"><strong>{session.title}{session.archived ? t('history.archivedSuffix') : ''}</strong><small title={session.cwd}>{providers.find(provider => provider.id === session.providerId)?.name ?? session.providerId}<span>·</span>{session.cwd}</small></span></button><AttentionBadge session={session} /><Status value={session.status} /><time>{relativeTime(session.updatedAt)}</time><button className="text-button" disabled={['running', 'waiting_approval', 'waiting_children', 'queued'].includes(session.status)} onClick={() => void perform('archive-session', () => window.workbench.updateSession(session.id, { archived: !session.archived }))}>{session.archived ? t('history.restore') : t('history.archive')}</button></div>) : <EmptyState icon={<History size={25} />} title={query ? t('history.noMatches') : t('history.empty')}>{t('history.emptyNote')}</EmptyState>}</div></section>;
+  const [result, setResult] = useState<{ query: string; archived: boolean; ids: Set<string> }>();
+  const [error, setError] = useState('');
+  const searchQuery = query.trim();
+  useEffect(() => {
+    if (!searchQuery) { setError(''); return; }
+    let active = true;
+    setError('');
+    const timer = setTimeout(() => {
+      void window.workbench.searchSessions(searchQuery, archived).then(value => {
+        if (active) setResult({ query: searchQuery, archived, ids: new Set(value.sessionIds) });
+      }, error => { if (active) setError(error instanceof Error ? error.message : String(error)); });
+    }, 180);
+    return () => { active = false; clearTimeout(timer); };
+  }, [searchQuery, archived]);
+  const ready = !searchQuery || (result?.query === searchQuery && result.archived === archived);
+  const matching = sessions.filter(session => (archived || !session.archived) && (!searchQuery || (ready && result?.ids.has(session.id)))).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return <section className="history-page"><div className="history-intro"><div><h2>{t('history.title')}</h2><p>{t('history.note')}</p></div><div className="history-search"><Search size={14} /><input aria-label={t('history.search')} value={query} onChange={event => setQuery(event.target.value)} placeholder={t('history.placeholder')} /></div></div><label className="history-archive"><input type="checkbox" checked={archived} onChange={event => setArchived(event.target.checked)} />{t('history.archivedFilter')}</label>
+    {error && <p className="inline-error" role="alert">{error}</p>}
+    <div className="history-list">{!ready && !error ? <p className="pane-note" role="status">{t('history.searching')}</p> : matching.length ? matching.map(session => <div className="history-row" key={session.id}><button className="history-open" onClick={() => openSession(session.id)}><span className="history-icon"><AgentIcon providerId={session.providerId} size={19} /></span><span className="history-row-title"><strong>{session.title}{session.archived ? t('history.archivedSuffix') : ''}</strong><small title={session.cwd}>{providers.find(provider => provider.id === session.providerId)?.name ?? session.providerId}<span>·</span>{session.cwd}</small></span></button><AttentionBadge session={session} /><Status value={session.status} /><time>{relativeTime(session.updatedAt)}</time><button className="text-button" disabled={['running', 'waiting_approval', 'waiting_children', 'queued'].includes(session.status)} onClick={() => void perform('archive-session', () => window.workbench.updateSession(session.id, { archived: !session.archived }))}>{session.archived ? t('history.restore') : t('history.archive')}</button></div>) : !error && <EmptyState icon={<History size={25} />} title={query ? t('history.noMatches') : t('history.empty')}>{t('history.emptyNote')}</EmptyState>}</div></section>;
 }

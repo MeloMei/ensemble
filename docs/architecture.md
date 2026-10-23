@@ -31,8 +31,8 @@ Backend modules are files directly under `src/main/`; there is no separate backe
 2. The preload bridge invokes a named Electron IPC command. The renderer has no Node integration; the window uses context isolation and Electron sandboxing.
 3. The Electron main process checks the sender and forwards service commands through `BackendClient`. Native window operations, dialogs, links, and notifications remain in the Electron process.
 4. The backend authenticates the command and calls the handler registered by `createWorkbenchService`.
-5. The handler reaches the engine, collaboration core, or a service such as workspace files or runtime settings. State changes are published as snapshots.
-6. The backend sends snapshots over its `/events` stream. Electron forwards them to renderer subscribers through IPC.
+5. The handler reaches the engine, collaboration core, or a service such as workspace files or runtime settings. State changes feed scoped projections without cloning all conversation history.
+6. The backend sends versioned resets and deltas over `/events`. Electron reconstructs the subscribed view and forwards it through IPC. Connection state is separate from cached content; terminals have their own tail/append stream.
 
 The preload bridge exposes the application API rather than arbitrary filesystem or process access. Input validation and execution permissions are enforced in the backend services and provider adapters.
 
@@ -71,6 +71,14 @@ On backend restart, unfinished executions are marked interrupted and require exp
 Ordinary create/send/cancel/answer commands share SQLite transaction receipts. Follow-ups retain their selected model, settings and attachments in a durable next-turn queue. Stop, failure and restart pause the queue. Codex reconciles clientUserMessageId against native history; lost confirmation stays unknown and never triggers an automatic resend. Attention and seen revisions persist separately from task status.
 
 Desktop Stop requests carry the observed attempt ID; the backend compares it atomically before cancelling or pausing a queue. Pending Codex input that never reached physical execution is rejected on cancellation or queued-state recovery; input interrupted after execution began remains unknown. The same delivery guard applies to ordinary, managed and collaboration dispatch. Each new concurrent approval advances the attention revision.
+
+Watched sessions receive bounded recent history; older pages and search windows load on demand. Unwatched sessions omit draft and queued-message bodies.
+
+The watched tail is bounded by message count. Individual message bodies remain intact. Frames above 8 MiB end the subscription with an explicit size-limit reason while retaining cached content; selecting a smaller session can restore synchronization. Historical sessions whose workspace was removed remain readable in a temporary read-only view without recreating the directory.
+
+Failed watch updates invalidate only their owning subscription and reconnect using the desired session IDs. Renderer reload or loss releases its view subscriptions. A live-tail reset invalidates pages fetched against an obsolete tail.
+
+Desktop subscriptions require stream version 2. An older backend is left running with its tasks; management CLI connections remain usable so the user can stop it when appropriate before starting the new desktop client.
 
 ## Build boundaries and licensing
 
