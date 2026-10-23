@@ -418,8 +418,11 @@ export function SessionChat({
   const [sendError, setSendError] = useState('');
   const [expandedProcesses, setExpandedProcesses] = useState<Set<string>>(new Set());
   const attachments = draft.attachments ?? [];
-  const attachmentsSupported = provider?.source !== 'plugin';
-  const unsupportedAttachments = !attachmentsSupported && attachments.length > 0;
+  const attachmentCapabilities = provider?.declaredCapabilities ?? provider?.capabilities;
+  const supportsAttachment = (kind: PromptAttachment['kind']) => provider?.source !== 'plugin'
+    || (provider.protocolVersion === 2 && attachmentCapabilities?.[kind === 'image' ? 'images' : 'textAttachments'] === true);
+  const attachmentsSupported = supportsAttachment('image') || supportsAttachment('text');
+  const unsupportedAttachments = attachments.some(attachment => !supportsAttachment(attachment.kind));
   const [rewindMessage, setRewindMessage] = useState<string>();
   const [nativeAgentId, setNativeAgentId] = useState<string>();
   const composing = useRef(false);
@@ -790,7 +793,7 @@ export function SessionChat({
         {!historyReady && <p className="composer-note" role="status"><LoaderCircle className="spin" size={13} />{t('chat.loadingHistory')}</p>}
         {sendError && <p className="composer-note" role="alert"><CircleAlert size={13} />{t('chat.sendUnconfirmed', { error: sendError })}</p>}
         {draftError && <p className="composer-note" role="alert"><CircleAlert size={13} />{t('chat.draftError', { error: draftError })}<button className="text-button" onClick={() => onDraftChange(draft)}>{t('chat.retrySave')}</button></p>}
-        {unsupportedAttachments && <p className="composer-note" role="alert"><CircleAlert size={13} />{t('chat.pluginAttachmentsRemove')}</p>}
+        {unsupportedAttachments && <p className="composer-note" role="alert"><CircleAlert size={13} />{t(attachmentsSupported ? 'chat.pluginAttachmentKindsRemove' : 'chat.pluginAttachmentsRemove')}</p>}
         {!provider?.available && <p className="composer-note"><CircleAlert size={13} />{t('chat.providerUnavailable')}</p>}
       </div>}
     </div>

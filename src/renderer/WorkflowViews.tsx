@@ -7,6 +7,7 @@ import { ArrowUpRight, Check, Copy, CircleAlert, CircleStop, Folder, FolderOpen,
 import type { ProviderInfo, Session, Snapshot, Workflow, WorkflowInput, WorkflowStep, WorkflowStepInput } from '../shared/types';
 import { DirectoryField, IconButton, Modal, ModelField, ProviderSelect, Status, defaultModelId, statusLabel, modelName, modelPolicy, validModelSelection, type Perform } from './ui';
 import { motionMessageFadeUp } from './vendor/open-claude-ui/ClaudeMotionPresets';
+import { RuntimeHealth, useRuntimeHealth } from './RuntimeHealth';
 import './WorkflowViews.css';
 
 function makeStep(provider: ProviderInfo | undefined, previous?: string): WorkflowStepInput {
@@ -156,17 +157,27 @@ function ProviderGuides({ provider }: { provider: ProviderInfo }) {
 
 function ProvidersContent({ snapshot, perform, pending }: ProvidersProps) {
   const { t } = useTranslation('shell');
+  const { t: runtimeText } = useTranslation('runtime');
   const reducedMotion = useReducedMotion();
-  const available = snapshot.providers.filter(provider => provider.available).length;
+  const [directory, setDirectory] = useState('');
+  const cwd = snapshot.workspaces.some(workspace => workspace.cwd === directory) ? directory : '';
+  const health = useRuntimeHealth(snapshot.providers, cwd);
+  const available = health.providers.filter(provider => provider.available).length;
+  const directories = snapshot.workspaces.filter((workspace, index, values) => values.findIndex(item => item.cwd === workspace.cwd) === index);
   return <div className="providers-content">
+    <div className="runtime-directory"><label>{runtimeText('health.directory')}<select value={cwd} onChange={event => setDirectory(event.target.value)}>
+      <option value="">{runtimeText('health.global')}</option>{directories.map(workspace => <option key={workspace.id} value={workspace.cwd}>{workspace.name} · {workspace.cwd}</option>)}
+    </select></label>{cwd && <code>{cwd}</code>}<p>{runtimeText(cwd ? 'health.directoryNote' : 'health.globalNote')}</p></div>
     <div className="provider-detection">
       <div><span className={`connections-status ${available ? 'ready' : ''}`}><span />{t('provider.detectedCount', { count: available })}</span><p>{t('provider.detectionNote')}</p></div>
-      <button className="button" disabled={pending.has('refresh-providers')} onClick={() => void perform('refresh-providers', () => window.workbench.refreshProviders())}><RefreshCw className={pending.has('refresh-providers') ? 'spin' : ''} size={14} />{t('provider.refresh')}</button>
+      <button className="button" disabled={pending.has('refresh-providers') || health.loading} onClick={() => void perform('refresh-providers', health.refresh)}><RefreshCw className={pending.has('refresh-providers') ? 'spin' : ''} size={14} />{t('provider.refresh')}</button>
     </div>
-    <div className="provider-cards">{snapshot.providers.map(provider => <motion.article className={`provider-card ${!provider.available ? 'unavailable' : ''}`} key={provider.id} variants={motionMessageFadeUp} initial={reducedMotion ? false : 'initial'} animate="animate">
+    {health.error && <p className="runtime-panel-error" role="alert">{health.error}</p>}
+    <div className="provider-cards">{health.providers.map(provider => <motion.article className={`provider-card ${!provider.available ? 'unavailable' : ''}`} key={provider.id} variants={motionMessageFadeUp} initial={reducedMotion ? false : 'initial'} animate="animate">
       <div className="provider-card-heading"><div className="provider-icon"><AgentIcon providerId={provider.id} size={18} /></div><div><h2>{provider.name}</h2><span>{provider.source === 'plugin' ? t('provider.plugin') : t('provider.builtin')}</span></div><span className={`availability ${provider.available ? 'available' : ''}`}><span />{provider.available ? t('provider.entryFound') : t('provider.notReady')}</span></div>
       <p className="provider-detail">{renderDisplayText(provider.detail, provider.detailI18n)}</p><ProviderModelSummary provider={provider} />
       <div className="provider-capabilities"><span className={provider.capabilities.resume ? 'supported' : ''}>{provider.capabilities.resume ? <Check size={13} /> : <X size={13} />}{t('provider.continueSession')}{!provider.capabilities.resume && t('provider.unsupportedSuffix')}</span><span className={provider.capabilities.approvals ? 'supported' : ''}><ShieldCheck size={13} />{t('provider.approvals')}{!provider.capabilities.approvals && t('provider.unsupportedSuffix')}</span></div>
+      <RuntimeHealth provider={provider} loading={health.loading} />
       <ProviderGuides provider={provider} />
     </motion.article>)}</div>
     <div className="plugin-section">

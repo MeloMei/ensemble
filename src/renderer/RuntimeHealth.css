@@ -1,6 +1,39 @@
+.runtime-directory { display: grid; gap: 8px; max-width: 100%; margin-bottom: 20px; color: var(--muted); font-size: 12px; }
+.runtime-directory label { display: grid; gap: 7px; }
+.runtime-directory select { max-width: 100%; }
+.runtime-directory > code { color: var(--text); font-size: 11px; overflow-wrap: anywhere; }
+.runtime-directory p { font-size: 12px; line-height: 1.7; }
+.runtime-health { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
+.runtime-health-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.runtime-health h3 { color: var(--text); font-size: 12px; font-weight: 550; }
+.runtime-health-heading > span { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 11px; }
+.runtime-health dl { margin: 0; }
+.runtime-health-check { display: grid; grid-template-columns: minmax(80px, .65fr) minmax(0, 1fr); gap: 8px; padding: 8px 0; }
+.runtime-health dt { color: var(--muted); font-size: 12px; line-height: 1.7; }
+.runtime-health dd { min-width: 0; margin: 0; }
+.health-status { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; line-height: 1.7; }
+.health-ready { color: var(--success); }
+.health-missing, .health-unknown { color: var(--muted); }
+.health-error { color: var(--danger); }
+.runtime-health dd small, .runtime-health dd time, .runtime-health dd p { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
 .runtime-panel-error { margin: 10px 0; color: var(--danger); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
 .workspace-tools > .tools-tabs { grid-template-columns: repeat(auto-fit, minmax(95px, 1fr)); }
 .runtime-panel-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.diagnostics-tracing { display: flex; align-items: flex-start; gap: 8px; margin: 10px 0 16px; color: var(--text); font-size: 12px; }
+.diagnostics-tracing > input { flex: 0 0 auto; width: 14px; height: 14px; margin-top: 2px; }
+.diagnostics-tracing strong { display: block; font-weight: 550; }
+.diagnostics-tracing small { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; line-height: 1.7; }
+.diagnostics-export { display: grid; gap: 7px; margin: 10px 0; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-control); color: var(--muted); font-size: 12px; }
+.diagnostics-export code { color: var(--text); font-size: 11px; overflow-wrap: anywhere; user-select: text; }
+.diagnostics-count { margin: 10px 0; color: var(--muted); font-size: 11px; }
+.diagnostics-table-scroll { max-width: 100%; overflow-x: auto; }
+.diagnostics-records table { width: 100%; border-collapse: collapse; color: var(--text); font-size: 11px; text-align: left; }
+.diagnostics-records th { color: var(--muted); font-weight: 500; white-space: nowrap; }
+.diagnostics-records th, .diagnostics-records td { min-width: 70px; padding: 9px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.diagnostics-records td { max-width: 180px; overflow-wrap: anywhere; line-height: 1.6; }
+.diagnostics-records td small, .diagnostics-records details > span { display: block; color: var(--muted); }
+.diagnostics-records details { margin-top: 4px; color: var(--muted); }
+.diagnostics-records summary { cursor: pointer; font-size: 10px; }
 .managed-worktree-panel h3 { display: flex; align-items: center; gap: 7px; margin: 6px 0 16px; font-size: 13px; font-weight: 550; }
 .managed-worktree-panel dl { display: grid; gap: 12px; margin: 10px 0; }
 .managed-worktree-panel dl > div { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 10px; }
@@ -10,5 +43,6 @@
 .worktree-removal-confirm { padding: 12px; border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border)); border-radius: var(--radius-panel); }
 .worktree-removal-confirm > p { color: var(--danger); font-size: 12px; line-height: 1.7; }
 @media (max-width: 700px) {
+  .runtime-health-check { grid-template-columns: 90px minmax(0, 1fr); }
   .managed-worktree-panel dl > div { grid-template-columns: 1fr; gap: 3px; }
 }

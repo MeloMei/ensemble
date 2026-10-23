@@ -21,6 +21,8 @@ import { reviewPullRequest } from './pull-request-review';
 import { CollaborationCore } from './collaboration-core';
 import { IdentityService } from './identity-service';
 import { ManagedWorktrees } from './managed-worktrees';
+import { ProviderHealthRegistry } from './provider-health';
+import { DiagnosticJournal, withProviderDiagnostics } from './diagnostics';
 import { sessionHistory, searchMessages } from './session-history';
 import { searchableMessageText } from '../shared/message-text';
 
@@ -53,11 +55,15 @@ export async function createWorkbenchService(options: {
   const cleanup: (() => Promise<unknown>)[] = [() => store.close()];
   try {
     await store.load();
+    const health = new ProviderHealthRegistry();
+    const diagnostics = new DiagnosticJournal(join(options.dataPath, 'diagnostics', 'lifecycle.ndjson'));
+    await diagnostics.load().catch(() => {});
+    cleanup.push(() => diagnostics.flush());
     let managedWorktrees: ManagedWorktrees | undefined;
     const pluginPath = join(options.dataPath, 'plugins');
     await mkdir(pluginPath, { recursive: true });
     const publicSnapshot = (snapshot: Snapshot): Snapshot => ({ version: 1, sessions: snapshot.sessions, workflows: snapshot.workflows,
-      providers: snapshot.providers, dataPath: snapshot.dataPath,
+      providers: snapshot.providers.map(provider => health.describe(provider)), dataPath: snapshot.dataPath,
       pluginPath: snapshot.pluginPath, pluginErrors: snapshot.pluginErrors, terminals: snapshot.terminals, mails: snapshot.mails,
       workspaces: snapshot.workspaces.map(workspace => ({ ...workspace, ...(managedWorktrees?.metadata(workspace.id) ? { worktree: managedWorktrees.metadata(workspace.id) } : {}) })),
       collaborationEventSeq: store.latestEventSeq(), collaboration: {
@@ -93,6 +99,33 @@ export async function createWorkbenchService(options: {
       const affected = new Set(managedWorktrees!.workspaceIds(workspaceId));
       if (terminalManager.metadata().some(terminal => affected.has(terminal.workspaceId) && terminal.status === 'running')) throw new Error('请先停止该工作区的终端，再回收目录。');
     });
+    const stopDiagnostics = engine.subscribeExecution(observation => {
+      const session = store.state.sessions.find(item => item.id === observation.sessionId);
+      if (!session) return;
+      const context = { providerId: session.providerId, sessionId: session.id, attemptId: observation.attemptId,
+        ...('turnId' in observation ? { turnId: observation.turnId } : {}) };
+      if (observation.type === 'input') {
+        health.observe(observation, session);
+        diagnostics.record({ ...context, layer: 'engine', kind: 'dispatch.started' });
+      }
+      else if (observation.type === 'settled') {
+        health.observe(observation, session);
+        diagnostics.record({ ...context, layer: 'engine', kind: 'dispatch.settled', status: observation.status,
+          ...(observation.error ? { errorCode: /auth|401|api.?key|logged in/i.test(observation.error) ? 'authentication' : /timeout|超时/i.test(observation.error) ? 'timeout' : 'runtime-failure' } : {}) });
+        engine.publishState();
+      } else if (observation.event.type !== 'text' && observation.event.type !== 'activity') {
+        const event = observation.event;
+        diagnostics.record({ ...context, layer: 'engine', kind: 'normalized', eventType: event.type,
+          ...(event.type === 'structured' ? { requestId: event.event.id, status: event.event.status } : event.type === 'delivery' ? { status: event.status } : {}) });
+      }
+    });
+    cleanup.push(async () => stopDiagnostics());
+    const wrapped = new WeakMap<import('./providers/types').ProviderAdapter, import('./providers/types').ProviderAdapter>();
+    const instrument = (adapter: import('./providers/types').ProviderAdapter) => {
+      let result = wrapped.get(adapter);
+      if (!result) { result = withProviderDiagnostics(adapter, diagnostics); wrapped.set(adapter, result); }
+      return result;
+    };
     let codexProvider: Awaited<ReturnType<typeof createCodexProvider>> | undefined;
     let openCodeProvider: AcpProvider | undefined;
     let deepSeekProvider: AcpProvider | undefined;
@@ -106,7 +139,7 @@ export async function createWorkbenchService(options: {
         deepSeekProvider ? deepSeekProvider.refreshInfo() : createAcpProvider('deepseek-harness', 'DeepSeek Harness', () => createDeepSeekHarnessDescriptor({ dataPath })).then(provider => { deepSeekProvider = provider; }),
       ]);
       const codex = codexProvider;
-      engine.setProviders([codex, claude, openCodeProvider!, deepSeekProvider!, ...plugins.adapters], unavailable, plugins.errors);
+      engine.setProviders([codex, claude, openCodeProvider!, deepSeekProvider!, ...plugins.adapters].map(instrument), unavailable, plugins.errors);
     }
 
 
@@ -147,6 +180,11 @@ export async function createWorkbenchService(options: {
     handle('workbench:remove-queued-prompt', (_event, id, itemId) => engine.removeQueuedPrompt(idSchema.parse(id), idSchema.parse(itemId)));
     handle('workbench:set-session-queue-paused', (_event, id, paused) => engine.setSessionQueuePaused(idSchema.parse(id), z.boolean().parse(paused)));
     handle('workbench:reconcile-session-delivery', (_event, id) => engine.reconcileSessionDelivery(idSchema.parse(id)));
+    handle('workbench:provider-health', (_event, cwd) => engine.liveSnapshot().providers.map(provider => health.describe(provider, cwdSchema.optional().parse(cwd))));
+    handle('workbench:diagnostics', () => diagnostics.snapshot());
+    handle('workbench:export-diagnostics', () => diagnostics.export(join(options.dataPath, 'diagnostics', 'exports')));
+    handle('workbench:set-diagnostic-tracing', (_event, enabled) => diagnostics.setTracing(z.boolean().parse(enabled)));
+    handle('workbench:diagnostic-tracing', () => diagnostics.isTracing());
     handle('workbench:remove-worktree', (_event, id) => managedWorktrees!.remove(idSchema.parse(id)));
     handle('workbench:collaboration-call', async (_event, operation, input) => {
       const name = idSchema.parse(operation);
@@ -238,7 +276,7 @@ export async function createWorkbenchService(options: {
 
     handle('workbench:import-attachments', (_event, paths) => attachments.importFiles(z.array(cwdSchema).max(8).parse(paths)));
 
-    if (options.providers) engine.setProviders(options.providers, [], []);
+    if (options.providers) engine.setProviders(options.providers.map(instrument), [], []);
     else await refreshProviders();
     return {
       engine, store, attachments, runtimeSettings, collaboration, core,
@@ -255,8 +293,9 @@ export async function createWorkbenchService(options: {
       streamSnapshot: () => publicSnapshot(engine.liveSnapshot()),
       terminalSnapshot: (id: string) => terminalManager.get(id),
       async shutdown(): Promise<void> {
+        stopDiagnostics();
         const results = await Promise.allSettled([core.close(), terminalManager.shutdown(), engine.shutdown(), collaboration.close()]);
-        results.push(...await Promise.allSettled([store.close()]));
+        results.push(...await Promise.allSettled([store.close(), diagnostics.flush()]));
         const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
         if (failures.length) throw new AggregateError(failures.map(result => result.reason), '后台退出未完成');
       },
