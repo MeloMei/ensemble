@@ -1,12 +1,30 @@
-import { createServer, type Server, type ServerResponse } from 'node:http';
+import { createServer, type Server } from 'node:http';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { BackendEndpoint } from '../shared/backend';
+import type { BackendEndpoint, TerminalOutputEvent } from '../shared/backend';
+import { BACKEND_STREAM_VERSION } from '../shared/backend';
 import type { Snapshot } from '../shared/types';
 import { createWorkbenchService, type WorkbenchService } from './workbench-service';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createWorkbenchMcpServer } from './mcp-server';
+import { SnapshotProjection } from './snapshot-projection';
+import { BoundedEventStream } from './bounded-event-stream';
+
+function sessionIds(input: unknown): string[] {
+  if (!Array.isArray(input) || input.length > 8 || input.some(id => typeof id !== 'string' || !id || id.length > 200)) throw new Error('会话订阅格式无效。');
+  return [...new Set(input)] as string[];
+}
+
+async function readBody(request: import('node:http').IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = []; let bytes = 0;
+  for await (const chunk of request) {
+    bytes += chunk.length;
+    if (bytes > 2_000_000) throw new Error('后台请求超过大小限制。');
+    chunks.push(chunk);
+  }
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+}
 
 async function saveEndpoint(path: string, endpoint: BackendEndpoint): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;
@@ -43,16 +61,22 @@ export async function startBackend(options: {
       if (candidate > 0 && candidate <= 65535) port = candidate;
     }
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error; }
-  const streams = new Set<ServerResponse>();
+  const streams = new Map<string, { writer: BoundedEventStream; projection: SnapshotProjection }>();
+  const terminalStreams = new Set<{ terminalId: string; writer: BoundedEventStream }>();
   const token = randomBytes(32).toString('hex');
   let service: WorkbenchService | undefined;
   let closed = false;
+  let revision = 0;
   const publish = (snapshot: Snapshot) => {
-    const data = `event: snapshot\ndata: ${JSON.stringify(snapshot)}\n\n`;
-    for (const stream of streams) {
-      if (stream.writableLength > 16 * 1024 * 1024) { stream.destroy(); streams.delete(stream); }
-      else stream.write(data);
+    revision++;
+    for (const { writer, projection } of streams.values()) {
+      if (writer.paused) continue;
+      const frame = projection.frame(snapshot, revision);
+      if (frame) writer.send('snapshot', frame);
     }
+  };
+  const publishTerminal = (event: TerminalOutputEvent) => {
+    for (const stream of terminalStreams) if (stream.terminalId === event.terminalId) stream.writer.send('terminal', { ...event, instanceId });
   };
   const server = createServer(async (request, response) => {
     if (request.headers.origin) {
@@ -71,30 +95,61 @@ export async function startBackend(options: {
         return;
       }
       if (request.headers.authorization !== `Bearer ${token}`) { response.writeHead(403).end(); return; }
+      const url = new URL(request.url ?? '/', 'http://127.0.0.1');
       if (request.method === 'GET' && request.url === '/health') {
         response.setHeader('Content-Type', 'application/json');
-        response.end(JSON.stringify({ instanceId, ready: !!service })); return;
+        response.end(JSON.stringify({ instanceId, ready: !!service, streamVersion: BACKEND_STREAM_VERSION })); return;
       }
       if (!service || closed) throw new Error('后台尚未就绪。');
       if (request.method === 'GET' && request.url === '/commands') {
         response.setHeader('Content-Type', 'application/json');
         response.end(JSON.stringify({ result: service.commands })); return;
       }
-      if (request.method === 'GET' && request.url === '/events') {
+      if (request.method === 'GET' && url.pathname === '/snapshot') {
+        const ids = sessionIds(url.searchParams.getAll('session'));
+        const projection = new SnapshotProjection(instanceId, '', new Set(ids));
+        const frame = projection.frame(service.streamSnapshot(), revision)!;
+        response.setHeader('Content-Type', 'application/json');
+        response.end(JSON.stringify({ result: frame.type === 'reset' ? frame.snapshot : null })); return;
+      }
+      if (request.method === 'GET' && url.pathname === '/events') {
+        const ids = sessionIds(url.searchParams.getAll('session'));
+        const id = randomUUID();
+        const projection = new SnapshotProjection(instanceId, id, new Set(ids));
         response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
-        streams.add(response);
-        response.write(`event: snapshot\ndata: ${JSON.stringify(service.snapshot())}\n\n`);
-        const heartbeat = setInterval(() => response.write(': heartbeat\n\n'), 15000);
-        request.on('close', () => { clearInterval(heartbeat); streams.delete(response); }); return;
+        const writer = new BoundedEventStream(response, () => {
+          projection.reset();
+          const frame = projection.frame(service!.streamSnapshot(), revision);
+          if (frame) writer.send('snapshot', frame);
+        }, () => streams.delete(id));
+        const entry = { writer, projection };
+        streams.set(id, entry);
+        writer.send('snapshot', projection.frame(service.streamSnapshot(), revision));
+        return;
+      }
+      if (request.method === 'POST' && request.url === '/watch') {
+        const body = await readBody(request) as { subscriptionId?: unknown; sessionIds?: unknown };
+        const stream = typeof body?.subscriptionId === 'string' ? streams.get(body.subscriptionId) : undefined;
+        if (!stream) throw new Error('后台订阅已结束。');
+        const ids = sessionIds(body.sessionIds);
+        stream.projection.watch(ids);
+        if (!stream.writer.paused) stream.writer.send('snapshot', stream.projection.frame(service.streamSnapshot(), revision));
+        response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ result: null })); return;
+      }
+      if (request.method === 'GET' && url.pathname === '/terminal-events') {
+        const terminalId = url.searchParams.get('id');
+        if (!terminalId || terminalId.length > 200) throw new Error('终端订阅格式无效。');
+        const tail = () => {
+          const terminal = service!.terminalSnapshot(terminalId);
+          writer.send('terminal', { type: 'tail', terminalId, output: terminal.output, outputOffset: terminal.outputOffset, instanceId });
+        };
+        service.terminalSnapshot(terminalId);
+        response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+        const writer = new BoundedEventStream(response, tail, () => terminalStreams.delete(entry));
+        const entry = { terminalId, writer }; terminalStreams.add(entry); tail(); return;
       }
       if (request.method !== 'POST' || request.url !== '/command') { response.writeHead(404).end(); return; }
-      const chunks: Buffer[] = []; let bytes = 0;
-      for await (const chunk of request) {
-        bytes += chunk.length;
-        if (bytes > 2_000_000) throw new Error('后台请求超过大小限制。');
-        chunks.push(chunk);
-      }
-      const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { command: unknown; args: unknown; undefinedArgs?: unknown };
+      const body = await readBody(request) as { command: unknown; args: unknown; undefinedArgs?: unknown };
       if (typeof body.command !== 'string' || !Array.isArray(body.args) || body.args.length > 8) throw new Error('后台命令格式无效。');
       if (body.undefinedArgs !== undefined) {
         if (!Array.isArray(body.undefinedArgs) || body.undefinedArgs.length > body.args.length
@@ -111,7 +166,7 @@ export async function startBackend(options: {
     }
   });
   try {
-    service = await createWorkbenchService({ ...options, publish });
+    service = await createWorkbenchService({ ...options, publish, publishTerminal });
     try { await listen(server, port); }
     catch (error) {
       if (!port || (error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error;
@@ -127,7 +182,8 @@ export async function startBackend(options: {
       async close(): Promise<void> {
         if (closed) return;
         closed = true;
-        for (const stream of streams) stream.end(); streams.clear();
+        for (const stream of streams.values()) stream.writer.close(); streams.clear();
+        for (const stream of terminalStreams) stream.writer.close(); terminalStreams.clear();
         server.closeAllConnections();
         await new Promise<void>(resolve => server.close(() => resolve()));
         const results = await Promise.allSettled([saveEndpoint(endpointPath, { ...endpoint, stoppedAt: new Date().toISOString() })]);

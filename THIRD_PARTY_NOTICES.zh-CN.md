@@ -53,6 +53,7 @@
 - `@xyflow/react@12.12.0`：MIT；Copyright (c) 2019-2025 webkid GmbH。见 [licenses/React-Flow-MIT.txt](licenses/React-Flow-MIT.txt)。
 - `elkjs@0.12.0`：EPL-2.0，未修改使用。见 [licenses/ELK-EPL-2.0.md](licenses/ELK-EPL-2.0.md)，对应源码位于 [kieler/elkjs 0.12.0](https://github.com/kieler/elkjs/tree/v0.12.0)。
 - `framer-motion@11.18.2`：MIT。
+- `@tanstack/react-virtual@3.14.22` 与 `@tanstack/virtual-core`：MIT；Copyright (c) 2021-present Tanner Linsley。用于可变高度的对话虚拟列表。
 
 其余直接依赖与传递依赖保留各自许可。精确版本以 `package-lock.json` 为准，各依赖包保留其许可文件。应用打包保留生产依赖和本仓库的 `licenses/` 目录。本文件记录来源，不替代适用的许可证。
 

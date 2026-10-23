@@ -1,6 +1,6 @@
 // Source: Caho1/open-claude-ui@4045ce76afdcb7dccef1b7e6417b04c4c6046e9c (MIT).
 // Copyright (c) 2026 Caho1. License: licenses/Open-Claude-UI-MIT.txt.
-// Adapted dependency typing, input cooldown scheduling, and programmatic scroll ownership.
+// Adapted dependency typing, input cooldown scheduling, programmatic scroll ownership, and virtualized end scrolling.
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 
@@ -8,7 +8,7 @@ const BOTTOM_TOLERANCE = 40;
 const JUMP_CONTROL_DISTANCE = 120;
 const USER_INPUT_COOLDOWN = 150;
 
-export function useClaudeScrollPinning(dependencies: readonly unknown[]) {
+export function useClaudeScrollPinning(dependencies: readonly unknown[], scrollToEnd?: (smooth: boolean) => void) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [isPinned, setIsPinned] = useState(true);
   const [showJumpControl, setShowJumpControl] = useState(false);
@@ -16,6 +16,8 @@ export function useClaudeScrollPinning(dependencies: readonly unknown[]) {
   const lastUserInputAt = useRef(Number.NEGATIVE_INFINITY);
   const programmaticScroll = useRef(false);
   const followTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const scrollToEndRef = useRef(scrollToEnd);
+  scrollToEndRef.current = scrollToEnd;
 
   const updatePinned = useCallback((value: boolean) => {
     pinned.current = value;
@@ -44,7 +46,8 @@ export function useClaudeScrollPinning(dependencies: readonly unknown[]) {
     programmaticScroll.current = Math.abs(element.scrollHeight - element.clientHeight - element.scrollTop) > 1;
     updatePinned(true);
     setShowJumpControl(false);
-    element.scrollTo({ top: element.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
+    if (scrollToEndRef.current) scrollToEndRef.current(smooth);
+    else element.scrollTo({ top: element.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
   }, [updatePinned]);
 
   const followOutput = useCallback(function followOutput() {

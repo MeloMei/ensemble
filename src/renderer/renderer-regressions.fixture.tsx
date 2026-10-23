@@ -3,11 +3,15 @@ import { createRoot, type Root } from 'react-dom/client';
 import { I18nextProvider } from 'react-i18next';
 import { MotionConfig } from 'framer-motion';
 import { i18n, translate } from '../shared/i18n';
-import type { FileContent, McpSettingsView, ProviderInfo, Session, UnsavedFileSummary, Workflow, Workspace } from '../shared/types';
+import type { FileContent, McpSettingsView, Message, ProviderInfo, Session, Snapshot, UnsavedFileSummary, Workflow, Workspace } from '../shared/types';
+import type { BackendConnectionState, SessionHistoryWindow } from '../shared/backend';
 import { WorkspaceTools } from './WorkspaceTools';
 import { WorkflowView } from './WorkflowViews';
 import { FileReviewPanel } from './FileReviewPanel';
 import { SessionChat } from './SessionChat';
+import { App } from './App';
+import { TerminalPane } from './TerminalPane';
+import { Terminal } from '@xterm/xterm';
 import { AppearanceProvider } from './appearance';
 import type { Perform } from './ui';
 import './styles.css';
@@ -20,6 +24,9 @@ const workspace: Workspace = { id: 'workspace', name: 'Workspace', cwd: '/fixtur
 const session: Session = { id: 'session', title: 'Session', providerId: 'codex', cwd: workspace.cwd, status: 'idle', messages: [], approvals: [], settings: { permission: 'review', effort: 'low' }, createdAt: '2026-10-23', updatedAt: '2026-10-23' };
 const provider: ProviderInfo = { id: 'codex', name: 'Codex', source: 'builtin', available: true, detail: '', capabilities: { resume: true, approvals: true, permissions: true, effort: true }, efforts: ['low', 'high'] };
 const tick = () => new Promise<void>(resolve => setTimeout(resolve, 0));
+async function frames(count = 3) {
+  for (let index = 0; index < count; index++) await act(async () => { await new Promise<void>(resolve => requestAnimationFrame(() => resolve())); });
+}
 async function waitFor(check: () => boolean, message: string | (() => string), attempts = 60) {
   for (let index = 0; index < attempts; index++) {
     if (check()) return;
@@ -57,6 +64,10 @@ async function render(element: ReactElement) { await act(async () => { root.rend
 async function click(key: string) { await act(async () => { button(key).click(); await tick(); }); }
 async function settle() { await act(async () => { await Promise.all(operations); await tick(); }); }
 const chat = (overrides: Partial<Parameters<typeof SessionChat>[0]> = {}) => <SessionChat session={session} provider={provider} perform={perform} pending={new Set()} draft={{ text: '' }} onDraftChange={() => {}} workspaceId={workspace.id} openSession={() => {}} {...overrides} />;
+const messageRange = (start: number, end: number): Message[] => Array.from({ length: end - start }, (_, offset) => {
+  const index = start + offset;
+  return { id: `message-${index}`, role: index % 2 ? 'user' : 'assistant', text: `Message ${index}\n\n${'Variable markdown height. '.repeat(index % 7 + 1)}`, createdAt: '2026-10-23T02:00:00Z' };
+});
 
 const cases: Record<string, () => Promise<void>> = {
   'UI-01: question approvals display the complete request disclosure': async () => {
@@ -191,6 +202,73 @@ const cases: Record<string, () => Promise<void>> = {
     assertDraft();
     assert(errors.length === 0, errors.join('\n'));
   },
+  'UI-06: paged variable-height messages preserve the reading anchor and concurrent live output': async () => {
+    const gate = deferred<{ messages: Message[]; beforeCursor?: string; hasMore: boolean }>();
+    let requests = 0;
+    window.workbench = { sessionHistory: async (_id: string, before: string, limit: number) => {
+      assert(limit === 100, 'History exceeded the bounded page size');
+      requests++;
+      if (requests === 1) return gate.promise;
+      const end = Number(before), start = Math.max(0, end - limit);
+      return { messages: messageRange(start, end), beforeCursor: start ? String(start) : undefined, hasMore: start > 0 };
+    } } as unknown as Window['workbench'];
+    let current: Session = { ...session, messages: messageRange(900, 1000), messageCount: 1000, historyCursor: '900', historyLoaded: true };
+    const show = () => render(chat({ session: current }));
+    await show(); await frames();
+    const scroll = document.querySelector<HTMLDivElement>('.message-scroll')!;
+    await act(async () => { scroll.scrollTop = 0; scroll.dispatchEvent(new Event('scroll')); await tick(); });
+    await frames();
+    const anchor = [...document.querySelectorAll<HTMLElement>('[data-message-id]')].find(element => element.getBoundingClientRect().bottom > scroll.getBoundingClientRect().top)!;
+    assert(anchor, 'The initial history viewport was empty');
+    const anchorId = anchor.dataset.messageId!, anchorTop = anchor.getBoundingClientRect().top;
+    await click('workspace:chat.loadEarlier');
+    current = { ...current, messages: messageRange(901, 1001), messageCount: 1001, historyCursor: '901' };
+    await show();
+    await act(async () => { gate.resolve({ messages: messageRange(800, 900), beforeCursor: '800', hasMore: true }); await tick(); });
+    await frames(5);
+    const restored = document.querySelector<HTMLElement>(`[data-message-id="${anchorId}"]`);
+    assert(restored && Math.abs(restored.getBoundingClientRect().top - anchorTop) < 4, `Prepending history moved the reading anchor (${anchorTop} → ${restored?.getBoundingClientRect().top})`);
+    for (let index = 0; index < 8; index++) { await click('workspace:chat.loadEarlier'); await frames(2); }
+    assert(document.querySelectorAll('[data-message-id]').length < 50, 'Loaded history mounted every message instead of virtualizing');
+    await click('workspace:chat.latestOutput');
+    await waitFor(() => Boolean(document.querySelector('[data-message-id="message-1000"]')), () => `Jump to latest did not reach the virtual tail: ${JSON.stringify({ top: scroll.scrollTop, height: scroll.scrollHeight, viewport: scroll.clientHeight, mounted: [...document.querySelectorAll<HTMLElement>('[data-message-id]')].map(element => element.dataset.messageId) })}`, 180);
+    await frames(5);
+    assert(document.querySelector('[data-message-id="message-1000"]'), 'A history response dropped concurrent live output');
+    current = { ...current, messages: current.messages.map(message => message.id === 'message-1000' ? { ...message, text: `${message.text}\n\n${'Streamed text. '.repeat(100)}` } : message) };
+    await show(); await frames(5);
+    assert(scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 41, 'Streaming variable-height output lost bottom pinning');
+    assert(errors.length === 0, errors.join('\n'));
+  },
+  'UI-07: search locates an unloaded message without fetching intervening history': async () => {
+    let around = 0, earlier = 0, later = 0;
+    const match = { ...messageRange(300, 301)[0], text: 'Needle in an old conversation' };
+    window.workbench = {
+      sessionSearch: async () => ({ messages: [match], truncated: false }),
+      sessionHistoryAround: async (_id: string, id: string, limit: number) => {
+        around++; assert(id === match.id && limit === 100, 'Search requested the wrong window');
+        return { messages: messageRange(250, 350).map(message => message.id === match.id ? match : message), beforeCursor: '250', hasMore: true, afterCursor: '350', hasAfter: true };
+      },
+      sessionHistory: async () => { earlier++; return { messages: [], hasMore: false }; },
+      sessionHistoryAfter: async () => { later++; return { messages: messageRange(350, 450), hasMore: true, afterCursor: '450', hasAfter: true }; },
+    } as unknown as Window['workbench'];
+    let current: Session = { ...session, messages: messageRange(900, 1000), messageCount: 1000, historyCursor: '900', historyLoaded: true };
+    const show = () => render(chat({ session: current }));
+    await show(); await frames(); await click('workspace:chat.find');
+    await change(input('.conversation-find input'), 'Needle');
+    await waitFor(() => Boolean(document.querySelector('[data-message-id="message-300"].conversation-match')), 'The unloaded search result was not mounted');
+    await frames(5);
+    const scroll = document.querySelector('.message-scroll')!.getBoundingClientRect();
+    const target = document.querySelector('[data-message-id="message-300"]')!.getBoundingClientRect();
+    assert(target.bottom > scroll.top && target.top < scroll.bottom, 'Search did not scroll the virtual list to its result');
+    assert(around === 1 && earlier === 0, 'Search downloaded all intervening pages');
+    await click('workspace:chat.loadLater'); await frames();
+    assert(later === 1, 'The historical window cannot page forward');
+    current = { ...current, messages: messageRange(901, 1001), messageCount: 1001, historyCursor: '901' };
+    await show(); await frames();
+    assert(document.querySelector('[data-message-id="message-300"]') && !document.querySelector('[data-message-id="message-1000"]'), 'Live output pulled the reader out of history');
+    await click('workspace:chat.returnLatest'); await frames(5);
+    assert(document.querySelector('[data-message-id="message-1000"]'), 'Returning to latest lost the live tail');
+  },
   'UI-08: queued sends reuse an uncertain command and preserve composition and later drafts': async () => {
     const gate = deferred<void>(), laterGate = deferred<void>();
     const sends: { id?: string; input: unknown }[] = [], edits: unknown[] = [], removals: string[] = [], pauses: boolean[] = [];
@@ -228,8 +306,78 @@ const cases: Record<string, () => Promise<void>> = {
     await show({ ...queued, queuePaused: true, queueHoldReason: 'Task stopped' }); await click('workspace:chat.resumeQueue'); await settle();
     await click('workspace:chat.removeQueued'); await settle();
     assert(JSON.stringify(pauses) === '[true,false]' && removals[0] === 'queued-a', 'Queue pause, resume or removal did not use its persisted item identity');
+    await show({ ...queued, historyLoaded: false });
+    assert(input('.composer textarea').disabled && button('workspace:chat.sendTask').disabled, 'A summary-only session can overwrite the unloaded server draft');
     await show(queued, { text: 'A newer draft' });
     assert(input('.composer textarea').value === 'A newer draft', 'Queue updates replaced the composer draft');
+  },
+  'UI-09: cached snapshots cannot mask disconnects or clear unread failures before reading': async () => {
+    const originalFocus = document.hasFocus;
+    const originalVisibility = Object.getOwnPropertyDescriptor(document, 'visibilityState');
+    let focused = false;
+    document.hasFocus = () => focused;
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
+    try {
+      const failed: Session = { ...session, id: 'older-failure', status: 'failed', error: 'Original failure', messages: messageRange(0, 100), messageCount: 100, historyLoaded: true, draft: { text: 'Retained draft' }, attention: { revision: 5, seenRevision: 4, reason: 'failure', updatedAt: session.updatedAt } };
+      const latest: Session = { ...session, id: 'latest-result', status: 'completed', updatedAt: '2026-10-23T03:00:00Z', attention: { revision: 7, seenRevision: 7, reason: 'result', updatedAt: session.updatedAt }, historyLoaded: true };
+      const splitWorkspace: Workspace = { ...workspace, tabs: [{ kind: 'agent', id: 'left', sessionId: failed.id }, { kind: 'agent', id: 'right', sessionId: latest.id }], activeTabId: 'left', secondaryTabId: 'right', splitDirection: 'horizontal' };
+      let snapshot: Snapshot = { version: 1, sessions: [failed, latest], workspaces: [splitWorkspace], providers: [provider], workflows: [], terminals: [], pluginErrors: [], pluginPath: '/plugins', dataPath: '/data' };
+      let publish!: (snapshot: Snapshot) => void, connectionChanged!: (state: BackendConnectionState) => void;
+      const watched: string[][] = [], seen: { id: string; revision: number }[] = [];
+      window.workbench = {
+        subscribe: (listener: (snapshot: Snapshot) => void) => { publish = listener; return () => {}; }, snapshot: async () => snapshot,
+        getConnection: async () => ({ status: 'connected', synced: true }),
+        onConnectionChanged: (listener: (state: BackendConnectionState) => void) => { connectionChanged = listener; return () => {}; },
+        onFocusSession: () => () => {}, watchSessions: async (ids: string[]) => { watched.push(ids); },
+        listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {},
+        markSessionSeen: async (id: string, revision: number) => {
+          seen.push({ id, revision });
+          snapshot = { ...snapshot, sessions: snapshot.sessions.map(value => value.id === id ? { ...value, attention: { ...value.attention!, seenRevision: revision } } : value) };
+          publish(snapshot);
+        },
+      } as unknown as Window['workbench'];
+      await render(<App />); await frames(5);
+      assert(watched.some(ids => ids.length === 2 && ids.includes(failed.id) && ids.includes(latest.id)), 'Split view did not subscribe to both session tails');
+      assert(document.querySelector('.group-attention .workspace-row .attention-failure') && document.querySelector('.workspace-unread')?.textContent === '1', 'A newer result hid an older unread failure');
+      await act(async () => { connectionChanged({ status: 'reconnecting', synced: false, lastReceivedAt: '2026-10-23T02:00:00Z' }); await tick(); });
+      assert(document.querySelector('.sidebar-connection')?.textContent?.includes('Reconnecting') && document.querySelector('.connection-banner'), 'A cached snapshot still claimed the backend was connected');
+      assert(button('workspace:chat.sendTask').disabled && document.querySelector('.workspace-row'), 'Disconnect discarded cached workspaces or allowed sending');
+      const scroll = document.querySelector<HTMLDivElement>('.message-scroll')!;
+      await act(async () => { scroll.scrollTop = 0; scroll.dispatchEvent(new Event('scroll')); focused = true; connectionChanged({ status: 'connected', synced: true }); window.dispatchEvent(new Event('focus')); await tick(); });
+      await frames(5);
+      assert(seen.length === 0, 'Opening a session cleared unread output while the reader was above it');
+      await act(async () => { scroll.scrollTop = scroll.scrollHeight; scroll.dispatchEvent(new Event('scroll')); await tick(); }); await frames(5);
+      assert(seen.some(value => value.id === failed.id && value.revision === 5), 'Reading the latest output did not persist its exact attention revision');
+      assert(!document.querySelector('.workspace-unread') && document.querySelector('.tab-state-failed') && document.body.textContent?.includes('Original failure'), 'Marking output read changed the actual failure state');
+    } finally {
+      document.hasFocus = originalFocus;
+      if (originalVisibility) Object.defineProperty(document, 'visibilityState', originalVisibility); else Reflect.deleteProperty(document, 'visibilityState');
+    }
+  },
+  'UI-11: terminal subscriptions consume bounded tails and overlapping appends exactly once': async () => {
+    const originalOpen = Terminal.prototype.open;
+    let terminal: Terminal | undefined, listener!: Parameters<Window['workbench']['onTerminalOutput']>[1], unsubscribed = 0;
+    Terminal.prototype.open = function(element) { terminal = this; originalOpen.call(this, element); };
+    try {
+      window.workbench = {
+        onTerminalOutput: (_id: string, value: typeof listener) => { listener = value; value({ type: 'tail', terminalId: 'terminal', outputOffset: 10, output: 'first\r\n' }); return () => { unsubscribed++; }; },
+        resizeTerminal: async () => {}, writeTerminal: async () => {},
+      } as unknown as Window['workbench'];
+      const info = { id: 'terminal', workspaceId: workspace.id, title: 'Terminal', status: 'running' as const, exitCode: null, output: '', outputOffset: 0 };
+      await render(<TerminalPane info={info} cwd={workspace.cwd} perform={perform} />);
+      const contents = () => Array.from({ length: terminal?.buffer.active.length ?? 0 }, (_, index) => terminal?.buffer.active.getLine(index)?.translateToString(true) ?? '').join('\n');
+      await waitFor(() => contents().startsWith('first\n'), 'Initial subscription tail was not written');
+      await act(async () => { listener({ type: 'append', terminalId: info.id, offset: 10, data: 'first\r\nsecond\r\n' }); await tick(); });
+      await waitFor(() => contents().startsWith('first\nsecond\n'), 'An overlapping append duplicated or lost terminal output');
+      await act(async () => { listener({ type: 'append', terminalId: info.id, offset: 17, data: 'second\r\n' }); await tick(); });
+      assert(contents().split('second').length === 2, 'A duplicate terminal append was rendered twice');
+      await act(async () => { listener({ type: 'tail', terminalId: info.id, outputOffset: 100, output: 'reconnected\r\n' }); await tick(); });
+      await waitFor(() => contents().startsWith('reconnected\n') && !contents().includes('first'), 'Reconnection tail did not replace stale terminal output');
+      await render(<TerminalPane info={{ ...info, status: 'exited', exitCode: 0 }} cwd={workspace.cwd} perform={perform} />);
+      assert(terminal?.options.disableStdin, 'An exited terminal still accepts input');
+      await render(<div />);
+      assert(unsubscribed === 1, 'Closing the terminal did not release its output subscription');
+    } finally { Terminal.prototype.open = originalOpen; }
   },
   'PROVIDER-2 UI: plugins retain attachment drafts and block unsupported sends': async () => {
     let sends = 0, changes = 0;
@@ -242,6 +390,143 @@ const cases: Record<string, () => Promise<void>> = {
     assert(sends === 0 && changes === 0, 'Enter submitted or erased an unsupported draft');
     assert(document.querySelector('[role=alert]')?.textContent?.includes('does not support attachments'), 'Attachment restriction was not explained');
     const remove = document.querySelector<HTMLButtonElement>('.attachment-chip button'); assert(remove && !remove.disabled, 'User cannot remove the unsupported attachment');
+  },
+  'UI-TAIL-RESET: live resynchronization invalidates an older page without cancelling its replacement': async () => {
+    const oldPage = deferred<SessionHistoryWindow>(), newPage = deferred<SessionHistoryWindow>();
+    const requests: string[] = [];
+    window.workbench = {
+      sessionHistory: async (_id: string, before: string) => {
+        requests.push(before);
+        if (requests.length === 1) return oldPage.promise;
+        if (requests.length === 2) return newPage.promise;
+        return { messages: messageRange(900, 1000), beforeCursor: 'message-900', hasMore: true, hasAfter: false };
+      },
+    } as unknown as Window['workbench'];
+    let current: Session = { ...session, messages: messageRange(900, 1000), messageCount: 1000,
+      historyCursor: 'message-900', historyLoaded: true };
+    await render(chat({ session: current })); await frames();
+    await click('workspace:chat.loadEarlier');
+    assert(requests[0] === 'message-900', 'The original page used the wrong cursor');
+    current = { ...current, messages: messageRange(1100, 1200), messageCount: 1200, historyCursor: 'message-1100' };
+    await render(chat({ session: current })); await frames();
+    assert(!button('workspace:chat.loadEarlier').disabled, 'A discarded tail kept its stale page in flight');
+    await click('workspace:chat.loadEarlier');
+    assert(requests[1] === 'message-1100', 'The replacement page did not start at the new tail');
+    await act(async () => { oldPage.resolve({ messages: messageRange(800, 900), beforeCursor: 'message-800', hasMore: true, hasAfter: false }); await tick(); });
+    assert(button('workspace:chat.loadEarlier').disabled, 'The stale page completion cancelled the replacement loader');
+    await act(async () => { newPage.resolve({ messages: messageRange(1000, 1100), beforeCursor: 'message-1000', hasMore: true, hasAfter: false }); await tick(); });
+    await click('workspace:chat.loadEarlier');
+    assert(requests[2] === 'message-1000', 'The stale page replaced the new cursor and left an unreadable history gap');
+    assert(errors.length === 0, errors.join('\n'));
+  },
+  'UI-JUMP: replaced, closed and switched search jumps cannot overwrite the current window or cancel paging': async () => {
+    const pageGate = deferred<SessionHistoryWindow>();
+    const pageRequests: string[] = [];
+    const aroundRequests: { sessionId: string; id: string; gate: ReturnType<typeof deferred<SessionHistoryWindow>> }[] = [];
+    const oldMatch = { ...messageRange(300, 301)[0], text: 'Needle in old history' };
+    const liveMatch = { ...messageRange(950, 951)[0], text: 'Needle already loaded' };
+    const first: Session = { ...session, id: 'jump-first', messages: messageRange(900, 1000).map(message => message.id === liveMatch.id ? liveMatch : message),
+      messageCount: 1000, historyCursor: 'message-900', historyLoaded: true };
+    const second: Session = { ...session, id: 'jump-second', title: 'Second session', messages: messageRange(2000, 2100),
+      messageCount: 2100, historyCursor: 'message-2000', historyLoaded: true };
+    window.workbench = {
+      sessionSearch: async (id: string) => ({ messages: id === first.id ? [oldMatch, liveMatch] : [], truncated: false }),
+      sessionHistory: async (_id: string, before: string) => {
+        pageRequests.push(before);
+        if (pageRequests.length === 1) return pageGate.promise;
+        return { messages: messageRange(700, 800), beforeCursor: 'message-700', hasMore: true, hasAfter: false };
+      },
+      sessionHistoryAround: async (sessionId: string, id: string) => {
+        const gate = deferred<SessionHistoryWindow>(); aroundRequests.push({ sessionId, id, gate }); return gate.promise;
+      },
+    } as unknown as Window['workbench'];
+    const oldWindow: SessionHistoryWindow = { messages: messageRange(250, 350).map(message => message.id === oldMatch.id ? oldMatch : message),
+      beforeCursor: 'message-250', hasMore: true, afterCursor: 'message-349', hasAfter: true };
+    const showsOldWindow = () => Boolean(document.querySelector('[data-message-id="message-300"]'))
+      || Boolean(document.querySelector('.conversation-history-controls')?.textContent?.includes(translate('workspace:chat.historyWindow')));
+    await render(chat({ session: first })); await frames();
+    await click('workspace:chat.loadEarlier');
+    await click('workspace:chat.find'); await change(input('.conversation-find input'), 'Needle');
+    await waitFor(() => aroundRequests.length === 1, 'The first unloaded match did not request its window');
+    await click('workspace:chat.nextMatch'); await frames();
+    assert(document.querySelector('[data-message-id="message-950"].conversation-match'), 'The loaded match did not become the current search target');
+    assert(button('workspace:chat.loadEarlier').disabled, 'Replacing a jump prematurely cleared the independent paging operation');
+    await act(async () => { aroundRequests[0].gate.resolve(oldWindow); await tick(); }); await frames();
+    assert(!showsOldWindow() && document.querySelector('[data-message-id="message-950"].conversation-match'), 'A late unloaded match overwrote the newer loaded target');
+    assert(button('workspace:chat.loadEarlier').disabled, 'A stale jump completion cleared the pending page loader');
+    await act(async () => { pageGate.resolve({ messages: messageRange(800, 900), beforeCursor: 'message-800', hasMore: true, hasAfter: false }); await tick(); });
+    await waitFor(() => !button('workspace:chat.loadEarlier').disabled, 'The valid pending page could not complete after jump cancellation');
+    await click('workspace:chat.loadEarlier'); await frames();
+    assert(pageRequests[1] === 'message-800', 'Cancelling a jump invalidated the completed page or its next cursor');
+
+    await click('workspace:chat.previousMatch');
+    await waitFor(() => aroundRequests.length === 2, 'The next unloaded jump did not start');
+    await click('workspace:chat.closeFind');
+    await act(async () => { aroundRequests[1].gate.resolve(oldWindow); await tick(); }); await frames();
+    assert(!showsOldWindow(), 'Closing search still allowed its old Around response to switch history');
+    await waitFor(() => !document.querySelector('.conversation-find'), 'Search did not close');
+    await click('workspace:chat.find'); await change(input('.conversation-find input'), 'Needle');
+    await waitFor(() => aroundRequests.length === 3, 'The session-switch jump did not start');
+    await render(chat({ session: second }));
+    await act(async () => { aroundRequests[2].gate.resolve(oldWindow); await tick(); }); await frames();
+    assert(!showsOldWindow() && document.querySelector('.chat-toolbar h2')?.textContent === second.title, 'A response from the prior session replaced the new session window');
+    assert([...document.querySelectorAll<HTMLElement>('[data-message-id]')].every(element => Number(element.dataset.messageId?.slice('message-'.length)) >= 2000), 'The prior session retained mounted history after switching');
+    assert(errors.length === 0, errors.join('\n'));
+  },
+  'UI-READONLY: retained sessions without a workspace remain readable without recreating their deleted directory': async () => {
+    const parent: Session = { ...session, id: 'retained-parent', title: 'Retained parent history', cwd: '/deleted/managed-worktree', archived: true,
+      status: 'completed', messages: [], messageCount: 300, historyLoaded: false, historyCursor: 'message-200' };
+    const child: Session = { ...parent, id: 'retained-child', title: 'Retained child history', parentSessionId: parent.id, messageCount: 1100, historyCursor: 'message-1000' };
+    const parentTail = messageRange(200, 300).map(message => ({ ...message, nativeTurnId: `turn-${message.id}` }));
+    const childTail = messageRange(1000, 1100);
+    let snapshot: Snapshot = { version: 1, sessions: [parent, child], workspaces: [], providers: [{ ...provider, capabilities: { ...provider.capabilities, rewind: true } }],
+      workflows: [], terminals: [], pluginErrors: [], pluginPath: '/plugins', dataPath: '/data' };
+    let publish: ((value: Snapshot) => void) | undefined;
+    let creations = 0, sends = 0, openedTabs = 0, around = 0;
+    const watched: string[][] = [];
+    const oldMatch = { ...messageRange(50, 51)[0], text: 'Ancient retained result from the removed checkout' };
+    window.workbench = {
+      snapshot: async () => snapshot, subscribe: (listener: (value: Snapshot) => void) => { publish = listener; return () => {}; },
+      getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
+      watchSessions: async (ids: string[]) => {
+        watched.push(ids);
+        snapshot = { ...snapshot, sessions: [parent, child].map(value => ({ ...value, historyLoaded: ids.includes(value.id),
+          messages: ids.includes(value.id) ? value.id === parent.id ? parentTail : childTail : [] })) };
+        publish?.(snapshot);
+      },
+      createWorkspace: async () => { creations++; throw new Error('Deleted directory must not be recreated'); },
+      openSessionTab: async () => { openedTabs++; }, sendPrompt: async () => { sends++; },
+      sessionSearch: async () => ({ messages: [oldMatch], truncated: false }),
+      sessionHistoryAround: async (_id: string, id: string) => {
+        around++; assert(id === oldMatch.id, 'Read-only search requested the wrong message');
+        const messages = messageRange(0, 100).map(message => message.id === oldMatch.id ? oldMatch : message);
+        messages[51] = { id: 'retained-activity', role: 'activity', text: 'Retained activity from the old checkout', createdAt: oldMatch.createdAt };
+        return { messages, hasMore: false, afterCursor: 'message-99', hasAfter: true };
+      },
+    } as unknown as Window['workbench'];
+    await render(<App />); await click('shell:app.history');
+    await change(input('.history-archive input'), true);
+    const row = [...document.querySelectorAll<HTMLButtonElement>('.history-open')].find(element => element.querySelector('strong')?.textContent?.includes(parent.title));
+    assert(row, 'The retained archived session was missing from History');
+    await act(async () => { row.click(); await tick(); });
+    await waitFor(() => Boolean(document.querySelector('.chat-pane-readonly [data-message-id="message-299"]')), 'The retained session tail did not load in the existing chat viewer');
+    assert(watched.some(ids => ids.length === 1 && ids[0] === parent.id), 'Read-only history did not subscribe to its session');
+    assert(!document.querySelector('.chat-pane-readonly .composer') && !document.querySelector('.chat-pane-readonly .session-settings')
+      && ![...document.querySelectorAll('.chat-pane-readonly button')].some(element => element.getAttribute('aria-label') === translate('workspace:chat.settings')
+        || element.textContent?.includes(translate('workspace:chat.rewindBefore')) || element.textContent?.includes(translate('workspace:chat.forkHere'))),
+    'Read-only history exposed a directory-dependent mutation');
+    await click('workspace:chat.find'); await change(input('.conversation-find input'), 'Ancient');
+    await waitFor(() => Boolean(document.querySelector('[data-message-id="message-50"].conversation-match')), 'Read-only search could not load older original content');
+    assert(around === 1 && document.body.textContent?.includes(oldMatch.text), 'Read-only search did not retrieve the original Around body');
+    await act(async () => { document.querySelector<HTMLButtonElement>('.chat-activity-button')!.click(); await tick(); });
+    await waitFor(() => Boolean(document.querySelector('.activity-entry')?.textContent?.includes('Retained activity')), 'Read-only history lost the activity drawer');
+    const related = [...document.querySelectorAll<HTMLButtonElement>('.session-children button')].find(element => element.textContent?.includes(child.title));
+    assert(related, 'The retained related session was not navigable');
+    await act(async () => { related.click(); await tick(); });
+    await waitFor(() => Boolean(document.querySelector('.chat-pane-readonly [data-message-id="message-1099"]')), 'Related retained history could not open read-only');
+    await click('shell:history.closeSession');
+    await waitFor(() => Boolean(watched.length && watched.at(-1)?.length === 0), 'Closing retained history did not unsubscribe its session');
+    assert(!document.querySelector('.chat-pane-readonly') && creations === 0 && openedTabs === 0 && sends === 0, 'Reading retained history created a workspace/tab or sent a prompt');
   },
 
 };

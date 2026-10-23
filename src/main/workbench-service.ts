@@ -13,12 +13,15 @@ import { loadPluginProviders } from './providers/plugins';
 import { TerminalManager } from './terminal-manager';
 import { WorkspaceFiles } from './workspace-files';
 import type { ProviderInfo, Snapshot } from '../shared/types';
+import type { TerminalOutputEvent } from '../shared/backend';
 import { AttachmentService } from './attachment-service';
 import { RuntimeSettings, readDeepSeekBalance } from './runtime-settings';
 import { CollaborationServer } from './collaboration-server';
 import { reviewPullRequest } from './pull-request-review';
 import { CollaborationCore } from './collaboration-core';
 import { IdentityService } from './identity-service';
+import { sessionHistory, searchMessages } from './session-history';
+import { searchableMessageText } from '../shared/message-text';
 
 const idSchema = z.string().min(1).max(200);
 const cwdSchema = z.string().min(1).max(4096);
@@ -28,6 +31,8 @@ const settingsSchema = z.object({ effort: z.string().min(1).max(100).nullable().
 const attachmentSchema = z.object({ id: idSchema, name: z.string().min(1).max(300), kind: z.enum(['image', 'text']), mimeType: z.string().min(1).max(100), size: z.number().int().min(0).max(20_000_000), sha256: z.string().regex(/^[a-f0-9]{64}$/), ownedPath: cwdSchema }).strict();
 const promptInputSchema = z.object({ text: z.string().max(200_000), attachments: z.array(attachmentSchema).max(8).optional() }).strict();
 const commandIdSchema = z.string().min(1).max(200).optional();
+const pageLimitSchema = z.number().int().min(1).max(200).optional();
+const messageCursorSchema = z.string().min(1).max(4096);
 const sessionInputSchema = z.object({ title: z.string().max(200), providerId: idSchema, cwd: cwdSchema, modelId: modelIdSchema, commandId: commandIdSchema }).strict();
 const workflowSchema = z.object({
   name: z.string().trim().min(1).max(200), cwd: cwdSchema,
@@ -40,6 +45,7 @@ const unavailable: ProviderInfo[] = [
 
 export async function createWorkbenchService(options: {
   dataPath: string; command: string; bridgePath: string; publish(snapshot: Snapshot): void;
+  publishTerminal?(event: TerminalOutputEvent): void;
   providers?: import('./providers/types').ProviderAdapter[];
 }) {
   const store = new StateStore(join(options.dataPath, 'state.json'));
@@ -79,7 +85,7 @@ export async function createWorkbenchService(options: {
       const issued = collaboration.issue({ sessionId: session.id, attemptId });
       return { ...prepared, attachments: loaded, mcpServers: [...prepared.mcpServers, issued.config], cleanup: issued.cleanup };
     });
-    const terminalManager = new TerminalManager(() => engine.setTerminals(terminalManager.snapshot()));
+    const terminalManager = new TerminalManager(() => engine.setTerminals(terminalManager.metadata()), options.publishTerminal);
     cleanup.push(() => terminalManager.shutdown());
     let codexProvider: Awaited<ReturnType<typeof createCodexProvider>> | undefined;
     let openCodeProvider: AcpProvider | undefined;
@@ -107,6 +113,17 @@ export async function createWorkbenchService(options: {
       if (!result) throw new Error('会话不存在。');
       return result;
     };
+    handle('workbench:session-history', (_event, id, before, limit) => sessionHistory(session(id), { before: messageCursorSchema.optional().parse(before), limit: pageLimitSchema.parse(limit) }));
+    handle('workbench:session-history-around', (_event, id, messageId, limit) => sessionHistory(session(id), { around: messageCursorSchema.parse(messageId), limit: pageLimitSchema.parse(limit) }));
+    handle('workbench:session-history-after', (_event, id, after, limit) => sessionHistory(session(id), { after: messageCursorSchema.parse(after), limit: pageLimitSchema.parse(limit) }));
+    handle('workbench:session-search', (_event, id, query, limit) => searchMessages(session(id), z.string().trim().min(1).max(2000).parse(query), pageLimitSchema.parse(limit)));
+    handle('workbench:search-sessions', (_event, query, includeArchived) => {
+      const needle = z.string().trim().min(1).max(2000).parse(query).toLocaleLowerCase();
+      const archived = z.boolean().optional().parse(includeArchived) ?? false;
+      return { sessionIds: store.state.sessions.filter(item => (archived || !item.archived)
+        && (item.title.toLocaleLowerCase().includes(needle) || item.cwd.toLocaleLowerCase().includes(needle)
+          || item.providerId.toLocaleLowerCase().includes(needle) || item.messages.some(message => searchableMessageText(message).toLocaleLowerCase().includes(needle)))).map(item => item.id) };
+    });
     handle('workbench:mark-session-seen', (_event, id, revision) => {
       const item = session(id); const value = z.number().int().nonnegative().parse(revision);
       if (!item.attention) return;
@@ -152,7 +169,7 @@ export async function createWorkbenchService(options: {
     handle('workbench:create-terminal', (_event, workspaceId: unknown) => {
       const workspace = engine.workspace(idSchema.parse(workspaceId));
       const terminal = terminalManager.create(workspace.id, workspace.cwd);
-      engine.setTerminals(terminalManager.snapshot());
+      engine.setTerminals(terminalManager.metadata());
       engine.addTab(workspace.id, { id: randomUUID(), kind: 'terminal', terminalId: terminal.id });
       return terminal.id;
     });
@@ -219,6 +236,8 @@ export async function createWorkbenchService(options: {
         return handler(null, ...args);
       },
       snapshot: () => publicSnapshot(engine.snapshot()),
+      streamSnapshot: () => publicSnapshot(engine.liveSnapshot()),
+      terminalSnapshot: (id: string) => terminalManager.get(id),
       async shutdown(): Promise<void> {
         const results = await Promise.allSettled([core.close(), terminalManager.shutdown(), engine.shutdown(), collaboration.close()]);
         results.push(...await Promise.allSettled([store.close()]));

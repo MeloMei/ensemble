@@ -3,8 +3,8 @@ import { realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import * as pty from '@lydell/node-pty';
 import type { TerminalInfo } from '../shared/types';
-
-const OUTPUT_LIMIT = 256 * 1024;
+import type { TerminalOutputEvent } from '../shared/backend';
+import { TerminalOutputCoalescer, terminalOutputTail } from './terminal-output';
 
 interface ManagedTerminal {
   info: TerminalInfo;
@@ -13,6 +13,7 @@ interface ManagedTerminal {
   forceTimer?: ReturnType<typeof setTimeout>;
   exited: Promise<void>;
   resolveExit(): void;
+  output: TerminalOutputCoalescer;
 }
 
 function signalTerminal(terminal: ManagedTerminal, signal: NodeJS.Signals): void {
@@ -24,20 +25,12 @@ function signalTerminal(terminal: ManagedTerminal, signal: NodeJS.Signals): void
   }
 }
 
-function outputTail(output: string): string {
-  const bytes = Buffer.from(output);
-  if (bytes.length <= OUTPUT_LIMIT) return output;
-  let start = bytes.length - OUTPUT_LIMIT;
-  while (start < bytes.length && (bytes[start] & 0xc0) === 0x80) start++;
-  return bytes.subarray(start).toString('utf8');
-}
-
 export class TerminalManager {
   private readonly terminals = new Map<string, ManagedTerminal>();
   private changeTimer?: ReturnType<typeof setTimeout>;
   private shuttingDown = false;
 
-  constructor(private readonly onChange: () => void) {}
+  constructor(private readonly onChange: () => void, private readonly onOutput: (event: TerminalOutputEvent) => void = () => {}) {}
 
   private changed(): void {
     if (this.shuttingDown || this.changeTimer) return;
@@ -56,19 +49,22 @@ export class TerminalManager {
     const info: TerminalInfo = { id: randomUUID(), workspaceId, title: path.basename(shell), status: 'running', exitCode: null, output: '', outputOffset: 0 };
     let resolveExit: () => void = () => {};
     const exited = new Promise<void>((resolve) => { resolveExit = resolve; });
-    const terminal: ManagedTerminal = { info, process: child, disposables: [], exited, resolveExit };
+    const output = new TerminalOutputCoalescer(info.id, this.onOutput, data => {
+      const full = info.output + data;
+      const tail = terminalOutputTail(full);
+      info.outputOffset += full.length - tail.length;
+      info.output = tail;
+    });
+    const terminal: ManagedTerminal = { info, process: child, disposables: [], exited, resolveExit, output };
     this.terminals.set(info.id, terminal);
     terminal.disposables.push(child.onData((data) => {
-      const full = terminal.info.output + data;
-      const tail = outputTail(full);
-      terminal.info.outputOffset += full.length - tail.length;
-      terminal.info.output = tail;
-      this.changed();
+      terminal.output.append(data);
     }));
     terminal.disposables.push(child.onExit(({ exitCode, signal }) => {
       clearTimeout(terminal.forceTimer);
       terminal.info.status = 'exited';
       terminal.info.exitCode = signal ? 128 + signal : exitCode;
+      terminal.output.dispose();
       try { signalTerminal(terminal, 'SIGKILL'); } catch {}
       for (const disposable of terminal.disposables) disposable.dispose();
       terminal.disposables = [];
@@ -80,6 +76,12 @@ export class TerminalManager {
   }
 
   snapshot(): TerminalInfo[] { return [...this.terminals.values()].map(({ info }) => ({ ...info })); }
+  metadata(): TerminalInfo[] { return [...this.terminals.values()].map(({ info }) => ({ ...info, output: '', outputOffset: 0 })); }
+  get(id: string): TerminalInfo {
+    const terminal = this.terminals.get(id);
+    if (!terminal) throw new Error('Terminal does not exist');
+    return { ...terminal.info };
+  }
 
   private running(id: string): ManagedTerminal {
     const terminal = this.terminals.get(id);
@@ -122,6 +124,9 @@ export class TerminalManager {
       await Promise.race([Promise.all(pending.map((terminal) => terminal.exited)), new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error('Terminal processes did not exit during shutdown')), 2000);
       })]);
-    } finally { clearTimeout(timer); }
+    } finally {
+      clearTimeout(timer);
+      for (const terminal of this.terminals.values()) terminal.output.dispose();
+    }
   }
 }

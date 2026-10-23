@@ -1,4 +1,10 @@
 export const en = {
+  "chat.loadEarlier": "Load earlier messages",
+  "chat.currentApprovals": "Responses needed for the current task",
+  "chat.loadLater": "Load later messages",
+  "chat.historyWindow": "Viewing earlier history",
+  "chat.returnLatest": "Return to latest",
+  "chat.loadingHistory": "Loading conversation…",
   "chat.queueTitle": "Follow-up queue",
   "chat.queueCount": "Next turns ({{count}})",
   "chat.pauseQueue": "Pause",
@@ -9,6 +15,7 @@ export const en = {
   "chat.saveQueued": "Save changes",
   "chat.removeQueued": "Remove",
   "chat.queuedAttachments": "Attached files",
+  "chat.connectionUnavailable": "Connection unavailable. Your draft is retained; sending resumes after sync.",
   "chat.sendUnconfirmed": "Send result was not confirmed: {{error}}. Your draft is retained. Retry to check the same request.",
   "chat.delivery.pending": "Confirming runtime receipt",
   "chat.delivery.accepted": "Runtime received this message",
@@ -228,6 +235,12 @@ export const en = {
 };
 
 export const zhCN: Record<keyof typeof en, string> = {
+  "chat.loadEarlier": "加载更早的消息",
+  "chat.currentApprovals": "当前任务等待你的回应",
+  "chat.loadLater": "加载后续消息",
+  "chat.historyWindow": "正在查看较早记录",
+  "chat.returnLatest": "返回最新消息",
+  "chat.loadingHistory": "正在加载聊天记录…",
   "chat.queueTitle": "待执行消息",
   "chat.queueCount": "待执行消息（{{count}}）",
   "chat.pauseQueue": "暂停",
@@ -238,6 +251,7 @@ export const zhCN: Record<keyof typeof en, string> = {
   "chat.saveQueued": "保存修改",
   "chat.removeQueued": "移除",
   "chat.queuedAttachments": "已附加文件",
+  "chat.connectionUnavailable": "连接暂时不可用，草稿已保留。同步完成后可发送。",
   "chat.sendUnconfirmed": "发送结果尚未确认：{{error}}。草稿已保留，再次发送会核对同一请求。",
   "chat.delivery.pending": "正在确认运行时是否接收",
   "chat.delivery.accepted": "运行时已接收这条消息",
