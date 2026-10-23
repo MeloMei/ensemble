@@ -68,6 +68,10 @@ Closing the desktop window disconnects that client while the backend continues r
 
 On backend restart, unfinished executions are marked interrupted and require explicit continuation. Completed tasks are not automatically redispatched. Terminal processes are not restored after restart. Attachments and collaboration artifacts are stored as files alongside the database and checked by their owning services.
 
+Ordinary create/send/cancel/answer commands share SQLite transaction receipts. Follow-ups retain their selected model, settings and attachments in a durable next-turn queue. Stop, failure and restart pause the queue. Codex reconciles clientUserMessageId against native history; lost confirmation stays unknown and never triggers an automatic resend. Attention and seen revisions persist separately from task status.
+
+Desktop Stop requests carry the observed attempt ID; the backend compares it atomically before cancelling or pausing a queue. Pending Codex input that never reached physical execution is rejected on cancellation or queued-state recovery; input interrupted after execution began remains unknown. The same delivery guard applies to ordinary, managed and collaboration dispatch. Each new concurrent approval advances the attention revision.
+
 ## Build boundaries and licensing
 
 Vite builds the renderer. esbuild builds the Electron main process, preload, independent backend, CLI, and stdio bridge into `dist/`. The current packaging script targets macOS and the host architecture, applies an ad hoc signature, and verifies it. It does not provide Developer ID signing, notarization, or a Windows/Linux packaging path.

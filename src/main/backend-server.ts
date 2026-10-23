@@ -94,8 +94,13 @@ export async function startBackend(options: {
         if (bytes > 2_000_000) throw new Error('后台请求超过大小限制。');
         chunks.push(chunk);
       }
-      const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { command: unknown; args: unknown };
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { command: unknown; args: unknown; undefinedArgs?: unknown };
       if (typeof body.command !== 'string' || !Array.isArray(body.args) || body.args.length > 8) throw new Error('后台命令格式无效。');
+      if (body.undefinedArgs !== undefined) {
+        if (!Array.isArray(body.undefinedArgs) || body.undefinedArgs.length > body.args.length
+          || body.undefinedArgs.some(index => !Number.isInteger(index) || index < 0 || index >= (body.args as unknown[]).length || (body.args as unknown[])[index] !== null)) throw new Error('后台命令可选参数无效。');
+        for (const index of body.undefinedArgs) body.args[index] = undefined;
+      }
       const result = await service.call(body.command, body.args);
       response.setHeader('Content-Type', 'application/json');
       response.end(JSON.stringify({ result: result ?? null }));

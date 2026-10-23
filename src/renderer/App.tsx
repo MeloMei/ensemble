@@ -11,6 +11,8 @@ import { LanguageOptions } from './language';
 import { SPRING_SNAPPY, motionPopover } from './vendor/open-claude-ui/ClaudeMotionPresets';
 import type { PromptInput, ProviderInfo, Session, Snapshot, Workspace, WorkspaceTab } from '../shared/types';
 import { searchableMessageText } from '../shared/message-text';
+import { recoverSessionCommands, runSessionCommand } from './session-command';
+import { sessionAttentionReason, sessionIsUnread } from './session-attention';
 import { PRODUCT_NAME } from '../shared/app-identity';
 import ensembleLogo from '../../docs/brand/ensemble-avatar.png';
 import { AgentIcon } from './AgentIcon';
@@ -28,13 +30,22 @@ const CollaborationViews = lazy(() => import('./CollaborationViews').then(module
 
 function workspaceGroup(workspace: Workspace, sessions: Session[]) {
   const relevant = sessions.filter(session => session.cwd === workspace.cwd);
-  if (relevant.some(session => session.status === 'waiting_approval')) return 'attention';
+  if (relevant.some(session => ['approval', 'failure'].includes(sessionAttentionReason(session) ?? ''))) return 'attention';
   if (relevant.some(session => ['running', 'waiting_children', 'queued'].includes(session.status))) return 'working';
-  const latest = relevant.slice().sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
-  if (latest?.status === 'completed') return 'review';
-  if (latest?.status === 'failed' || latest?.status === 'interrupted') return 'attention';
-  if (latest?.status === 'cancelled') return 'done';
+  if (relevant.some(session => sessionAttentionReason(session) === 'result')) return 'review';
+  if (relevant.some(session => ['completed', 'failed', 'interrupted', 'cancelled'].includes(session.status))) return 'done';
   return 'new';
+}
+
+function AttentionBadge({ session }: { session: Session }) {
+  const { t } = useTranslation('shell');
+  const reason = sessionAttentionReason(session);
+  if (!reason) return null;
+  const unread = sessionIsUnread(session);
+  return <span className={`session-attention attention-${reason}${unread ? ' is-unread' : ''}`}
+    title={t(`attention.${reason}`)} aria-label={`${t(`attention.${reason}`)}${unread ? ` · ${t('attention.unread')}` : ''}`}>
+    {unread && <i aria-hidden="true" />}{t(`attention.${reason}`)}
+  </span>;
 }
 
 export function App() {
@@ -63,7 +74,8 @@ export function App() {
   const [toast, setToast] = useState('');
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  const updateDraft = useCallback((id: string, value: PromptInput) => {
+  const updateDraft = useCallback((id: string, value: PromptInput, expected?: PromptInput) => {
+    if (expected && currentDrafts.current[id] && currentDrafts.current[id] !== expected) return;
     currentDrafts.current[id] = value;
     setDrafts(current => ({ ...current, [id]: value }));
     setDraftErrors(current => ({ ...current, [id]: '' }));
@@ -105,6 +117,9 @@ export function App() {
   const activeTab = workspace?.tabs.find(tab => tab.id === workspace.activeTabId) ?? workspace?.tabs[0];
   const secondaryTab = workspace?.tabs.find(tab => tab.id === workspace.secondaryTabId && tab.id !== activeTab?.id);
   const activeSession = activeTab?.kind === 'agent' ? sessions.find(session => session.id === activeTab.sessionId) : undefined;
+  useEffect(() => {
+    if (snapshot) void recoverSessionCommands();
+  }, [snapshot]);
   const visibleWorkspaces = workspaces.filter(item => `${item.name} ${item.cwd}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
   const refreshKey = sessions.filter(session => session.cwd === workspace?.cwd).map(session => `${session.id}:${session.status}`).join('|');
 
@@ -125,7 +140,7 @@ export function App() {
   const renderTab = (tab?: WorkspaceTab) => {
     const tabSession = tab?.kind === 'agent' ? sessions.find(item => item.id === tab.sessionId) : undefined;
     const tabTerminal = tab?.kind === 'terminal' ? snapshot?.terminals.find(item => item.id === tab.terminalId) : undefined;
-    if (tabSession && workspace) return <SessionChat key={tabSession.id} session={tabSession} workspaceId={workspace.id} sessions={sessions} openSession={openSession} provider={providers.find(item => item.id === tabSession.providerId)} perform={perform} pending={pending} draft={drafts[tabSession.id] ?? tabSession.draft ?? { text: '' }} draftError={draftErrors[tabSession.id]} onDraftChange={value => updateDraft(tabSession.id, value)} />;
+    if (tabSession && workspace) return <SessionChat key={tabSession.id} session={tabSession} workspaceId={workspace.id} sessions={sessions} openSession={openSession} provider={providers.find(item => item.id === tabSession.providerId)} perform={perform} pending={pending} draft={drafts[tabSession.id] ?? tabSession.draft ?? { text: '' }} draftError={draftErrors[tabSession.id]} onDraftChange={(value, expected) => updateDraft(tabSession.id, value, expected)} />;
     if (tabTerminal && workspace) return <TerminalPane key={tabTerminal.id} info={tabTerminal} cwd={workspace.cwd} perform={perform} />;
     if (tab?.kind === 'preview') return <PreviewPane key={tab.id} tab={tab} />;
     return <EmptyState icon={<Layers2 size={28} />} title={t('app.projectReady')} action={<div className="empty-actions"><button className="button" onClick={() => setDialog('agent')}><Plus size={14} />{t('app.addAgent')}</button><button className="button subtle" disabled={pending.has('create-terminal')} onClick={() => workspace && void perform('create-terminal', () => window.workbench.createTerminal(workspace.id))}><TerminalSquare size={14} />{t('app.openTerminal')}</button></div>}>{t('app.projectReadyNote')}</EmptyState>;
@@ -133,11 +148,14 @@ export function App() {
 
   const workspaceRow = (item: Workspace) => {
     const related = sessions.filter(session => session.cwd === item.cwd).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-    const current = related.find(session => session.status === 'waiting_approval')
-      ?? related.find(session => ['running', 'waiting_children', 'queued'].includes(session.status)) ?? related[0];
+    const current = related.find(session => sessionAttentionReason(session) === 'approval')
+      ?? related.find(session => sessionAttentionReason(session) === 'failure')
+      ?? related.find(session => ['running', 'waiting_children', 'queued'].includes(session.status))
+      ?? related.find(session => sessionAttentionReason(session) === 'result') ?? related[0];
+    const unread = related.filter(sessionIsUnread).length;
     return <button key={item.id} className={`workspace-row ${page === 'workspace' && workspace?.id === item.id ? 'selected' : ''}`} onClick={() => selectWorkspace(item.id)}>
       <span className="workspace-glyph">{current ? <AgentIcon providerId={current.providerId} size={15} /> : <Layers2 size={15} />}{current?.status === 'running' && <i />}</span>
-      <span className="workspace-row-body"><span className="workspace-row-title">{item.name}</span>{current && <span className="workspace-row-meta"><Status value={current.status} /></span>}</span><time>{relativeTime(item.updatedAt)}</time>
+      <span className="workspace-row-body"><span className="workspace-row-title">{item.name}</span>{current && <span className="workspace-row-meta"><Status value={current.status} /><AttentionBadge session={current} /></span>}</span>{unread > 0 && <span className="workspace-unread" aria-label={t('attention.unreadSessions', { count: unread })}>{unread}</span>}<time>{relativeTime(item.updatedAt)}</time>
     </button>;
   };
 
@@ -171,7 +189,7 @@ export function App() {
           const tabSession = tab.kind === 'agent' ? sessions.find(item => item.id === tab.sessionId) : undefined;
           const tabTerminal = tab.kind === 'terminal' ? snapshot.terminals.find(item => item.id === tab.terminalId) : undefined;
           const label = tab.kind === 'agent' ? providers.find(provider => provider.id === tabSession?.providerId)?.name ?? tabSession?.providerId ?? 'Agent' : tab.kind === 'terminal' ? tabTerminal?.title ?? 'Terminal' : tab.url;
-          return <div key={tab.id} className={`workspace-tab ${activeTab?.id === tab.id ? 'active' : ''}`}>{activeTab?.id === tab.id && <motion.span className="workspace-tab-active" layoutId={`workspace-tab-${workspace.id}`} transition={reducedMotion ? { duration: 0 } : SPRING_SNAPPY} />}<button className="tab-select" title={tab.kind === 'agent' ? tabSession?.title : label} onClick={() => void perform('activate-tab', () => window.workbench.activateTab(workspace.id, tab.id))}>{tab.kind === 'agent' ? <AgentIcon providerId={tabSession?.providerId ?? ''} size={14} /> : tab.kind === 'terminal' ? <TerminalSquare size={14} /> : <Globe size={14} />}<span>{label}</span>{tabSession && ['running', 'waiting_approval', 'waiting_children', 'failed'].includes(tabSession.status) && <i className={`tab-state tab-state-${tabSession.status}`} aria-label={statusLabel(tabSession.status)} title={statusLabel(tabSession.status)} />}</button><button className="tab-close" aria-label={t('app.closeNamedTab', { label })} title={tab.kind === 'terminal' ? t('app.closeTerminalTab') : t('app.closeTab')} onClick={() => void perform(`close-tab-${tab.id}`, () => window.workbench.closeTab(workspace.id, tab.id))}><X size={11} /></button></div>;
+          return <div key={tab.id} className={`workspace-tab ${activeTab?.id === tab.id ? 'active' : ''}`}>{activeTab?.id === tab.id && <motion.span className="workspace-tab-active" layoutId={`workspace-tab-${workspace.id}`} transition={reducedMotion ? { duration: 0 } : SPRING_SNAPPY} />}<button className="tab-select" title={tab.kind === 'agent' ? tabSession?.title : label} onClick={() => void perform('activate-tab', () => window.workbench.activateTab(workspace.id, tab.id))}>{tab.kind === 'agent' ? <AgentIcon providerId={tabSession?.providerId ?? ''} size={14} /> : tab.kind === 'terminal' ? <TerminalSquare size={14} /> : <Globe size={14} />}<span>{label}</span>{tabSession && <AttentionBadge session={tabSession} />}{tabSession && ['running', 'waiting_approval', 'waiting_children', 'failed'].includes(tabSession.status) && <i className={`tab-state tab-state-${tabSession.status}`} aria-label={statusLabel(tabSession.status)} title={statusLabel(tabSession.status)} />}</button><button className="tab-close" aria-label={t('app.closeNamedTab', { label })} title={tab.kind === 'terminal' ? t('app.closeTerminalTab') : t('app.closeTab')} onClick={() => void perform(`close-tab-${tab.id}`, () => window.workbench.closeTab(workspace.id, tab.id))}><X size={11} /></button></div>;
         })}</div><div className="tab-add" ref={tabMenuContainer} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setTabMenu(false); }} onKeyDown={event => {
             if (!tabMenu) return;
             if (event.key === 'Escape') { event.preventDefault(); setTabMenu(false); tabMenuContainer.current?.querySelector<HTMLButtonElement>('[aria-haspopup]')?.focus({ preventScroll: true }); return; }
@@ -212,6 +230,8 @@ function NewWorkspaceDialog({ pending, perform, onClose, onCreated }: { pending:
 
 function NewAgentDialog({ workspace, providers, pending, perform, onClose }: { workspace: Workspace; providers: ProviderInfo[]; pending: Set<string>; perform: Perform; onClose: () => void }) {
   const { t } = useTranslation('shell');
+  const live = useRef(true);
+  useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
   const [selection, setSelection] = useState(() => {
     const provider = providers.find(item => item.available);
     return { providerId: provider?.id ?? '', modelId: defaultModelId(provider) };
@@ -223,7 +243,12 @@ function NewAgentDialog({ workspace, providers, pending, perform, onClose }: { w
   const valid = validModelSelection(provider, modelId);
   const submit = (event: FormEvent) => {
     event.preventDefault(); if (!valid || busy) return;
-    void perform('create-agent', async () => { await window.workbench.createSession({ cwd: workspace.cwd, providerId, ...(modelId ? { modelId } : {}), title: title.trim() || t('app.defaultSessionName', { provider: provider?.name ?? providerId }) }); onClose(); });
+    const input = { cwd: workspace.cwd, providerId, ...(modelId ? { modelId } : {}), title: title.trim() || t('app.defaultSessionName', { provider: provider?.name ?? providerId }) };
+    void perform('create-agent', () => runSessionCommand(`create-session:${workspace.id}`, input, async commandId => {
+      const id = await window.workbench.createSession({ ...input, commandId });
+      if (live.current) onClose();
+      return id;
+    }));
   };
   return <Modal title={t('app.newAgentSession')} subtitle={workspace.name} busy={busy} onClose={onClose}><form onSubmit={submit}><label>{t('common.agent')}<ProviderSelect providers={providers} value={providerId} onChange={id => setSelection({ providerId: id, modelId: defaultModelId(providers.find(item => item.id === id)) })} /></label><ModelField provider={provider} value={modelId} disabled={busy} onChange={value => setSelection(current => ({ ...current, modelId: value }))} /><label>{t('app.sessionName')}<span className="optional">{t('common.optional')}</span><input autoFocus value={title} maxLength={200} onChange={event => setTitle(event.target.value)} placeholder={t('app.sessionExample')} /></label><div className="form-note"><Folder size={14} /><span>{workspace.cwd}</span></div><div className="modal-actions"><button type="button" className="button subtle" disabled={busy} onClick={onClose}>{t('common.cancel')}</button><button className="button primary" disabled={!valid || busy}><BusyIcon busy={busy}><Plus size={14} /></BusyIcon>{t('app.createSession')}</button></div></form></Modal>;
 }
@@ -275,5 +300,5 @@ function HistoryView({ sessions, providers, openSession, perform }: { sessions: 
   const [query, setQuery] = useState('');
   const [archived, setArchived] = useState(false);
   const matching = sessions.filter(session => (archived || !session.archived) && `${session.title} ${session.cwd} ${session.messages.map(searchableMessageText).join(' ')}`.toLocaleLowerCase().includes(query.toLocaleLowerCase())).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  return <section className="history-page"><div className="history-intro"><div><h2>{t('history.title')}</h2><p>{t('history.note')}</p></div><div className="history-search"><Search size={14} /><input aria-label={t('history.search')} value={query} onChange={event => setQuery(event.target.value)} placeholder={t('history.placeholder')} /></div></div><label className="history-archive"><input type="checkbox" checked={archived} onChange={event => setArchived(event.target.checked)} />{t('history.archivedFilter')}</label><div className="history-list">{matching.length ? matching.map(session => <div className="history-row" key={session.id}><button className="history-open" onClick={() => openSession(session.id)}><span className="history-icon"><AgentIcon providerId={session.providerId} size={19} /></span><span className="history-row-title"><strong>{session.title}{session.archived ? t('history.archivedSuffix') : ''}</strong><small title={session.cwd}>{providers.find(provider => provider.id === session.providerId)?.name ?? session.providerId}<span>·</span>{session.cwd}</small></span></button><Status value={session.status} /><time>{relativeTime(session.updatedAt)}</time><button className="text-button" disabled={['running', 'waiting_approval', 'waiting_children', 'queued'].includes(session.status)} onClick={() => void perform('archive-session', () => window.workbench.updateSession(session.id, { archived: !session.archived }))}>{session.archived ? t('history.restore') : t('history.archive')}</button></div>) : <EmptyState icon={<History size={25} />} title={query ? t('history.noMatches') : t('history.empty')}>{t('history.emptyNote')}</EmptyState>}</div></section>;
+  return <section className="history-page"><div className="history-intro"><div><h2>{t('history.title')}</h2><p>{t('history.note')}</p></div><div className="history-search"><Search size={14} /><input aria-label={t('history.search')} value={query} onChange={event => setQuery(event.target.value)} placeholder={t('history.placeholder')} /></div></div><label className="history-archive"><input type="checkbox" checked={archived} onChange={event => setArchived(event.target.checked)} />{t('history.archivedFilter')}</label><div className="history-list">{matching.length ? matching.map(session => <div className="history-row" key={session.id}><button className="history-open" onClick={() => openSession(session.id)}><span className="history-icon"><AgentIcon providerId={session.providerId} size={19} /></span><span className="history-row-title"><strong>{session.title}{session.archived ? t('history.archivedSuffix') : ''}</strong><small title={session.cwd}>{providers.find(provider => provider.id === session.providerId)?.name ?? session.providerId}<span>·</span>{session.cwd}</small></span></button><AttentionBadge session={session} /><Status value={session.status} /><time>{relativeTime(session.updatedAt)}</time><button className="text-button" disabled={['running', 'waiting_approval', 'waiting_children', 'queued'].includes(session.status)} onClick={() => void perform('archive-session', () => window.workbench.updateSession(session.id, { archived: !session.archived }))}>{session.archived ? t('history.restore') : t('history.archive')}</button></div>) : <EmptyState icon={<History size={25} />} title={query ? t('history.noMatches') : t('history.empty')}>{t('history.emptyNote')}</EmptyState>}</div></section>;
 }

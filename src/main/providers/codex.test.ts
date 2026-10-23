@@ -10,7 +10,7 @@ import type { ProviderEvent, TurnContext } from './types';
 
 const fixture = String.raw`
 import { createInterface } from 'node:readline';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 if (process.argv.includes('--version')) { console.log('codex-cli fixture'); process.exit(0); }
 const mode = process.env.CODEX_ADAPTER_FIXTURE_MODE;
@@ -48,7 +48,11 @@ createInterface({ input: process.stdin }).on('line', line => {
   if (message.method === 'initialize') { response(message.id, { userAgent: 'fixture' }); return; }
   if (message.method === 'initialized') return;
   if (message.method === 'model/list') { response(message.id, { data: [{ id: 'fixture-model', displayName: 'Fixture model', isDefault: true, inputModalities: ['text', 'image'], supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }] }], nextCursor: null }); return; }
-  if (message.method === 'thread/read') { response(message.id, { thread: { id: threadId, historyMode: mode === 'legacy' ? 'legacy' : 'paginated' } }); return; }
+  if (message.method === 'thread/read') { response(message.id, { thread: { id: message.params.threadId, historyMode: mode === 'legacy' ? 'legacy' : 'paginated' } }); return; }
+  if (message.method === 'thread/turns/list') {
+    const stored = trace ? readFileSync(trace, 'utf8').trim().split('\n').map(line => JSON.parse(line)).filter(record => record.fixture === 'stored-user' && record.threadId === message.params.threadId) : [];
+    response(message.id, { data: stored.map(record => ({ id: record.turnId, status: 'completed', itemsView: 'full', items: [{ type: 'userMessage', id: record.itemId, clientId: record.clientId, content: record.input }] })), nextCursor: null }); return;
+  }
   if (message.method === 'thread/revert') { response(message.id, { thread: { id: threadId } }); return; }
   if (message.method === 'never') return;
   if (message.method === 'child') {
@@ -65,6 +69,8 @@ createInterface({ input: process.stdin }).on('line', line => {
   if (message.method === 'turn/start') {
     if (!Array.isArray(message.params.input[0].text_elements)) process.exit(10);
     turnId = 'turn-' + (++turnNumber);
+    if (trace) appendFileSync(trace, JSON.stringify({ fixture: 'stored-user', threadId, turnId, itemId: 'native-' + message.params.clientUserMessageId, clientId: message.params.clientUserMessageId, input: message.params.input }) + '\n');
+    if (mode === 'lost-confirmation') { process.exit(7); }
     if (mode === 'routing') item = { ...item, text: message.params.input[0].text };
     if (turnNumber > 1) event('item/agentMessage/delta', { turnId: 'turn-1', itemId: 'answer', delta: 'stale-turn' });
     response(message.id, { turn: { id: turnId, status: 'inProgress', items: [] } });
@@ -106,8 +112,67 @@ createInterface({ input: process.stdin }).on('line', line => {
   }
 });
 
-process.stdin.on('end', () => process.exit(0));
+process.stdin.on('end', () => { if (mode === 'close-delayed') setTimeout(() => process.exit(0), 50); else process.exit(0); });
 `;
+
+test('Codex delivery reconciles a lost confirmation by client ID without resending or merging equal text', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'ensemble-codex-delivery-'));
+  const binary = join(directory, 'codex.mjs'), trace = join(directory, 'trace.jsonl');
+  await writeFile(binary, `#!${process.execPath}\n${fixture}`, { mode: 0o755 });
+  const previous = { binary: process.env.CODEX_BINARY, mode: process.env.CODEX_ADAPTER_FIXTURE_MODE, trace: process.env.CODEX_ADAPTER_FIXTURE_TRACE };
+  process.env.CODEX_BINARY = binary; process.env.CODEX_ADAPTER_FIXTURE_TRACE = trace; process.env.CODEX_ADAPTER_FIXTURE_MODE = 'lost-confirmation';
+  let provider: Awaited<ReturnType<typeof createCodexProvider>> | undefined;
+  const session: Session = { id: 'delivery', title: 'Delivery', providerId: 'codex', cwd: directory, status: 'running', messages: [], approvals: [], createdAt: '', updatedAt: '' };
+  const events: ProviderEvent[] = [];
+  const context = (userMessageId: string, signal = new AbortController().signal): TurnContext => ({ session, prompt: 'same text', userMessageId, signal,
+    emit: event => { events.push(event); if (event.type === 'external-id') session.externalId = event.id; }, approve: async () => { throw new Error('unexpected approval'); } });
+  const delivery = (clientUserMessageId: string) => ({ id: clientUserMessageId, clientUserMessageId, status: 'unknown' as const, createdAt: '', updatedAt: '', nativeThreadId: session.externalId });
+  const records = async () => (await readFile(trace, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  try {
+    provider = await createCodexProvider();
+    await assert.rejects(provider.run(context('client-1')), /退出|关闭/);
+    assert(events.some(event => event.type === 'delivery' && event.status === 'unknown'));
+    assert(!events.some(event => event.type === 'delivery' && event.status === 'accepted'));
+    await assert.rejects(provider.run(context('client-2')), /退出|关闭/);
+    const before = (await records()).filter(record => record.method === 'turn/start').length;
+    const reconciled = await provider.reconcileDelivery!(session, [delivery('client-1'), delivery('client-2'), delivery('never-sent')]);
+    assert.deepEqual(reconciled.map(item => item.status), ['accepted', 'accepted', 'unknown']);
+    assert.notEqual(reconciled[0].nativeItemId, reconciled[1].nativeItemId);
+    assert.equal((await records()).filter(record => record.method === 'turn/start').length, before);
+    process.env.CODEX_ADAPTER_FIXTURE_MODE = 'exit'; events.length = 0;
+    await assert.rejects(provider.run(context('confirmed-before-exit')), /退出|关闭/);
+    assert(events.some(event => event.type === 'delivery' && event.status === 'accepted'));
+    assert(!events.some(event => event.type === 'delivery' && event.status === 'unknown'));
+    process.env.CODEX_ADAPTER_FIXTURE_MODE = 'stream'; events.length = 0;
+    const controller = new AbortController(), stopped = context('cancelled-before-write', controller.signal);
+    const emit = stopped.emit;
+    stopped.emit = event => { emit(event); if (event.type === 'delivery' && event.status === 'pending') controller.abort(); };
+    const sentBeforeAbort = (await records()).filter(record => record.method === 'turn/start').length;
+    await assert.rejects(provider.run(stopped), /取消/);
+    assert(events.some(event => event.type === 'delivery' && event.status === 'rejected'));
+    assert.equal((await records()).filter(record => record.method === 'turn/start').length, sentBeforeAbort);
+    process.env.CODEX_ADAPTER_FIXTURE_MODE = 'close-delayed';
+    await provider.run(context('before-configuration-rotation'));
+    events.length = 0;
+    const rotatingController = new AbortController();
+    const rotating = { ...context('cancelled-during-configuration-rotation', rotatingController.signal),
+      session: { ...session, settings: { permission: 'read-only' as const } } };
+    const sentBeforeRotation = (await records()).filter(record => record.method === 'turn/start').length;
+    const rotation = provider.run(rotating);
+    const abortRotation = setTimeout(() => rotatingController.abort(), 5);
+    try { await assert.rejects(rotation, /取消/); }
+    finally { clearTimeout(abortRotation); }
+    assert(events.some(event => event.type === 'delivery' && event.status === 'rejected'));
+    assert(!events.some(event => event.type === 'delivery' && event.status === 'unknown'));
+    assert.equal((await records()).filter(record => record.method === 'turn/start').length, sentBeforeRotation);
+  } finally {
+    await provider?.dispose?.();
+    for (const [name, value] of Object.entries({ CODEX_BINARY: previous.binary, CODEX_ADAPTER_FIXTURE_MODE: previous.mode, CODEX_ADAPTER_FIXTURE_TRACE: previous.trace })) {
+      if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test('Codex provider uses the app-server protocol and cleans up owned processes', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'workbench-codex-'));

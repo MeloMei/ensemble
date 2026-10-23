@@ -10,7 +10,7 @@ import {
   Activity, Archive, ArrowDown, ArrowUp, ArrowUpLeft, Brain, Check, ChevronDown,
   CircleAlert, CircleStop, Clock3, Copy, CornerDownLeft, FileText, FolderOpen,
   GitFork, Image, ListChecks, LoaderCircle, MessageCircle, PanelsTopLeft,
-  Paperclip, Search, Settings2, ShieldCheck, TerminalSquare, Users, X,
+  Paperclip, Pause, Play, Search, Settings2, ShieldCheck, TerminalSquare, Users, X,
 } from 'lucide-react';
 import type {
   Approval, Message, ProcessEvent, PromptAttachment, PromptInput, ProviderInfo, Session, SkillInfo, UsageRecord,
@@ -19,6 +19,8 @@ import { searchableMessageText } from '../shared/message-text';
 import { IconButton, Modal, Status, modelName, pathName, type Perform } from './ui';
 import { SPRING_SNAPPY } from './vendor/open-claude-ui/ClaudeMotionPresets';
 import { useClaudeScrollPinning } from './vendor/open-claude-ui/useClaudeScrollPinning';
+import { promptCommandInput, runSessionCommand, runSessionStopCommand } from './session-command';
+import { sessionIsUnread } from './session-attention';
 import './SessionChat.css';
 
 interface SessionChatProps {
@@ -28,7 +30,7 @@ interface SessionChatProps {
   pending: Set<string>;
   draft: PromptInput;
   draftError?: string;
-  onDraftChange: (value: PromptInput) => void;
+  onDraftChange: (value: PromptInput, expected?: PromptInput) => void;
   workspaceId: string;
   sessions?: Session[];
   openSession: (id: string) => void;
@@ -52,7 +54,8 @@ function QuestionApproval({ approval, pending, perform }: ApprovalProps) {
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (!valid || busy) return;
-    void perform(`approval-${approval.id}`, () => window.workbench.answerQuestions(approval.id, answers));
+    void perform(`approval-${approval.id}`, () => runSessionCommand(`approval:${approval.id}`, answers,
+      commandId => window.workbench.answerQuestions(approval.id, answers, commandId)));
   };
 
   return <form className="approval-card question-approval" onSubmit={submit}>
@@ -113,7 +116,8 @@ function ApprovalCard({ approval, pending, perform }: ApprovalProps) {
     <p>{approval.detail}</p>
     <div className="approval-actions">
       {approval.choices.map(choice => <button key={choice.id} className="button small" disabled={busy}
-        onClick={() => void perform(`approval-${approval.id}`, () => window.workbench.decideApproval(approval.id, choice.id))}>
+        onClick={() => void perform(`approval-${approval.id}`, () => runSessionCommand(`approval:${approval.id}`, choice.id,
+          commandId => window.workbench.decideApproval(approval.id, choice.id, commandId)))}>
         {renderDisplayText(choice.label, choice.labelI18n)}
       </button>)}
     </div>
@@ -309,6 +313,69 @@ function UsageBadge({ usage }: { usage?: UsageRecord }) {
   return <span className="session-usage">{t('usage.outputTokens', { tokens: usage.outputTokens === undefined ? '—' : formatNumber(usage.outputTokens) })}</span>;
 }
 
+function DeliveryState({ message, sessionId, pending, perform }: {
+  message: Message; sessionId: string; pending: Set<string>; perform: Perform;
+}) {
+  const { t } = useTranslation('workspace');
+  const delivery = message.delivery;
+  if (!delivery) return null;
+  return <div className={`message-delivery delivery-${delivery.status}`}>
+    <span title={delivery.reason}>{t(`chat.delivery.${delivery.status}`)}</span>
+    {(delivery.status === 'unknown' || delivery.status === 'pending') && <button
+      disabled={pending.has(`reconcile-${sessionId}`)}
+      onClick={() => void perform(`reconcile-${sessionId}`, () => window.workbench.reconcileSessionDelivery(sessionId))}>
+      {t('chat.checkDelivery')}
+    </button>}
+    {delivery.status === 'rejected' && delivery.reason && <span>{delivery.reason}</span>}
+  </div>;
+}
+
+function PromptQueue({ session, provider, pending, perform }: Pick<SessionChatProps, 'session' | 'provider' | 'pending' | 'perform'>) {
+  const { t } = useTranslation('workspace');
+  const [editing, setEditing] = useState<{ id: string; input: PromptInput }>();
+  const queue = session.queue ?? [];
+  if (!queue.length) return null;
+  const pauseKey = `queue-pause-${session.id}`;
+  return <section className="prompt-queue" aria-label={t('chat.queueTitle')}>
+    <header><strong><ListChecks size={14} />{t('chat.queueCount', { count: queue.length })}</strong>
+      <button disabled={pending.has(pauseKey)} onClick={() => void perform(pauseKey,
+        () => window.workbench.setSessionQueuePaused(session.id, !session.queuePaused))}>
+        {session.queuePaused ? <Play size={12} /> : <Pause size={12} />}{session.queuePaused ? t('chat.resumeQueue') : t('chat.pauseQueue')}
+      </button>
+    </header>
+    {session.queuePaused && <p className="queue-paused"><Pause size={12} />{t('chat.queuePaused')}{session.queueHoldReason && <span>{session.queueHoldReason}</span>}</p>}
+    <ol>{queue.map(item => {
+      const changing = pending.has(`queue-item-${item.id}`);
+      return <li key={item.id} data-queue-id={item.id}>
+        {editing?.id === item.id ? <form onSubmit={event => {
+          event.preventDefault();
+          if (changing || (!editing.input.text.trim() && !editing.input.attachments?.length)) return;
+          const input = promptCommandInput(editing.input);
+          void perform(`queue-item-${item.id}`, async () => {
+            await window.workbench.updateQueuedPrompt(session.id, item.id, input);
+            setEditing(current => current?.id === item.id ? undefined : current);
+          });
+        }}>
+          <textarea aria-label={t('chat.editQueued')} value={editing.input.text} disabled={changing} rows={2}
+            onChange={event => setEditing(current => current && ({ ...current, input: { ...current.input, text: event.target.value } }))} />
+          <AttachmentChips attachments={editing.input.attachments ?? []} onRemove={changing ? undefined : id =>
+            setEditing(current => current && ({ ...current, input: { ...current.input, attachments: current.input.attachments?.filter(attachment => attachment.id !== id) } }))} />
+          <div className="queue-item-actions"><button type="submit" disabled={changing || (!editing.input.text.trim() && !editing.input.attachments?.length)}>{t('chat.saveQueued')}</button>
+            <button type="button" onClick={() => setEditing(undefined)}>{t('common.cancel')}</button></div>
+        </form> : <>
+          <div className="queue-item-content"><p>{item.input.text || t('chat.queuedAttachments')}</p>
+            <small>{item.modelId ? modelName(provider, item.modelId) : t('chat.runtimeDefault')}{item.settings?.effort ? ` · ${item.settings.effort}` : ''}</small>
+            <AttachmentChips attachments={item.input.attachments ?? []} />
+          </div>
+          <div className="queue-item-actions"><button disabled={changing} onClick={() => setEditing({ id: item.id, input: item.input })}>{t('chat.editQueued')}</button>
+            <button disabled={changing} onClick={() => void perform(`queue-item-${item.id}`,
+              () => window.workbench.removeQueuedPrompt(session.id, item.id))}>{t('chat.removeQueued')}</button></div>
+        </>}
+      </li>;
+    })}</ol>
+  </section>;
+}
+
 export function SessionChat({
   session, provider, perform, pending, draft, draftError, onDraftChange, workspaceId, sessions = [], openSession,
 }: SessionChatProps) {
@@ -317,6 +384,7 @@ export function SessionChat({
   const [showSettings, setShowSettings] = useState(false);
   const [find, setFind] = useState<string | null>(null);
   const [matchIndex, setMatchIndex] = useState(0);
+  const [sendError, setSendError] = useState('');
   const attachments = draft.attachments ?? [];
   const attachmentsSupported = provider?.source !== 'plugin';
   const unsupportedAttachments = !attachmentsSupported && attachments.length > 0;
@@ -368,8 +436,29 @@ export function SessionChat({
     status: session.status,
     error: session.error,
   }), [session.messages, session.approvals, session.status, session.error]);
-  const { containerRef: scroll, showJumpControl, markUserInput, handleScroll, scrollToBottom } =
+  const { containerRef: scroll, isPinned, showJumpControl, markUserInput, handleScroll, scrollToBottom } =
     useClaudeScrollPinning([session.id, outputRevision]);
+
+  const seenInFlight = useRef<number | undefined>(undefined);
+  const [visibilityRevision, setVisibilityRevision] = useState(0);
+  useEffect(() => {
+    const update = () => setVisibilityRevision(value => value + 1);
+    window.addEventListener('focus', update);
+    document.addEventListener('visibilitychange', update);
+    return () => { window.removeEventListener('focus', update); document.removeEventListener('visibilitychange', update); };
+  }, []);
+  useEffect(() => {
+    const revision = session.attention?.revision;
+    if (!revision || !sessionIsUnread(session) || !isPinned || seenInFlight.current === revision) return;
+    const frame = requestAnimationFrame(() => {
+      const element = scroll.current;
+      if (!element || document.visibilityState !== 'visible' || !document.hasFocus() || element.clientHeight <= 0
+        || element.scrollHeight - element.scrollTop - element.clientHeight > 40) return;
+      seenInFlight.current = revision;
+      void window.workbench.markSessionSeen(session.id, revision).catch(() => { seenInFlight.current = undefined; });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [session.attention?.revision, session.attention?.seenRevision, isPinned, visibilityRevision, messages]);
 
   useEffect(() => {
     if (!showSettings && !showActivity) return;
@@ -393,13 +482,20 @@ export function SessionChat({
 
   const send = () => {
     const prompt = draft.text.trim();
-    if ((!prompt && !attachments.length) || unsupportedAttachments || active || busy || settingsBusy || sendLock.current || !provider?.available) return;
+    if ((!prompt && !attachments.length) || unsupportedAttachments || busy || settingsBusy || sendLock.current || !provider?.available) return;
     sendLock.current = true;
+    setSendError('');
     void perform(`send-${session.id}`, async () => {
       try {
-        await window.workbench.sendPrompt(session.id, { text: prompt, attachments });
-        if (currentDraft.current === draft) onDraftChange({ text: '' });
-        scrollToBottom();
+        const input = promptCommandInput(draft);
+        await runSessionCommand(`send:${session.id}`, input, async commandId => {
+          await window.workbench.sendPrompt(session.id, input, commandId);
+          if (currentDraft.current === draft) { setSendError(''); onDraftChange({ text: '' }, draft); }
+          scrollToBottom();
+        });
+      } catch (error) {
+        setSendError(error instanceof Error ? error.message : String(error));
+        throw error;
       } finally {
         sendLock.current = false;
       }
@@ -422,7 +518,8 @@ export function SessionChat({
           <Activity size={14} /><span className="chat-activity-label">{t('chat.activity')}</span>{activity.length > 0 && <span className="chat-count">{activity.length}</span>}
         </button>
         {active && <button className="text-button stop-action" disabled={pending.has(`cancel-${session.id}`)}
-          onClick={() => void perform(`cancel-${session.id}`, () => window.workbench.cancelSession(session.id))}>
+          onClick={() => void perform(`cancel-${session.id}`, () => runSessionStopCommand(session,
+            (commandId, expectedAttemptId) => window.workbench.cancelSession(session.id, commandId, expectedAttemptId)))}>
           <CircleStop size={14} />{t('common.stop')}</button>}
       </div>
     </header>
@@ -487,6 +584,7 @@ export function SessionChat({
                     <div className="user-message">{message.text}
                       {message.attachments && <AttachmentChips attachments={message.attachments} />}
                     </div>
+                    <DeliveryState message={message} sessionId={session.id} pending={pending} perform={perform} />
                     {!active && provider?.capabilities.rewind && message.nativeTurnId && <div className="message-tools">
                       <button onClick={() => setRewindMessage(message.id)}><ArrowUpLeft size={12} />{t('chat.rewindBefore')}</button>
                     </div>}
@@ -548,6 +646,7 @@ export function SessionChat({
         </section>
       </CollapsibleRegion>
       <div className="composer-area">
+        <PromptQueue session={session} provider={provider} pending={pending} perform={perform} />
         <div className={`composer${active ? ' composer-task-active' : ''}`}>
           <AttachmentChips attachments={attachments}
             onRemove={busy ? undefined : id => onDraftChange({ ...currentDraft.current, attachments: attachments.filter(attachment => attachment.id !== id) })} />
@@ -564,7 +663,7 @@ export function SessionChat({
             }} />
           <div className="composer-bottom">
             <div className="composer-controls">
-              <IconButton label={attachmentsSupported ? t('chat.attach') : t('chat.pluginAttachmentsUnsupported')} disabled={!attachmentsSupported || active || busy || attachments.length >= 8 || pending.has('attachments')}
+              <IconButton label={attachmentsSupported ? t('chat.attach') : t('chat.pluginAttachmentsUnsupported')} disabled={!attachmentsSupported || busy || attachments.length >= 8 || pending.has('attachments')}
                 onClick={() => void perform('attachments', async () => {
                   const selected = await window.workbench.chooseAttachments();
                   onDraftChange({ ...currentDraft.current, attachments: [...(currentDraft.current.attachments ?? []), ...selected].slice(0, 8) });
@@ -574,7 +673,8 @@ export function SessionChat({
                 saving={settingsBusy} perform={perform} />
             </div>
             <motion.button className="send-button" aria-label={t('chat.sendTask')}
-              disabled={(!draft.text.trim() && !attachments.length) || unsupportedAttachments || active || busy || settingsBusy || !provider?.available}
+              title={active || session.queuePaused ? t('chat.queueNextTurn') : t('chat.sendTask')}
+              disabled={(!draft.text.trim() && !attachments.length) || unsupportedAttachments || busy || settingsBusy || !provider?.available}
               whileTap={reducedMotion ? undefined : { scale: 0.98 }} transition={transition} onClick={send}>
               {busy ? <LoaderCircle className="spin" size={17} /> : <ArrowUp size={18} />}
             </motion.button>
@@ -583,8 +683,9 @@ export function SessionChat({
         <div className="composer-caption">
           <span className="composer-project" title={session.cwd}><FolderOpen size={12} />{pathName(session.cwd)}</span>
           <UsageBadge usage={session.usage?.at(-1)} />
-          <span className="composer-shortcut"><CornerDownLeft size={11} />{t('chat.send')}<span>·</span>{t('chat.newLine')}</span>
+          <span className="composer-shortcut"><CornerDownLeft size={11} />{active || session.queuePaused ? t('chat.queueNextTurn') : t('chat.send')}<span>·</span>{t('chat.newLine')}</span>
         </div>
+        {sendError && <p className="composer-note" role="alert"><CircleAlert size={13} />{t('chat.sendUnconfirmed', { error: sendError })}</p>}
         {draftError && <p className="composer-note" role="alert"><CircleAlert size={13} />{t('chat.draftError', { error: draftError })}<button className="text-button" onClick={() => onDraftChange(draft)}>{t('chat.retrySave')}</button></p>}
         {unsupportedAttachments && <p className="composer-note" role="alert"><CircleAlert size={13} />{t('chat.pluginAttachmentsRemove')}</p>}
         {!provider?.available && <p className="composer-note"><CircleAlert size={13} />{t('chat.providerUnavailable')}</p>}

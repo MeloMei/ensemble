@@ -11,7 +11,9 @@ export class BackendClient {
     const response = await fetch(`${this.endpoint.url}${path}`, {
       method: command ? 'POST' : 'GET',
       headers: { Authorization: `Bearer ${this.endpoint.token}`, ...(command ? { 'Content-Type': 'application/json' } : {}) },
-      ...(command ? { body: JSON.stringify({ command, args }) } : {}),
+      ...(command ? { body: JSON.stringify({ command, args,
+        undefinedArgs: args.flatMap((value, index) => value === undefined ? [index] : []),
+      }) } : {}),
     });
     const body = await response.json() as BackendReply<T>;
     if (!response.ok || body.error) throw new Error(body.error ?? `后台返回 ${response.status}`);

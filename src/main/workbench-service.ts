@@ -27,7 +27,8 @@ const modelIdSchema = z.string().min(1).max(1000).optional();
 const settingsSchema = z.object({ effort: z.string().min(1).max(100).nullable().optional(), permission: z.enum(['review', 'read-only']).nullable().optional(), skillIds: z.array(idSchema).max(8).nullable().optional() }).strict();
 const attachmentSchema = z.object({ id: idSchema, name: z.string().min(1).max(300), kind: z.enum(['image', 'text']), mimeType: z.string().min(1).max(100), size: z.number().int().min(0).max(20_000_000), sha256: z.string().regex(/^[a-f0-9]{64}$/), ownedPath: cwdSchema }).strict();
 const promptInputSchema = z.object({ text: z.string().max(200_000), attachments: z.array(attachmentSchema).max(8).optional() }).strict();
-const sessionInputSchema = z.object({ title: z.string().max(200), providerId: idSchema, cwd: cwdSchema, modelId: modelIdSchema }).strict();
+const commandIdSchema = z.string().min(1).max(200).optional();
+const sessionInputSchema = z.object({ title: z.string().max(200), providerId: idSchema, cwd: cwdSchema, modelId: modelIdSchema, commandId: commandIdSchema }).strict();
 const workflowSchema = z.object({
   name: z.string().trim().min(1).max(200), cwd: cwdSchema,
   steps: z.array(z.object({ id: idSchema, title: z.string().trim().min(1).max(200), providerId: idSchema, modelId: modelIdSchema, prompt: promptSchema, dependsOn: z.array(idSchema).max(50) }).strict()).min(1).max(50),
@@ -47,7 +48,11 @@ export async function createWorkbenchService(options: {
     await store.load();
     const pluginPath = join(options.dataPath, 'plugins');
     await mkdir(pluginPath, { recursive: true });
-    const publicSnapshot = (snapshot: Snapshot): Snapshot => ({ ...snapshot, collaborationEventSeq: store.latestEventSeq(), collaboration: {
+    const publicSnapshot = (snapshot: Snapshot): Snapshot => ({ version: 1, sessions: snapshot.sessions, workflows: snapshot.workflows,
+      providers: snapshot.providers, dataPath: snapshot.dataPath,
+      pluginPath: snapshot.pluginPath, pluginErrors: snapshot.pluginErrors, terminals: snapshot.terminals, mails: snapshot.mails,
+      workspaces: snapshot.workspaces,
+      collaborationEventSeq: store.latestEventSeq(), collaboration: {
       ...store.state.collaboration,
       identities: store.state.collaboration.identities.map(({ tokenHash: _, ...identity }) => identity),
     } });
@@ -56,7 +61,7 @@ export async function createWorkbenchService(options: {
     cleanup.push(() => engine.shutdown());
     await engine.prepareExecutionKeys();
     const attachments = new AttachmentService(join(options.dataPath, 'attachments'));
-    const core = new CollaborationCore(store, engine, { attachments, publish: () => publish(engine.snapshot()) });
+    const core = new CollaborationCore(store, engine, { attachments, publish: () => publish(engine.liveSnapshot()) });
     cleanup.push(() => core.close());
     const identities = new IdentityService(store, options.command, options.bridgePath);
     let publicEndpoint = '';
@@ -96,6 +101,24 @@ export async function createWorkbenchService(options: {
     const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>();
     const handle = (channel: string, handler: (event: unknown, ...args: unknown[]) => unknown) => { handlers.set(channel, handler); };
     handle('workbench:snapshot', () => publicSnapshot(engine.snapshot()));
+    const session = (value: unknown) => {
+      const id = idSchema.parse(value);
+      const result = store.state.sessions.find(item => item.id === id);
+      if (!result) throw new Error('会话不存在。');
+      return result;
+    };
+    handle('workbench:mark-session-seen', (_event, id, revision) => {
+      const item = session(id); const value = z.number().int().nonnegative().parse(revision);
+      if (!item.attention) return;
+      if (value > item.attention.revision) throw new Error('不能确认尚未收到的结果版本。');
+      store.atomic(() => { item.attention!.seenRevision = Math.max(item.attention!.seenRevision, value); });
+      engine.publishState();
+    });
+    handle('workbench:command-receipt', (_event, id) => engine.commandReceipt(idSchema.parse(id)));
+    handle('workbench:update-queued-prompt', (_event, id, itemId, input) => engine.updateQueuedPrompt(idSchema.parse(id), idSchema.parse(itemId), promptInputSchema.parse(input)));
+    handle('workbench:remove-queued-prompt', (_event, id, itemId) => engine.removeQueuedPrompt(idSchema.parse(id), idSchema.parse(itemId)));
+    handle('workbench:set-session-queue-paused', (_event, id, paused) => engine.setSessionQueuePaused(idSchema.parse(id), z.boolean().parse(paused)));
+    handle('workbench:reconcile-session-delivery', (_event, id) => engine.reconcileSessionDelivery(idSchema.parse(id)));
     handle('workbench:collaboration-call', async (_event, operation, input) => {
       const name = idSchema.parse(operation);
       if (name === 'issue_identity') {
@@ -109,10 +132,10 @@ export async function createWorkbenchService(options: {
     }));
     handle('workbench:refresh-providers', () => refreshProviders());
     handle('workbench:create-session', (_event, input: unknown) => engine.createSession(sessionInputSchema.parse(input)));
-    handle('workbench:send-message', (_event, id: unknown, prompt: unknown) => engine.sendMessage(idSchema.parse(id), promptSchema.parse(prompt)));
-    handle('workbench:cancel-session', (_event, id: unknown) => engine.cancelSession(idSchema.parse(id)));
-    handle('workbench:decide-approval', (_event, id: unknown, choice: unknown) => engine.decideApproval(idSchema.parse(id), idSchema.parse(choice)));
-    handle('workbench:answer-questions', (_event, id: unknown, answers: unknown) => engine.answerQuestions(idSchema.parse(id), z.record(z.array(z.string().min(1).max(10_000)).min(1).max(50)).parse(answers)));
+    handle('workbench:send-message', (_event, id, prompt, commandId) => engine.sendMessage(idSchema.parse(id), promptSchema.parse(prompt), commandIdSchema.parse(commandId)));
+    handle('workbench:cancel-session', (_event, id, commandId, expectedAttemptId) => engine.cancelSession(idSchema.parse(id), commandIdSchema.parse(commandId), idSchema.optional().parse(expectedAttemptId)));
+    handle('workbench:decide-approval', (_event, id, choice, commandId) => engine.decideApproval(idSchema.parse(id), idSchema.parse(choice), commandIdSchema.parse(commandId)));
+    handle('workbench:answer-questions', (_event, id, answers, commandId) => engine.answerQuestions(idSchema.parse(id), z.record(z.array(z.string().min(1).max(10_000)).min(1).max(50)).parse(answers), commandIdSchema.parse(commandId)));
     handle('workbench:create-workflow', (_event, input: unknown) => engine.createWorkflow(workflowSchema.parse(input)));
     handle('workbench:start-workflow', (_event, id: unknown) => engine.startWorkflow(idSchema.parse(id)));
     handle('workbench:cancel-workflow', (_event, id: unknown) => engine.cancelWorkflow(idSchema.parse(id)));
@@ -149,7 +172,7 @@ export async function createWorkbenchService(options: {
     });
     handle('workbench:git-state', (_event, workspaceId: unknown) => workspaceFiles.gitState(engine.workspace(idSchema.parse(workspaceId)).cwd));
     handle('workbench:file-diff', (_event, workspaceId: unknown, path: unknown) => workspaceFiles.diff(engine.workspace(idSchema.parse(workspaceId)).cwd, z.string().min(1).max(4096).parse(path)));
-    handle('workbench:send-prompt', (_event, id, input) => engine.sendPrompt(idSchema.parse(id), promptInputSchema.parse(input)));
+    handle('workbench:send-prompt', (_event, id, input, commandId) => engine.sendPrompt(idSchema.parse(id), promptInputSchema.parse(input), commandIdSchema.parse(commandId)));
     handle('workbench:save-session-draft', (_event, id, input) => engine.saveSessionDraft(idSchema.parse(id), promptInputSchema.parse(input)));
     handle('workbench:update-session', (_event, id, input) => engine.updateSession(idSchema.parse(id), z.object({ title: z.string().trim().min(1).max(200).optional(), archived: z.boolean().optional(), modelId: modelIdSchema.nullable(), settings: settingsSchema.optional() }).strict().parse(input)));
     handle('workbench:fork-session', (_event, id, before) => engine.forkSession(idSchema.parse(id), idSchema.optional().parse(before)));
