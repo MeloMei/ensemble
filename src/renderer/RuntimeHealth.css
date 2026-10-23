@@ -1,0 +1,14 @@
+.runtime-panel-error { margin: 10px 0; color: var(--danger); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.workspace-tools > .tools-tabs { grid-template-columns: repeat(auto-fit, minmax(95px, 1fr)); }
+.runtime-panel-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.managed-worktree-panel h3 { display: flex; align-items: center; gap: 7px; margin: 6px 0 16px; font-size: 13px; font-weight: 550; }
+.managed-worktree-panel dl { display: grid; gap: 12px; margin: 10px 0; }
+.managed-worktree-panel dl > div { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 10px; }
+.managed-worktree-panel dt { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.managed-worktree-panel dd { min-width: 0; margin: 0; color: var(--text); font-size: 12px; line-height: 1.6; }
+.managed-worktree-panel code { user-select: text; overflow-wrap: anywhere; }
+.worktree-removal-confirm { padding: 12px; border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border)); border-radius: var(--radius-panel); }
+.worktree-removal-confirm > p { color: var(--danger); font-size: 12px; line-height: 1.7; }
+@media (max-width: 700px) {
+  .managed-worktree-panel dl > div { grid-template-columns: 1fr; gap: 3px; }
+}

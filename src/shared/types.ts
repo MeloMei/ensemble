@@ -40,6 +40,18 @@ export interface Workspace {
   splitRatio?: number;
   createdAt: string;
   updatedAt: string;
+  worktree?: ManagedWorktree;
+}
+
+export interface ManagedWorktree {
+  repoRoot: string; path: string; branch: string; baseSha: string; createdAt: string;
+  ownership: 'created'; status?: 'ready' | 'removing';
+}
+export interface CreateWorkspaceInput { name: string; cwd: string; mode?: 'directory' | 'worktree'; branch?: string; commandId?: string }
+export interface WorktreeOperation extends Omit<ManagedWorktree, 'status'> {
+  commandId: string; inputHash: string; name: string; sourceCwd: string; relativeCwd: string;
+  status: 'creating' | 'ready' | 'failed' | 'removing' | 'removed'; workspaceId?: string; error?: string; updatedAt: string;
+  cleanupHeadSha?: string;
 }
 
 export interface TerminalInfo {
@@ -217,7 +229,8 @@ export interface WorkbenchAPI {
   cancelWorkflow(workflowId: string): Promise<void>;
   launchCodex(input: { cwd: string; prompt: string }): Promise<string>;
   openPluginDirectory(): Promise<void>;
-  createWorkspace(input: { name: string; cwd: string }): Promise<string>;
+  createWorkspace(input: CreateWorkspaceInput): Promise<string>;
+  removeWorktree(workspaceId: string): Promise<void>;
   updateWorkspace(id: string, input: { name?: string; pinned?: boolean }): Promise<void>;
   activateTab(workspaceId: string, tabId: string): Promise<void>;
   closeTab(workspaceId: string, tabId: string): Promise<void>;

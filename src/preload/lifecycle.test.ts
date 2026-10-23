@@ -28,6 +28,16 @@ async function loadPreload() {
   return { api, calls };
 }
 
+test('preload blocks worktree removal until file edits are saved or discarded', async () => {
+  const { api, calls } = await loadPreload();
+  api.setUnsavedFiles({ count: 1, names: ['pending.ts'] });
+  await assert.rejects(api.removeWorktree('managed'), /WORKBENCH_UNSAVED_FILES/);
+  assert.deepEqual(calls, []);
+  api.setUnsavedFiles({ count: 0, names: [] });
+  await api.removeWorktree('managed');
+  assert.deepEqual(calls, [['workbench:remove-worktree', 'managed']]);
+});
+
 test('preload preserves the observed attempt when forwarding Stop', async () => {
   const { api, calls } = await loadPreload();
   await api.cancelSession('session', 'stop-command', 'observed-attempt');

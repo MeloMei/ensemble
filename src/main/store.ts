@@ -3,9 +3,10 @@ import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
-import type { AgentMail, MutationReceipt, Session, Workflow, Workspace } from '../shared/types';
+import type { AgentMail, MutationReceipt, Session, Workflow, Workspace, WorktreeOperation } from '../shared/types';
 import { moveSession, moveStep, moveWorkflow } from './lifecycle';
 import { recordSessionAttention } from './attention';
+import { workspacePathContains } from './workspace-path';
 import {
   collaborationEventInputSchema, collaborationReceiptSchema, collaborationStateSchema, emptyCollaborationState,
   type CollaborationEvent, type CollaborationEventInput, type CollaborationReceipt, type CollaborationState,
@@ -15,6 +16,7 @@ export interface SavedState {
   version: 1; sessions: Session[]; workflows: Workflow[]; workspaces: Workspace[];
   mails: AgentMail[]; receipts: MutationReceipt[];
   collaboration: CollaborationState;
+  worktreeOperations?: WorktreeOperation[];
 }
 
 function checkpoint(state: SavedState): () => SavedState {
@@ -59,6 +61,9 @@ const messageSchema = record({
 });
 const savedSchema = record({
   version: z.literal(1),
+  worktreeOperations: z.array(z.object({ commandId: z.string(), inputHash: z.string(), name: z.string(), sourceCwd: z.string(), relativeCwd: z.string(),
+    status: z.enum(['creating', 'ready', 'failed', 'removing', 'removed']), repoRoot: z.string(), path: z.string(), branch: z.string(), baseSha: z.string(),
+    ownership: z.literal('created'), createdAt: z.string(), updatedAt: z.string(), workspaceId: z.string().optional(), error: z.string().optional(), cleanupHeadSha: z.string().optional() }).strict()).optional(),
   collaboration: collaborationStateSchema.default(emptyCollaborationState),
   sessions: z.array(record({
     id: z.string(), title: z.string(), providerId: z.string(), modelId: z.string().optional(), cwd: z.string(), status: sessionStatus,
@@ -155,7 +160,11 @@ export class StateStore {
 
   private recover(migratingWorkspaces: boolean): CollaborationEventInput[] {
     const now = new Date().toISOString();
+    const removed = this.state.worktreeOperations?.filter(operation => operation.status === 'removed') ?? [];
+    const retired = (cwd: string) => removed.some(operation => workspacePathContains(operation.path, cwd));
+    this.state.workspaces = this.state.workspaces.filter(workspace => !retired(workspace.cwd));
     for (const item of [...this.state.sessions, ...this.state.workflows]) {
+      if (retired(item.cwd)) continue;
       if (!this.state.workspaces.some(workspace => workspace.cwd === item.cwd)) {
         this.state.workspaces.push({ id: randomUUID(), name: item.cwd.split('/').filter(Boolean).pop() || item.cwd,
           cwd: item.cwd, pinned: false, tabs: [], activeTabId: null, createdAt: item.createdAt, updatedAt: item.updatedAt });
@@ -163,8 +172,9 @@ export class StateStore {
     }
     for (const session of this.state.sessions) {
       const unsent = session.status === 'queued';
-      const workspace = this.state.workspaces.find(item => item.cwd === session.cwd)!;
-      if (migratingWorkspaces && !workspace.tabs.some(tab => tab.kind === 'agent' && tab.sessionId === session.id)) {
+      if (retired(session.cwd)) session.archived = true;
+      const workspace = this.state.workspaces.find(item => item.cwd === session.cwd);
+      if (migratingWorkspaces && workspace && !workspace.tabs.some(tab => tab.kind === 'agent' && tab.sessionId === session.id)) {
         const tab = { id: randomUUID(), kind: 'agent' as const, sessionId: session.id };
         workspace.tabs.push(tab);
         workspace.activeTabId ??= tab.id;

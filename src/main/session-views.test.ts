@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import test from 'node:test';
-import type { Message, ProviderInfo } from '../shared/types';
+import type { FileContent, Message, ProviderInfo } from '../shared/types';
 import type { SessionHistoryWindow } from '../shared/backend';
 import type { ProviderAdapter } from './providers/types';
 import { createWorkbenchService, type WorkbenchService } from './workbench-service';
+import { WorkspaceFiles } from './workspace-files';
 
 async function createFixture(run: ProviderAdapter['run'] = async () => {}) {
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'ensemble-session-views-')));
@@ -144,6 +146,77 @@ test('service read acknowledgements persist exact revisions without clearing fai
     await fixture.restart();
     assert.equal(fixture.service.engine.getSession(id).attention?.seenRevision, resultRevision);
   } finally { await fixture.close(); }
+});
+test('service worktree access fences alias saves and persistent removal admission', { timeout: 20_000 }, async () => {
+  let providerRuns = 0;
+  const fixture = await createFixture(async () => { providerRuns++; });
+  const originalWrite = WorkspaceFiles.prototype.write;
+  let allowWrite!: () => void, reportEntered!: () => void;
+  const gate = new Promise<void>(resolve => { allowWrite = resolve; });
+  const entered = new Promise<void>(resolve => { reportEntered = resolve; });
+  let saving: Promise<unknown> | undefined;
+  try {
+    const source = fixture.firstProject, nested = join(source, 'packages', 'app');
+    await mkdir(nested, { recursive: true });
+    await writeFile(join(source, 'README.md'), 'Access fixture\n');
+    await writeFile(join(nested, 'entry.txt'), 'base content\n');
+    const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+      '-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false', ...args], {
+      cwd: source, encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0' },
+    }).trim();
+    git('init', '-q', '-b', 'main'); git('add', '.'); git('commit', '-qm', 'access fixture base');
+    const managedId = await fixture.service.call('workbench:create-workspace', [{ name: 'Access guard', cwd: nested,
+      mode: 'worktree', commandId: 'service-access-worktree' }]) as string;
+    const operation = fixture.service.store.state.worktreeOperations?.find(item => item.workspaceId === managedId);
+    assert(operation);
+    const rootAlias = await fixture.service.call('workbench:create-workspace', [{ name: 'Root alias', cwd: operation.path }]) as string;
+    const childCwd = join(operation.path, 'packages');
+    const childAlias = await fixture.service.call('workbench:create-workspace', [{ name: 'Child alias', cwd: childCwd }]) as string;
+    assert.equal(new Set([managedId, rootAlias, childAlias]).size, 3);
+    const sessionId = await fixture.service.engine.createSession({ title: 'Must not execute during removal', providerId: fixture.info.id, cwd: childCwd });
+    const original = await fixture.service.call('workbench:read-file', [childAlias, 'app/entry.txt']) as FileContent;
+    WorkspaceFiles.prototype.write = async function(cwd, input) {
+      reportEntered(); await gate;
+      return originalWrite.call(this, cwd, input);
+    };
+    saving = fixture.service.call('workbench:write-file', [childAlias, { path: 'app/entry.txt', content: 'saved via child alias\n', revision: original.revision }]);
+    await Promise.race([entered, saving.then(() => assert.fail('The write bypassed its gate'))]);
+    assert.equal(await readFile(join(childCwd, 'app', 'entry.txt'), 'utf8'), 'base content\n');
+    assert.equal(git('-C', operation.path, 'status', '--porcelain'), '');
+    await assert.rejects(fixture.service.call('workbench:remove-worktree', [managedId]), /文件或配置操作未结束/);
+    assert.equal((await stat(operation.path)).isDirectory(), true);
+    assert.equal(fixture.service.store.state.worktreeOperations?.find(item => item.workspaceId === managedId)?.status, 'ready');
+    allowWrite();
+    const saved = await saving as FileContent;
+    WorkspaceFiles.prototype.write = originalWrite;
+    assert.equal(saved.content, 'saved via child alias\n');
+    assert.equal(await readFile(join(childCwd, 'app', 'entry.txt'), 'utf8'), saved.content);
+    assert.equal(await readFile(join(nested, 'entry.txt'), 'utf8'), 'base content\n');
+    fixture.service.store.atomic(state => {
+      const pending = state.worktreeOperations!.find(item => item.workspaceId === managedId)!;
+      pending.status = 'removing'; pending.cleanupHeadSha = pending.baseSha;
+    });
+    await fixture.restart();
+    assert.equal((await stat(operation.path)).isDirectory(), true);
+    assert.equal(fixture.service.store.state.worktreeOperations?.find(item => item.workspaceId === managedId)?.status, 'removing');
+    const terminalCount = fixture.service.snapshot().terminals.length;
+    for (const [workspaceId, path] of [[rootAlias, 'packages/app/entry.txt'], [childAlias, 'app/entry.txt']]) {
+      await assert.rejects(fixture.service.call('workbench:write-file', [workspaceId, { path, content: 'must not write\n', revision: saved.revision }]), /正在回收/);
+      await assert.rejects(fixture.service.call('workbench:create-terminal', [workspaceId]), /正在回收/);
+    }
+    const before = fixture.service.engine.getSession(sessionId);
+    assert.throws(() => fixture.service.engine.executeSession(sessionId, { text: 'must not start' }), /正在回收/);
+    const after = fixture.service.engine.getSession(sessionId);
+    assert.deepEqual(after.attempts, before.attempts);
+    assert.deepEqual(after.messages, before.messages);
+    assert.equal(after.status, 'idle'); assert.equal(providerRuns, 0);
+    assert.equal(fixture.service.snapshot().terminals.length, terminalCount);
+    assert.equal(await readFile(join(childCwd, 'app', 'entry.txt'), 'utf8'), saved.content);
+  } finally {
+    allowWrite(); WorkspaceFiles.prototype.write = originalWrite;
+    await saving?.catch(() => {}); await fixture.close();
+  }
 });
 test('service Stop forwarding fences a delayed request to its captured attempt', async () => {
   let firstStarted!: () => void, secondStarted!: () => void, releaseFirst!: () => void;

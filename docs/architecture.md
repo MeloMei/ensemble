@@ -80,6 +80,10 @@ Failed watch updates invalidate only their owning subscription and reconnect usi
 
 Desktop subscriptions require stream version 2. An older backend is left running with its tasks; management CLI connections remain usable so the user can stop it when appropriate before starting the new desktop client.
 
+Managed worktrees have durable creation intents with repository, branch, base SHA and ownership. Retrying the command can recover creation. Cleanup requires no active or queued work, active terminal, in-flight file/configuration operation, uncommitted files or commits missing from the source checkout. The desktop also blocks cleanup while any editor has unsaved files. Root and subdirectory aliases share the same lifecycle guard. A durable removing state records the exact branch head before Git deletion, so interrupted cleanup can continue; removed records prevent historical sessions from recreating the workspace on restart. Cleanup never force-deletes a user directory or runs repository setup scripts.
+
+A requested source subdirectory must exist as a directory in the starting commit before an intent or checkout is created.
+
 ## Build boundaries and licensing
 
 Vite builds the renderer. esbuild builds the Electron main process, preload, independent backend, CLI, and stdio bridge into `dist/`. The current packaging script targets macOS and the host architecture, applies an ad hoc signature, and verifies it. It does not provide Developer ID signing, notarization, or a Windows/Linux packaging path.
