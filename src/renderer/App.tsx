@@ -194,7 +194,7 @@ export function App() {
     </main>
     {dialog === 'appearance' && <Modal title={t('preferences.title')} subtitle={t('preferences.subtitle')} onClose={() => setDialog(null)}><LanguageOptions /><h3 className="preferences-heading">{t('preferences.theme')}</h3><ThemeOptions /><p className="appearance-note">{t('preferences.themeNote')}</p></Modal>}
     {dialog === 'providers' && snapshot && <ProvidersDialog snapshot={snapshot} perform={perform} pending={pending} onClose={() => setDialog(null)} />}
-    {dialog === 'tools' && workspace && <WorkspaceTools workspace={workspace} sessions={sessions} perform={perform} onClose={() => setDialog(null)} />}
+    {dialog === 'tools' && workspace && <WorkspaceTools key={workspace.id} workspace={workspace} sessions={sessions} perform={perform} onClose={() => setDialog(null)} />}
     {dialog === 'workspace' && <NewWorkspaceDialog perform={perform} pending={pending} onClose={() => setDialog(null)} onCreated={id => { setDialog(null); selectWorkspace(id); }} />}
     {dialog === 'agent' && workspace && <NewAgentDialog workspace={workspace} providers={providers} pending={pending} perform={perform} onClose={() => setDialog(null)} />}
     {dialog === 'preview' && workspace && <PreviewDialog workspace={workspace} pending={pending} perform={perform} onClose={() => setDialog(null)} />}

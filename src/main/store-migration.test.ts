@@ -133,12 +133,14 @@ test('state, ordered events and request receipts commit together and roll back o
   constraint.close();
   store = new StateStore(store.path);
   await store.load();
+  const originalState = store.state, originalRuns = store.state.collaboration.runs, originalRun = originalRuns[0];
   assert.throws(() => store.atomic((state, transaction) => {
     state.collaboration.runs[0].error = 'must roll back';
     transaction.appendEvent({ id: 'uncommitted', runId: 'run', type: 'task.created', source: 'external', cause: 'first', data: {}, createdAt: now });
     transaction.putReceipt({ key: 'uncommitted-request', hash: 'hash-2', result: { accepted: true }, createdAt: now });
   }), /FOREIGN KEY constraint failed/);
   assert.equal(store.state.collaboration.runs[0].error, undefined);
+  assert.equal(store.state, originalState); assert.equal(store.state.collaboration.runs, originalRuns); assert.equal(originalRuns[0], originalRun);
   assert.equal(store.events('run').length, 1);
   assert.equal(store.receipt('uncommitted-request'), undefined);
   await store.close();
@@ -162,6 +164,25 @@ test('state, ordered events and request receipts commit together and roll back o
   assert.equal(reopened.events('run').length, 2);
   assert.deepEqual(reopened.receipt('request-2')?.result, { accepted: true });
   await reopened.close();
+});
+
+test('rollback restores replaced nested objects and JSON own properties without changing identity', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'workbench-rollback-identity-'));
+  const store = new StateStore(join(directory, 'state.json'));
+  t.after(async () => { await store.close(); await rm(directory, { recursive: true, force: true }); });
+  await store.load();
+  const result = JSON.parse('{"__proto__":{"original":true},"entries":[{"value":"original"}]}');
+  store.atomic(state => { state.receipts.push({ key: 'json-result', hash: 'fixture', result }); });
+  const receipts = store.state.receipts, entry = result.entries[0], proto = Object.getPrototypeOf(result);
+  assert.throws(() => store.atomic(state => {
+    result.entries[0].value = 'mutated'; result.entries = []; result.added = true;
+    delete result.__proto__; state.receipts = [];
+    throw new Error('reject changed graph');
+  }), /reject changed graph/);
+  assert.equal(store.state.receipts, receipts); assert.equal(receipts[0].result, result); assert.equal(result.entries[0], entry);
+  assert.equal(entry.value, 'original'); assert.equal(result.added, undefined); assert.equal(Object.getPrototypeOf(result), proto);
+  assert.equal(Object.hasOwn(result, '__proto__'), true); assert.deepEqual(result.__proto__, { original: true });
+  await store.flush();
 });
 
 test('SQLite owns the data directory exclusively until the backend closes its connection', async t => {

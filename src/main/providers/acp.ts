@@ -36,6 +36,7 @@ class AcpSession {
   private connection!: acp.ClientConnection;
   private exited!: Promise<void>;
   private closing?: Promise<void>;
+  private preparing?: Promise<AcpLaunchSpec>;
   private launch?: AcpLaunchSpec;
   private capabilities?: acp.AgentCapabilities;
   private current?: TurnContext;
@@ -55,7 +56,9 @@ class AcpSession {
   }
 
   private async start(context: TurnContext): Promise<Options> {
-    this.launch = await this.descriptor.launch(this.original, context.mcpServers ?? []);
+    this.preparing = this.descriptor.launch(this.original, context.mcpServers ?? []);
+    this.launch = await this.preparing;
+    if (context.signal.aborted || this.closing) throw abortError();
     this.child = spawn(this.launch.command, this.launch.args, {
       cwd: this.original.cwd, env: this.launch.env, stdio: ['pipe', 'pipe', 'pipe'],
       shell: false, detached: process.platform !== 'win32', windowsHide: true,
@@ -213,12 +216,13 @@ class AcpSession {
     try {
       if (context.signal.aborted) throw abortError();
       options = this.nativeId ? [] : await this.start(context);
-      if (context.signal.aborted) throw abortError();
+      if (context.signal.aborted || this.closing) throw abortError();
       context.emit({ type: 'external-id', id: this.nativeId! });
       this.current = context;
       this.text.clear(); this.tools.clear(); this.segments = 0; this.usage = undefined; this.fatal = undefined;
       if (!options.length) throw new Error('ACP 会话缺少模型配置。');
       await this.configure(options, context.session.modelId ?? this.descriptor.defaultModelId);
+      if (context.signal.aborted || this.closing) throw abortError();
       const prompt: acp.ContentBlock[] = [{ type: 'text', text: context.prompt }];
       for (const attachment of context.attachments ?? []) {
         if (attachment.kind === 'image') {
@@ -250,22 +254,28 @@ class AcpSession {
   close(): Promise<void> {
     return this.closing ??= (async () => {
       for (const permission of this.permissions) permission.abort();
-      if (this.child && !this.closed) {
-        if (this.nativeId && this.capabilities?.sessionCapabilities?.close) {
-          try { await bounded(this.connection.agent.request(acp.methods.agent.session.close, { sessionId: this.nativeId }), 1500, 'ACP close timeout'); } catch {}
+      try {
+        if (this.preparing) this.launch = await this.preparing.catch(() => undefined);
+        if (this.child && !this.closed) {
+          if (this.nativeId && this.capabilities?.sessionCapabilities?.close) {
+            try { await bounded(this.connection.agent.request(acp.methods.agent.session.close, { sessionId: this.nativeId }), 1500, 'ACP close timeout'); } catch {}
+          }
+          this.child.stdin.end();
+          try { await bounded(this.exited, 1000, 'ACP EOF timeout'); }
+          catch {
+            signalProcessTree(this.child, 'SIGTERM');
+            try { await bounded(this.exited, 1000, 'ACP terminate timeout'); }
+            catch { signalProcessTree(this.child, 'SIGKILL'); await bounded(this.exited, 1500, 'ACP runtime did not exit'); }
+          }
         }
-        this.child.stdin.end();
-        try { await bounded(this.exited, 1000, 'ACP EOF timeout'); }
-        catch {
-          signalProcessTree(this.child, 'SIGTERM');
-          try { await bounded(this.exited, 1000, 'ACP terminate timeout'); }
-          catch { signalProcessTree(this.child, 'SIGKILL'); await bounded(this.exited, 1500, 'ACP runtime did not exit'); }
+      } finally {
+        this.connection?.close();
+        try { if (this.child) signalProcessTree(this.child, 'SIGKILL'); }
+        finally {
+          try { await this.launch?.cleanup?.(); }
+          finally { this.closed = true; }
         }
       }
-      if (this.child) signalProcessTree(this.child, 'SIGKILL');
-      this.connection?.close();
-      await this.launch?.cleanup?.();
-      this.closed = true;
     })();
   }
 }

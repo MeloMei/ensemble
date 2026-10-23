@@ -66,7 +66,9 @@ test('DeepSeek descriptor caps isolated runtime output and selects only an adver
     await assert.rejects(createDeepSeekHarnessDescriptor({ dataPath: directory, maxOutputTokens: 0 }), /输出上限/);
     const descriptor = await createDeepSeekHarnessDescriptor({ dataPath: directory, maxOutputTokens: 256 });
     assert.equal(descriptor.version, '0.2.1-rc.2');
-    assert.deepEqual(descriptor.models, [{ id: 'flash', name: 'DeepSeek Flash', free: false }]);
+    assert.deepEqual(descriptor.models, [{ id: 'flash', name: 'DeepSeek Flash', free: false, efforts: ['off', 'low', 'high', 'max'] }]);
+    assert.deepEqual(descriptor.efforts, ['off', 'low', 'high', 'max']);
+    assert.deepEqual(descriptor.reasoningPreference, ['off', 'low']);
     const flash = { value: JSON.stringify(['deepseek-official', 'deepseek-flash']), name: 'DeepSeek-V4.1-Flash' };
     const legacy = { value: JSON.stringify(['deepseek-official', 'deepseek-v4-flash']), name: 'DeepSeek-V4-Flash' };
     assert.equal(descriptor.selectModel([{ value: 'other-id', name: 'DeepSeek Pro' }, flash], 'flash'), flash);

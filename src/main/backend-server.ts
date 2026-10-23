@@ -1,4 +1,4 @@
-import { createServer, type ServerResponse } from 'node:http';
+import { createServer, type Server, type ServerResponse } from 'node:http';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -18,6 +18,16 @@ async function saveEndpoint(path: string, endpoint: BackendEndpoint): Promise<vo
   } finally { await unlink(temporary).catch(() => {}); }
 }
 
+function listen(server: Server, port: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => { server.off('error', failed); server.off('listening', ready); };
+    const failed = (error: Error) => { cleanup(); reject(error); };
+    const ready = () => { cleanup(); resolve(); };
+    server.once('error', failed); server.once('listening', ready);
+    server.listen(port, '127.0.0.1');
+  });
+}
+
 export async function startBackend(options: {
   dataPath: string; command: string; bridgePath: string;
   providers?: Parameters<typeof createWorkbenchService>[0]['providers'];
@@ -27,10 +37,12 @@ export async function startBackend(options: {
   const endpointPath = join(options.dataPath, 'backend.json');
   let port = 0;
   try {
-    const previous = JSON.parse(await readFile(endpointPath, 'utf8')) as BackendEndpoint;
-    if (!/^http:\/\/127\.0\.0\.1:\d+$/.test(previous.url)) throw new Error('后台地址配置无效。');
-    port = Number(new URL(previous.url).port);
-  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    const previous = JSON.parse(await readFile(endpointPath, 'utf8')) as Partial<BackendEndpoint> | null;
+    if (previous?.version === 1 && typeof previous.url === 'string' && /^http:\/\/127\.0\.0\.1:\d+$/.test(previous.url)) {
+      const candidate = Number(previous.url.slice(previous.url.lastIndexOf(':') + 1));
+      if (candidate > 0 && candidate <= 65535) port = candidate;
+    }
+  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error; }
   const streams = new Set<ServerResponse>();
   const token = randomBytes(32).toString('hex');
   let service: WorkbenchService | undefined;
@@ -95,7 +107,11 @@ export async function startBackend(options: {
   });
   try {
     service = await createWorkbenchService({ ...options, publish });
-    await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
+    try { await listen(server, port); }
+    catch (error) {
+      if (!port || (error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error;
+      await listen(server, 0);
+    }
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('后台地址无效。');
     const endpoint: BackendEndpoint = { version: 1, url: `http://127.0.0.1:${address.port}`, token, pid: process.pid, instanceId, startedAt: new Date().toISOString() };

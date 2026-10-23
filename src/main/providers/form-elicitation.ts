@@ -44,9 +44,18 @@ export async function answerFormElicitation(schemaValue: unknown, title: string,
       if (field.type === 'boolean') choices = [{ value: 'true', label: '是', labelI18n: { key: 'runtime:question.yes' } }, { value: 'false', label: '否', labelI18n: { key: 'runtime:question.no' } }];
       if (multiple && !choices) throw new Error('多选字段缺少选项。');
       if (choices) {
-        const counts = new Map<string, number>();
-        for (const choice of choices) counts.set(choice.label, (counts.get(choice.label) ?? 0) + 1);
-        choices = choices.map((choice, optionIndex) => ({ ...choice, label: (counts.get(choice.label) ?? 0) > 1 || choice.label === OMIT ? `${choice.label} (${optionIndex + 1})` : choice.label }));
+        const reserved = new Set(choices.map(choice => choice.label));
+        const used = new Set([OMIT]);
+        choices = choices.map(choice => {
+          let label = choice.label;
+          if (used.has(label)) {
+            let suffix = 1;
+            do { label = `${choice.label} (${suffix++})`; }
+            while (reserved.has(label) || used.has(label));
+          }
+          used.add(label);
+          return { ...choice, label };
+        });
       }
       return { name, field, options: choices, id: `mcp-${index}`, optional: !required.has(name), multiple };
     });

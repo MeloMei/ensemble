@@ -193,13 +193,13 @@ export interface WorkbenchAPI {
   stopTerminal(terminalId: string): Promise<void>;
   createPreview(workspaceId: string, url: string): Promise<void>;
   listFiles(workspaceId: string, relativePath?: string): Promise<FileEntry[]>;
-  readFile(workspaceId: string, relativePath: string): Promise<FileContent>;
+  readFile(workspaceId: string, relativePath: string): Promise<FileContent | null>;
   gitState(workspaceId: string): Promise<GitState>;
   fileDiff(workspaceId: string, relativePath: string): Promise<FileDiff>;
   chooseAttachments(): Promise<PromptAttachment[]>;
   sendPrompt(sessionId: string, input: PromptInput): Promise<void>;
   saveSessionDraft(sessionId: string, input: PromptInput): Promise<void>;
-  updateSession(sessionId: string, input: { title?: string; archived?: boolean; settings?: SessionSettings; modelId?: string | null }): Promise<void>;
+  updateSession(sessionId: string, input: { title?: string; archived?: boolean; settings?: SessionSettingsPatch; modelId?: string | null }): Promise<void>;
   forkSession(sessionId: string, beforeMessageId?: string): Promise<string>;
   rewindSession(sessionId: string, userMessageId: string): Promise<PromptInput>;
   retryWorkflowStep(workflowId: string, stepId: string): Promise<void>;
@@ -230,6 +230,7 @@ export interface PromptInput { text: string; attachments?: PromptAttachment[] }
 export interface CurrencyBalance { currency: string; total: string; granted: string; toppedUp: string }
 export interface DeepSeekBalance extends CurrencyBalance { balances: CurrencyBalance[]; checkedAt: string }
 export interface SessionSettings { effort?: string; permission?: 'review' | 'read-only'; skillIds?: string[] }
+export type SessionSettingsPatch = { [K in keyof SessionSettings]?: SessionSettings[K] | null };
 export interface ProcessEvent {
   id: string; kind: 'tool' | 'plan' | 'task' | 'subagent'; title: string;
   status: 'pending' | 'running' | 'completed' | 'failed';

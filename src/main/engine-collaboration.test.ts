@@ -191,6 +191,23 @@ test('retry retains successful ancestors and native session identity while copie
   } finally { await f.cleanup(); }
 });
 
+test('rejected legacy retry and resume leave the completed project available for ordinary execution', async () => {
+  const f = await fixture(async context => { context.emit({ type: 'text', itemId: 'result', text: 'done' }); });
+  try {
+    const workflowId = await f.engine.createWorkflow({ name: 'finished', cwd: f.cwd,
+      steps: [{ id: 'step', title: 'step', providerId: 'test', prompt: 'work', dependsOn: [] }] });
+    f.engine.startWorkflow(workflowId); await until(() => f.store.state.workflows[0].status === 'completed');
+    const cwd = f.store.state.workflows[0].cwd;
+    assert.throws(() => f.engine.retryWorkflowStep(workflowId, 'step'), /只能重试/);
+    assert.equal(f.engine.projectAvailable(cwd, 'ordinary'), true);
+    assert.throws(() => f.engine.resumeWorkflow(workflowId), /无效的协作运行状态/);
+    assert.equal(f.engine.projectAvailable(cwd, 'ordinary'), true);
+    const sessionId = await f.engine.createSession({ title: 'ordinary', providerId: 'test', cwd: f.cwd });
+    f.engine.sendMessage(sessionId, 'work'); await until(() => f.engine.getSession(sessionId).status === 'completed');
+    assert.equal(f.store.state.workflows[0].status, 'completed');
+  } finally { await f.cleanup(); }
+});
+
 test('process events, usage, attachments and split layout persist; fork stays draft and rewind changes local history only after native acknowledgment', async () => {
   let calls = 0;
   let refuse = true;

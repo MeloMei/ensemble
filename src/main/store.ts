@@ -16,6 +16,27 @@ export interface SavedState {
   collaboration: CollaborationState;
 }
 
+function checkpoint(state: SavedState): () => SavedState {
+  const objects = new Map<object, { entries: [string, unknown][]; length?: number }>();
+  const capture = (value: unknown): void => {
+    if (value === null || typeof value !== 'object' || objects.has(value)) return;
+    const entries = Object.entries(value);
+    objects.set(value, { entries, ...(Array.isArray(value) ? { length: value.length } : {}) });
+    for (const [, child] of entries) capture(child);
+  };
+  capture(state);
+  return () => {
+    // Running turns hold entity references; rollback must restore their values and identity together.
+    for (const [value, saved] of objects) {
+      const target = value as Record<string, unknown>;
+      for (const key of Object.keys(target)) delete target[key];
+      if (Array.isArray(value)) value.length = saved.length!;
+      for (const [key, child] of saved.entries) Object.defineProperty(target, key, { value: child, enumerable: true, writable: true, configurable: true });
+    }
+    return state;
+  };
+}
+
 const record = <T extends z.ZodRawShape>(shape: T) => z.object(shape).passthrough();
 const sessionStatus = z.enum(['idle', 'queued', 'running', 'waiting_approval', 'waiting_children', 'completed', 'failed', 'cancelled', 'interrupted']);
 const stepStatus = z.enum(['pending', 'running', 'completed', 'failed', 'blocked', 'cancelled']);
@@ -196,7 +217,7 @@ export class StateStore {
     this.ensureWritable();
     if (this.inTransaction) throw new Error('不能嵌套状态事务');
     const database = this.connect();
-    const before = structuredClone(this.state);
+    const restore = checkpoint(this.state);
     const revision = this.revision;
     const persistedSource = this.persistedSource;
     database.exec('BEGIN IMMEDIATE');
@@ -218,7 +239,7 @@ export class StateStore {
       return result;
     } catch (error) {
       if (database.isTransaction) database.exec('ROLLBACK');
-      this.state = before;
+      this.state = restore();
       this.revision = revision;
       this.persistedSource = persistedSource;
       throw error;
