@@ -65,6 +65,7 @@ export interface Message {
   attachments?: PromptAttachment[];
   nativeTurnId?: string;
   event?: ProcessEvent;
+  delivery?: MessageDelivery;
 }
 
 export interface ApprovalInput {
@@ -108,8 +109,23 @@ export interface Session {
   approvals: Approval[];
   createdAt: string;
   updatedAt: string;
+  queue?: SessionQueueItem[];
+  queuePaused?: boolean;
+  queueHoldReason?: string;
+  attention?: SessionAttention;
 }
 
+export interface SessionAttention {
+  revision: number; seenRevision: number; reason: 'approval' | 'result' | 'failure'; updatedAt: string; sourceId?: string;
+}
+export interface MessageDelivery {
+  id: string; clientUserMessageId: string; status: 'pending' | 'accepted' | 'rejected' | 'unknown';
+  createdAt: string; updatedAt: string; nativeThreadId?: string; nativeTurnId?: string; nativeItemId?: string; reason?: string;
+}
+export interface SessionQueueItem {
+  id: string; commandId: string; input: PromptInput; modelId?: string; settings?: SessionSettings; createdAt: string; updatedAt: string;
+}
+export interface SessionCommandReceipt { commandId: string; kind: string; result: unknown; createdAt: string }
 export interface WorkflowStepInput {
   id: string;
   title: string;
@@ -162,6 +178,12 @@ export interface Snapshot {
 export interface UnsavedFileSummary { count: number; names: string[] }
 
 export interface WorkbenchAPI {
+  markSessionSeen(id: string, revision: number): Promise<void>;
+  commandReceipt(commandId: string): Promise<SessionCommandReceipt | undefined>;
+  updateQueuedPrompt(id: string, itemId: string, input: PromptInput): Promise<void>;
+  removeQueuedPrompt(id: string, itemId: string): Promise<void>;
+  setSessionQueuePaused(id: string, paused: boolean): Promise<void>;
+  reconcileSessionDelivery(id: string): Promise<void>;
   setUnsavedFiles(summary: UnsavedFileSummary): void;
   getLanguage(): Promise<LanguageState>;
   setLanguage(preference: LanguagePreference): Promise<LanguageState>;
@@ -172,11 +194,11 @@ export interface WorkbenchAPI {
   subscribe(listener: (snapshot: Snapshot) => void): () => void;
   refreshProviders(): Promise<void>;
   chooseDirectory(): Promise<string | null>;
-  createSession(input: { title: string; providerId: string; cwd: string; modelId?: string }): Promise<string>;
-  sendMessage(sessionId: string, prompt: string): Promise<void>;
-  cancelSession(sessionId: string): Promise<void>;
-  decideApproval(approvalId: string, choiceId: string): Promise<void>;
-  answerQuestions(approvalId: string, answers: Record<string, string[]>): Promise<void>;
+  createSession(input: { title: string; providerId: string; cwd: string; modelId?: string; commandId?: string }): Promise<string>;
+  sendMessage(sessionId: string, prompt: string, commandId?: string): Promise<void>;
+  cancelSession(sessionId: string, commandId?: string, expectedAttemptId?: string): Promise<void>;
+  decideApproval(approvalId: string, choiceId: string, commandId?: string): Promise<void>;
+  answerQuestions(approvalId: string, answers: Record<string, string[]>, commandId?: string): Promise<void>;
   createWorkflow(input: WorkflowInput): Promise<string>;
   startWorkflow(workflowId: string): Promise<void>;
   cancelWorkflow(workflowId: string): Promise<void>;
@@ -197,7 +219,7 @@ export interface WorkbenchAPI {
   gitState(workspaceId: string): Promise<GitState>;
   fileDiff(workspaceId: string, relativePath: string): Promise<FileDiff>;
   chooseAttachments(): Promise<PromptAttachment[]>;
-  sendPrompt(sessionId: string, input: PromptInput): Promise<void>;
+  sendPrompt(sessionId: string, input: PromptInput, commandId?: string): Promise<void>;
   saveSessionDraft(sessionId: string, input: PromptInput): Promise<void>;
   updateSession(sessionId: string, input: { title?: string; archived?: boolean; settings?: SessionSettingsPatch; modelId?: string | null }): Promise<void>;
   forkSession(sessionId: string, beforeMessageId?: string): Promise<string>;
@@ -245,6 +267,7 @@ export interface UsageRecord {
 export interface SessionAttempt {
   id: string; status: SessionStatus; prompt: string; userMessageId: string;
   retryOf?: string; startedAt: string; endedAt?: string; error?: string;
+  modelId?: string; settings?: SessionSettings; queueItemId?: string; commandId?: string;
 }
 export interface StepAttempt {
   id: string; sessionId: string; status: StepStatus; retryOf?: string;

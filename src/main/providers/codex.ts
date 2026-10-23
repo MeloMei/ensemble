@@ -5,8 +5,8 @@ import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { promisify } from 'node:util';
 import { abortError, asError, JsonRpcProcess, RpcError, type RpcExit, type RpcNotification, type RpcRequest } from './json-rpc';
-import type { ProviderAdapter, TurnContext } from './types';
-import type { ProviderModel, Session } from '../../shared/types';
+import type { DeliveryReconciliation, ProviderAdapter, TurnContext } from './types';
+import type { MessageDelivery, ProviderModel, Session } from '../../shared/types';
 import type { DisplayText } from '../../shared/display-text';
 import { attachmentText, emitProcess, processStatus, processText } from './provider-events';
 import { codexMcpConfiguration } from './mcp-configuration';
@@ -17,8 +17,8 @@ const execute = promisify(execFile);
 const CLIENT_INFO = { name: PRODUCT_ID, title: PRODUCT_NAME, version: PRODUCT_VERSION };
 const TURN_TIMEOUT_MS = 60 * 60 * 1_000;
 type JsonObject = Record<string, unknown>;
-interface CodexTurn { id: string; status: string; error?: { message?: string } | null; items?: JsonObject[] }
-interface CodexThreadResult { thread: { id: string } }
+interface CodexTurn { id: string; status: string; error?: { message?: string } | null; items?: JsonObject[]; itemsView?: string }
+interface CodexThreadResult { thread: { id: string; status?: { type: string } } }
 
 export function codexApprovalPolicy(session: Session): 'on-request' | { granular: { sandbox_approval: false; rules: false; mcp_elicitations: true; request_permissions: false; skill_approval: false } } {
   return session.settings?.permission === 'read-only'
@@ -186,27 +186,46 @@ export async function createCodexProvider(): Promise<CodexProvider> {
         efforts: models.find(model => catalog.find(native => native.id === model.id)?.isDefault)?.efforts };
     },
     async run(context) {
-      if (disposed) throw new Error('Codex 运行时已经关闭');
-      if (context.signal.aborted) throw abortError();
-      const selected = context.session.modelId ? catalog.find(model => model.id === context.session.modelId) : catalog.find(model => model.isDefault);
-      if (context.session.modelId && !selected) throw new Error('Codex 模型不在本次原生目录中。');
-      if (context.session.settings?.effort && !selected?.supportedReasoningEfforts?.some(option => option.reasoningEffort === context.session.settings!.effort)) throw new Error('所选 Codex 模型没有声明该思考档，任务未发送。');
-      if (context.attachments?.some(attachment => attachment.kind === 'image') && selected?.inputModalities && !selected.inputModalities.includes('image')) throw new Error('所选 Codex 模型不支持图片输入。');
-      const configuration = JSON.stringify({ mcpServers: context.mcpServers ?? [], permission: context.session.settings?.permission });
-      let connection = sessions.get(context.session.id);
-      if (connection && connection.configuration !== configuration && !connection.handlers) { await connection.close(); connection = undefined; }
-      if (!connection || connection.closed) {
-        if (!binary || !version) throw new Error(detail);
-        connection = new CodexSessionConnection(binary, context.session.cwd);
-        connection.configuration = configuration;
-        sessions.set(context.session.id, connection);
+      let prepared = false;
+      try {
+        if (disposed) throw new Error('Codex 运行时已经关闭');
+        if (context.signal.aborted) throw abortError();
+        const selected = context.session.modelId ? catalog.find(model => model.id === context.session.modelId) : catalog.find(model => model.isDefault);
+        if (context.session.modelId && !selected) throw new Error('Codex 模型不在本次原生目录中。');
+        if (context.session.settings?.effort && !selected?.supportedReasoningEfforts?.some(option => option.reasoningEffort === context.session.settings!.effort)) throw new Error('所选 Codex 模型没有声明该思考档，任务未发送。');
+        if (context.attachments?.some(attachment => attachment.kind === 'image') && selected?.inputModalities && !selected.inputModalities.includes('image')) throw new Error('所选 Codex 模型不支持图片输入。');
+        const configuration = JSON.stringify({ mcpServers: context.mcpServers ?? [], permission: context.session.settings?.permission });
+        let connection = sessions.get(context.session.id);
+        if (connection && connection.configuration !== configuration && !connection.handlers) { await connection.close(); connection = undefined; }
+        if (!connection || connection.closed) {
+          if (!binary || !version) throw new Error(detail);
+          connection = new CodexSessionConnection(binary, context.session.cwd);
+          connection.configuration = configuration;
+          sessions.set(context.session.id, connection);
+        }
+        if (connection.handlers) throw new Error('此 Codex 会话已有运行中的任务');
+        if (connection.cwd !== context.session.cwd) throw new Error('Codex 会话的工作目录发生了变化');
+        if (connection.threadId && context.session.externalId && connection.threadId !== context.session.externalId) {
+          throw new Error('Codex 会话 id 与当前运行时不一致');
+        }
+        prepared = true;
+        await runCodex(connection, context);
+      } catch (error) {
+        if (!prepared) context.emit({ type: 'delivery', status: 'rejected', reason: `消息尚未发送：${asError(error).message}` });
+        throw error;
       }
-      if (connection.handlers) throw new Error('此 Codex 会话已有运行中的任务');
-      if (connection.cwd !== context.session.cwd) throw new Error('Codex 会话的工作目录发生了变化');
-      if (connection.threadId && context.session.externalId && connection.threadId !== context.session.externalId) {
-        throw new Error('Codex 会话 id 与当前运行时不一致');
-      }
-      await runCodex(connection, context);
+    },
+    async reconcileDelivery(session, deliveries) {
+      if (disposed || !binary || !version || !session.externalId) return deliveries.map(delivery => ({ clientUserMessageId: delivery.clientUserMessageId,
+        status: 'unknown', reason: '缺少可用的 Codex 原生会话，无法核对。' }));
+      const rpc = new JsonRpcProcess({ command: binary, args: ['app-server', '--listen', 'stdio://'], cwd: session.cwd });
+      try {
+        await initialize(rpc);
+        return await reconcileCodexDelivery(rpc, session.externalId, deliveries);
+      } catch (error) {
+        return deliveries.map(delivery => ({ clientUserMessageId: delivery.clientUserMessageId, status: 'unknown',
+          reason: `原生历史核对未完成：${asError(error).message}` }));
+      } finally { await rpc.close(); }
     },
     async rewind(session: Session, nativeTurnId: string) {
       if (disposed || !binary || !version || !session.externalId) throw new Error('Codex 原生会话尚未就绪。');
@@ -240,12 +259,54 @@ export async function createCodexProvider(): Promise<CodexProvider> {
   return provider;
 }
 
+async function reconcileCodexDelivery(rpc: JsonRpcProcess, threadId: string, deliveries: MessageDelivery[]): Promise<DeliveryReconciliation[]> {
+  const metadata = await rpc.request<{ thread: { id: string; historyMode?: string } }>('thread/read', { threadId, includeTurns: false });
+  if (metadata.thread?.id !== threadId) throw new Error('原生历史返回了不同会话。');
+  if (metadata.thread.historyMode !== 'paginated') throw new Error('该原生会话没有可核对的完整分页历史。');
+  const matches = new Map<string, Map<string, { turnId: string; itemId: string }>>();
+  const cursors = new Set<string>();
+  let cursor: string | undefined;
+  let complete = false;
+  for (let pageNumber = 0; pageNumber < 100; pageNumber++) {
+    const page = await rpc.request<{ data: CodexTurn[]; nextCursor: string | null }>('thread/turns/list', {
+      threadId, limit: 100, sortDirection: 'asc', itemsView: 'full', ...(cursor ? { cursor } : {}),
+    });
+    if (!Array.isArray(page.data) || page.nextCursor !== null && typeof page.nextCursor !== 'string') throw new Error('原生历史分页无效。');
+    for (const turn of page.data) {
+      if (typeof turn.id !== 'string' || turn.itemsView !== 'full' || !Array.isArray(turn.items)) throw new Error('原生历史未返回完整消息。');
+      for (const item of turn.items) {
+        if (item.type !== 'userMessage' || typeof item.id !== 'string' || typeof item.clientId !== 'string') continue;
+        const matching = deliveries.find(delivery => delivery.clientUserMessageId === item.clientId && (!delivery.nativeThreadId || delivery.nativeThreadId === threadId));
+        if (!matching) continue;
+        const found = matches.get(matching.clientUserMessageId) ?? new Map();
+        found.set(`${turn.id}:${item.id}`, { turnId: turn.id, itemId: item.id });
+        matches.set(matching.clientUserMessageId, found);
+      }
+    }
+    if (!page.nextCursor) { complete = true; break; }
+    if (cursors.has(page.nextCursor)) throw new Error('原生历史返回了重复分页游标。');
+    cursors.add(page.nextCursor); cursor = page.nextCursor;
+  }
+  if (!complete) throw new Error('原生历史超过本次核对范围，投递仍未确认。');
+  return deliveries.map(delivery => {
+    const found = matches.get(delivery.clientUserMessageId);
+    if (found?.size !== 1) return { clientUserMessageId: delivery.clientUserMessageId, status: 'unknown',
+      reason: found?.size ? '原生历史有多条相同客户端 ID，无法唯一确认。' : '已核原生历史未发现该客户端 ID；这不能证明消息未发送。' };
+    const item = [...found.values()][0];
+    return { clientUserMessageId: delivery.clientUserMessageId, status: 'accepted', nativeThreadId: threadId,
+      nativeTurnId: item.turnId, nativeItemId: item.itemId, reason: '已通过原生历史中的客户端消息 ID 确认投递。' };
+  });
+}
+
 async function runCodex(connection: CodexSessionConnection, context: TurnContext): Promise<void> {
-  if (context.signal.aborted) throw abortError();
   let threadId = connection.threadId;
   let turnId: string | undefined;
   let terminalCompletion = false;
+  let submissionAttempted = false;
+  let submissionAccepted = false;
   const earlyNotifications: RpcNotification[] = [];
+  let releaseTurn!: () => void;
+  const turnReady = new Promise<void>(resolve => { releaseTurn = resolve; });
   let settled = false;
   let resolveCompletion!: (error?: Error) => void;
   const completion = new Promise<Error | undefined>(resolve => { resolveCompletion = resolve; });
@@ -346,12 +407,14 @@ async function runCodex(connection: CodexSessionConnection, context: TurnContext
   const rpc = connection.rpc;
   connection.handlers = {
     notification: onNotification,
-    request: request => {
+    request: async request => {
+      if (!submissionAttempted) throw new RpcError(-32000, '当前任务尚未发送');
+      await turnReady;
       const params = object(request.params);
-      if (params.threadId !== threadId || (turnId && params.turnId && params.turnId !== turnId)) {
-        return Promise.reject(new RpcError(-32602, '审批请求不属于当前任务'));
+      if (params.threadId !== threadId || (params.turnId && params.turnId !== turnId)) {
+        throw new RpcError(-32602, '审批请求不属于当前任务');
       }
-      if (context.signal.aborted || settled) return Promise.reject(new RpcError(-32000, '任务已经结束'));
+      if (!turnId || context.signal.aborted || settled) throw new RpcError(-32000, '任务已经结束');
       return handleApproval(request, context, items.get(String(params.itemId)));
     },
     fail: error => finish(error),
@@ -367,6 +430,7 @@ async function runCodex(connection: CodexSessionConnection, context: TurnContext
   context.signal.addEventListener('abort', onAbort, { once: true });
   const timer = setTimeout(() => finish(new Error('Codex 任务超过一小时，连接已关闭')), TURN_TIMEOUT_MS);
   try {
+    if (context.signal.aborted) throw abortError();
     await connection.initialize(context.signal);
     if (!threadId) {
       const method = context.session.externalId ? 'thread/resume' : 'thread/start';
@@ -386,9 +450,13 @@ async function runCodex(connection: CodexSessionConnection, context: TurnContext
         throw error;
       }
       if (!response.thread?.id) throw new Error('Codex 未返回会话 id');
+      if (response.thread.status?.type === 'active') throw new Error('原生 Codex 会话仍有运行中的回合，请先在原会话确认或停止。');
       threadId = connection.threadId = response.thread.id;
     }
     context.emit({ type: 'external-id', id: threadId });
+    context.emit({ type: 'delivery', status: 'pending', nativeThreadId: threadId });
+    if (context.signal.aborted) throw abortError();
+    submissionAttempted = true;
     const started = await rpc.request<{ turn: CodexTurn }>('turn/start', {
       threadId,
       input: [{ type: 'text', text: context.prompt, text_elements: [] }, ...(context.attachments ?? []).map(attachment => attachment.kind === 'image'
@@ -401,14 +469,25 @@ async function runCodex(connection: CodexSessionConnection, context: TurnContext
     }, { signal: context.signal });
     if (!started.turn?.id) throw new Error('Codex 未返回任务 id');
     turnId = started.turn.id;
+    submissionAccepted = true;
+    context.emit({ type: 'delivery', status: 'accepted', nativeThreadId: threadId, nativeTurnId: turnId });
     context.emit({ type: 'native-turn', turnId });
     completeTurn(started.turn);
     for (const message of earlyNotifications) onNotification(message);
     earlyNotifications.length = 0;
+    releaseTurn();
     const error = await completion;
     if (error) throw error;
+  } catch (error) {
+    if (!submissionAccepted) {
+      const rejected = !submissionAttempted || error instanceof RpcError && [-32700, -32600, -32601, -32602].includes(error.code);
+      context.emit({ type: 'delivery', status: rejected ? 'rejected' : 'unknown', ...(threadId ? { nativeThreadId: threadId } : {}),
+        reason: rejected ? `消息未被原生运行时接收：${asError(error).message}` : `发送后未收到原生确认：${asError(error).message}。请核对历史，平台不会自动重发。` });
+    }
+    throw error;
   } finally {
     settled = true;
+    releaseTurn();
     clearTimeout(timer);
     context.signal.removeEventListener('abort', onAbort);
     try {

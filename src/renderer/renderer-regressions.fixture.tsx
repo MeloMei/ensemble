@@ -10,15 +10,23 @@ import { FileReviewPanel } from './FileReviewPanel';
 import { SessionChat } from './SessionChat';
 import { AppearanceProvider } from './appearance';
 import type { Perform } from './ui';
+import './styles.css';
 
 interface Result { name: string; error?: string }
-interface FixtureWindow extends Window { runRendererRegressions(): Promise<Result[]>; IS_REACT_ACT_ENVIRONMENT: boolean }
+interface FixtureWindow extends Window { runRendererRegressions(selected?: string[] | null): Promise<Result[]>; IS_REACT_ACT_ENVIRONMENT: boolean }
 const fixture = window as unknown as FixtureWindow;
 fixture.IS_REACT_ACT_ENVIRONMENT = true;
 const workspace: Workspace = { id: 'workspace', name: 'Workspace', cwd: '/fixture', pinned: false, tabs: [], activeTabId: null, createdAt: '2026-10-23', updatedAt: '2026-10-23' };
 const session: Session = { id: 'session', title: 'Session', providerId: 'codex', cwd: workspace.cwd, status: 'idle', messages: [], approvals: [], settings: { permission: 'review', effort: 'low' }, createdAt: '2026-10-23', updatedAt: '2026-10-23' };
 const provider: ProviderInfo = { id: 'codex', name: 'Codex', source: 'builtin', available: true, detail: '', capabilities: { resume: true, approvals: true, permissions: true, effort: true }, efforts: ['low', 'high'] };
 const tick = () => new Promise<void>(resolve => setTimeout(resolve, 0));
+async function waitFor(check: () => boolean, message: string | (() => string), attempts = 60) {
+  for (let index = 0; index < attempts; index++) {
+    if (check()) return;
+    await act(async () => { await new Promise<void>(resolve => setTimeout(resolve, 10)); });
+  }
+  assert(check(), typeof message === 'function' ? message() : message);
+}
 function assert(condition: unknown, message: string): asserts condition { if (!condition) throw new Error(message); }
 function button(key: string): HTMLButtonElement {
   const text = translate(key);
@@ -183,6 +191,46 @@ const cases: Record<string, () => Promise<void>> = {
     assertDraft();
     assert(errors.length === 0, errors.join('\n'));
   },
+  'UI-08: queued sends reuse an uncertain command and preserve composition and later drafts': async () => {
+    const gate = deferred<void>(), laterGate = deferred<void>();
+    const sends: { id?: string; input: unknown }[] = [], edits: unknown[] = [], removals: string[] = [], pauses: boolean[] = [];
+    const draft = { text: 'Next task' };
+    let cleared = 0;
+    window.workbench = {
+      sendPrompt: async (_id: string, input: unknown, id?: string) => { sends.push({ id, input }); if (sends.length === 1) await gate.promise; if (sends.length === 3) await laterGate.promise; },
+      updateQueuedPrompt: async (_id: string, item: string, input: unknown) => { edits.push({ item, input }); },
+      removeQueuedPrompt: async (_id: string, item: string) => { removals.push(item); },
+      setSessionQueuePaused: async (_id: string, paused: boolean) => { pauses.push(paused); },
+    } as unknown as Window['workbench'];
+    const queued: Session = { ...session, status: 'running', queue: [{ id: 'queued-a', commandId: 'first', input: { text: 'Queued before' }, createdAt: session.createdAt, updatedAt: session.updatedAt }] };
+    const show = (value = queued, currentDraft = draft) => render(chat({ session: value, draft: currentDraft, onDraftChange: value => { if (!value.text) cleared++; } }));
+    await show();
+    assert(!button('workspace:chat.sendTask').disabled && document.querySelector('.composer-caption')?.textContent?.includes('Queue for next turn'), 'A running session does not expose a truthful next-turn send');
+    await act(async () => {
+      input('.composer textarea').dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+      input('.composer textarea').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, isComposing: true }));
+      input('.composer textarea').dispatchEvent(new CompositionEvent('compositionend', { bubbles: true })); await tick();
+    });
+    assert(sends.length === 0, 'IME confirmation submitted a task');
+    await click('workspace:chat.sendTask'); await waitFor(() => sends.length === 1, 'The queued send did not start');
+    await act(async () => { gate.reject(new Error('response lost')); await tick(); }); await settle();
+    assert(cleared === 0 && input('.composer textarea').value === draft.text, 'An uncertain send erased the draft');
+    await click('workspace:chat.sendTask'); await settle();
+    assert(sends[0].id && sends[0].id === sends[1].id && Number(cleared) === 1, 'Retry did not reuse the original command identity');
+    await show(); await click('workspace:chat.sendTask'); await waitFor(() => sends.length === 3, 'A new send did not start');
+    await show(queued, { text: 'A later draft while awaiting the send' });
+    await act(async () => { laterGate.resolve(); await tick(); }); await settle();
+    assert(Number(cleared) === 1 && input('.composer textarea').value === 'A later draft while awaiting the send', 'An older send response cleared a later draft');
+    assert(sends[2].id !== sends[1].id, 'A new intentional send reused the completed command');
+    await click('workspace:chat.editQueued'); await change(input('.prompt-queue textarea'), 'Edited next task'); await click('workspace:chat.saveQueued'); await settle();
+    assert(JSON.stringify(edits) === JSON.stringify([{ item: 'queued-a', input: { text: 'Edited next task' } }]), 'Editing a queue item sent the wrong input');
+    await click('workspace:chat.pauseQueue'); await settle();
+    await show({ ...queued, queuePaused: true, queueHoldReason: 'Task stopped' }); await click('workspace:chat.resumeQueue'); await settle();
+    await click('workspace:chat.removeQueued'); await settle();
+    assert(JSON.stringify(pauses) === '[true,false]' && removals[0] === 'queued-a', 'Queue pause, resume or removal did not use its persisted item identity');
+    await show(queued, { text: 'A newer draft' });
+    assert(input('.composer textarea').value === 'A newer draft', 'Queue updates replaced the composer draft');
+  },
   'PROVIDER-2 UI: plugins retain attachment drafts and block unsupported sends': async () => {
     let sends = 0, changes = 0;
     window.workbench = { sendPrompt: async () => { sends++; } } as unknown as Window['workbench'];
@@ -195,12 +243,15 @@ const cases: Record<string, () => Promise<void>> = {
     assert(document.querySelector('[role=alert]')?.textContent?.includes('does not support attachments'), 'Attachment restriction was not explained');
     const remove = document.querySelector<HTMLButtonElement>('.attachment-chip button'); assert(remove && !remove.disabled, 'User cannot remove the unsupported attachment');
   },
+
 };
-fixture.runRendererRegressions = async () => {
+fixture.runRendererRegressions = async selected => {
   await i18n.changeLanguage('en');
   const results: Result[] = [];
   for (const [name, check] of Object.entries(cases)) {
+    if (selected?.length && !selected.some(prefix => name.startsWith(prefix))) continue;
     const host = document.createElement('div'); document.body.append(host); root = createRoot(host); errors.length = 0; operations = [];
+    host.style.cssText = 'display:flex;width:1100px;height:740px;min-height:0';
     try { await check(); results.push({ name }); }
     catch (error) { results.push({ name, error: error instanceof Error ? error.stack : String(error) }); }
     finally { await act(async () => root.unmount()); host.remove(); }

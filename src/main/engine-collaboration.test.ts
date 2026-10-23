@@ -390,7 +390,7 @@ test('Git mutation holds the same project reservation across awaits and rejects 
       return files.mutate(project, { action: 'stage', path: 'note.txt' });
     });
     await until(() => mutationStarted);
-    assert.throws(() => engine.sendMessage(manual, 'hold'), /已有会话或编排运行/);
+    assert.throws(() => engine.sendMessage(manual, 'hold'), /项目正在修改或回收/);
     engine.sendMessage(coordinator, 'probe-delegation');
     await until(() => delegated);
     assert.equal(engine.snapshot().sessions.length, 2, 'a rejected worker must not create a session');
@@ -410,7 +410,7 @@ test('Git mutation holds the same project reservation across awaits and rejects 
       const leaf = join(nestedNoGit, 'leaf'); await mkdir(leaf);
       const leafSession = await engine.createSession({ title: 'leaf', providerId: 'test', cwd: leaf });
       await engine.withProjectMutation(nestedNoGit, async () => {
-        assert.throws(() => engine.sendMessage(leafSession, 'hold'), /重叠/);
+        assert.throws(() => engine.sendMessage(leafSession, 'hold'), /项目正在修改或回收/);
       });
     } finally { await rm(nestedNoGit, { recursive: true, force: true }); }
     const finishGate = gate(); let pendingStarted = false; let shutdownFinished = false;

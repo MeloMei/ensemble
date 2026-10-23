@@ -68,6 +68,10 @@ macOS 数据目录保留兼容名称 `Agent Workbench`。SQLite 尚无状态快�
 
 后台重启时，未完成的执行会标记为中断，需要显式继续。成功任务不会自动重派。终端进程不会在重启后恢复。附件和协作产物作为文件保存在数据库旁，由对应服务校验。
 
+普通会话创建、发送、取消和问答共用 SQLite 事务收据。运行中的补充消息保存在下一轮队列，保留当时模型、设置和附件；停止、失败或后台重启后暂停。Codex 依据 clientUserMessageId 核对原生历史，失去确认时保留 unknown，不因文本相同去重或自动重发。attention 与 seen revision 单独持久化，阅读不会改变任务结果。
+
+桌面 Stop 请求携带点击时的 attempt ID，后台在同一事务内核对后才取消任务或暂停队列。尚未进入物理执行的 Codex pending 消息，在取消或排队状态恢复后标为 rejected；执行开始后中断的消息仍保持 unknown。普通、托管和协作执行共用投递守卫。并行新增的每一条审批都会推进 attention revision。
+
 ## 构建和许可
 
 Vite 构建 renderer。esbuild 将 Electron 主进程、preload、独立后台、CLI 和 stdio 桥接构建到 `dist/`。当前打包脚本面向 macOS，使用主机架构，执行并验证 ad hoc 签名。脚本没有提供 Developer ID 签名、公证或 Windows/Linux 打包路径。

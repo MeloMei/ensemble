@@ -1,4 +1,9 @@
 export const en = {
+  "attention.approval": "Response needed",
+  "attention.result": "Result to read",
+  "attention.failure": "Failure to check",
+  "attention.unread": "Unread",
+  "attention.unreadSessions": "{{count}} unread sessions",
   "common.cancel": "Cancel",
   "common.close": "Close",
   "common.optional": "Optional",
@@ -213,6 +218,11 @@ export const en = {
 };
 
 export const zhCN: Record<keyof typeof en, string> = {
+  "attention.approval": "待回应",
+  "attention.result": "结果待查看",
+  "attention.failure": "失败待查看",
+  "attention.unread": "未读",
+  "attention.unreadSessions": "{{count}} 个会话未读",
   "common.cancel": "取消",
   "common.close": "关闭",
   "common.optional": "可选",
