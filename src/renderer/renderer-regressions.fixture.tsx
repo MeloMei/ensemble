@@ -133,19 +133,55 @@ const cases: Record<string, () => Promise<void>> = {
     assert(Number(summary.count) === 0 && !document.querySelector('[data-test-editor]'), 'Confirmed missing file retained its dirty inspector');
     await click('b.txt'); assert(input('[data-test-editor]').value === 'original', 'Discard still blocked browsing another file');
   },
-  'UI-05: consecutive settings controls send only their changed keys': async () => {
+  'UI-05: inline session controls preserve drafts, capabilities and partial settings updates': async () => {
     const writes: Record<string, unknown>[] = [];
+    let draftChanges = 0;
+    const configuredProvider: ProviderInfo = { ...provider, models: [{ id: 'model-a', name: 'Model A', free: false }, { id: 'model-b', name: 'Model B', free: false }] };
+    const configuredSession: Session = { ...session, modelId: 'model-a' };
+    const draft = { text: 'Keep this unfinished task', attachments: [{ id: 'attachment', name: 'note.txt', kind: 'text' as const, ownedPath: '/note.txt', mimeType: 'text/plain', size: 4, sha256: 'a'.repeat(64) }] };
+    const show = (overrides: Partial<Parameters<typeof SessionChat>[0]> = {}) => render(chat({ session: configuredSession, provider: configuredProvider, draft, onDraftChange: () => { draftChanges++; }, ...overrides }));
+    const selector = (key: string) => `.composer-controls select[aria-label="${translate(`workspace:chat.${key}`)}"]`;
+    const control = (key: string) => input(selector(key)) as HTMLSelectElement;
+    const controls = () => ['model', 'effort', 'permissions'].map(control);
     window.workbench = {
       listSkills: async () => [{ id: 'skill', name: 'Skill', path: '/skill', description: '', scope: 'project', editable: true }],
       updateSession: async (_id: string, patch: Record<string, unknown>) => { writes.push(structuredClone(patch)); },
     } as unknown as Window['workbench'];
-    await render(chat()); await click('workspace:chat.settings');
-    const selects = () => [...document.querySelectorAll<HTMLSelectElement>('.session-settings select')];
-    await change(selects().find(item => item.value === 'review')!, 'read-only');
-    await change(selects().find(item => item.value === 'low')!, 'high');
+    await show();
+    const textarea = input('textarea');
+    const assertDraft = () => assert(input('textarea') === textarea && textarea.value === draft.text && document.querySelector('.attachments-strip')?.textContent?.includes('note.txt') && draftChanges === 0, 'Session controls replaced or erased the unfinished draft');
+    assert(button('workspace:chat.settings').getAttribute('aria-expanded') === 'false' && controls().every(item => !item.disabled), 'Session controls require opening settings or are unavailable while idle');
+    await change(control('permissions'), 'read-only');
+    await change(control('effort'), 'high');
+    await change(control('model'), 'model-b');
+    await click('workspace:chat.settings');
+    assert(!document.querySelector('.session-settings select'), 'Advanced settings duplicate the inline session controls');
     await change(input('.session-skills input'), true);
-    await change(selects().find(item => item.value === 'low')!, '');
-    assert(JSON.stringify(writes) === JSON.stringify([{ settings: { permission: 'read-only' } }, { settings: { effort: 'high' } }, { settings: { skillIds: ['skill'] } }, { settings: { effort: null } }]), `A stale setting was sent: ${JSON.stringify(writes)}`);
+    await change(control('effort'), '');
+    await change(control('model'), '');
+    assert(JSON.stringify(writes) === JSON.stringify([{ settings: { permission: 'read-only' } }, { settings: { effort: 'high' } }, { modelId: 'model-b' }, { settings: { skillIds: ['skill'] } }, { settings: { effort: null } }, { modelId: null }]), `A stale setting was sent: ${JSON.stringify(writes)}`);
+    assertDraft();
+    await click('workspace:chat.settings');
+    for (const status of ['running', 'waiting_approval', 'waiting_children', 'queued'] as const) {
+      await show({ session: { ...configuredSession, status } });
+      assert(controls().every(item => item.disabled), `Session controls remain editable during ${status}`);
+    }
+    for (const key of [`send-${session.id}`, `session-settings-${session.id}`]) {
+      await show({ pending: new Set([key]) });
+      assert(controls().every(item => item.disabled), `Session controls remain editable during ${key}`);
+    }
+    await show({ pending: new Set(['session-settings-other-session']) });
+    assert(controls().every(item => !item.disabled), 'Another session settings write blocks this composer');
+    await show({ provider: { ...configuredProvider, capabilities: { ...configuredProvider.capabilities, effort: false, permissions: false } } });
+    assert(!document.querySelector(selector('effort')) && !document.querySelector(selector('permissions')) && !control('model').disabled, 'Unsupported runtime controls remain visible');
+    await show({ provider: { ...configuredProvider, efforts: [] } });
+    assert(!document.querySelector(selector('effort')), 'Empty reasoning options still expose a reasoning control');
+    await show({ provider: { ...configuredProvider, models: [] } });
+    assert(control('model').disabled && control('model').value === configuredSession.modelId, 'Missing model catalog hides or enables changing the current model');
+    await show({ session, provider: { ...configuredProvider, models: [] } });
+    assert(control('model').disabled && control('model').value === '', 'Missing model catalog does not preserve the runtime default');
+    assertDraft();
+    assert(errors.length === 0, errors.join('\n'));
   },
   'PROVIDER-2 UI: plugins retain attachment drafts and block unsupported sends': async () => {
     let sends = 0, changes = 0;

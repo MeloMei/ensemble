@@ -285,22 +285,28 @@ export class WorkbenchEngine {
       if (!provider) throw new Error('这个 Agent 目前不可用。');
       modelId = selectProviderModel(provider, input.modelId ?? undefined);
     }
-    if (typeof input.settings?.effort === 'string' && !provider?.capabilities.effort) throw new Error('这个运行时未提供思考档设置。');
-    if (typeof input.settings?.permission === 'string' && !provider?.capabilities.permissions) throw new Error('这个运行时未提供权限设置。');
-    session.modelId = modelId;
-    if (input.settings) {
-      const patch = structuredClone(input.settings);
-      const settings = { ...session.settings };
-      for (const key of ['effort', 'permission', 'skillIds'] as const) {
-        const value = patch[key];
-        if (value === null) delete settings[key];
-        else if (value !== undefined) Object.assign(settings, { [key]: value });
-      }
-      session.settings = settings;
+    const efforts = provider?.models?.find(model => model.id === modelId)?.efforts ?? provider?.efforts;
+    if (typeof input.settings?.effort === 'string') {
+      if (!provider?.capabilities.effort) throw new Error('这个运行时未提供思考档设置。');
+      if (efforts && !efforts.includes(input.settings.effort)) throw new Error('所选模型不支持这个思考档。');
     }
-    if (input.title !== undefined) session.title = input.title.trim() || '新会话';
-    if (input.archived !== undefined) session.archived = input.archived;
-    session.updatedAt = now(); this.changed();
+    if (typeof input.settings?.permission === 'string' && !provider?.capabilities.permissions) throw new Error('这个运行时未提供权限设置。');
+    const settings = { ...session.settings };
+    for (const key of ['effort', 'permission', 'skillIds'] as const) {
+      const value = input.settings?.[key];
+      if (value === null) delete settings[key];
+      else if (value !== undefined) Object.assign(settings, { [key]: structuredClone(value) });
+    }
+    const modelChanged = modelId !== session.modelId;
+    if (modelChanged && input.settings?.effort === undefined && settings.effort && efforts && !efforts.includes(settings.effort)) delete settings.effort;
+    Object.assign(session, {
+      modelId,
+      ...(input.settings || modelChanged ? { settings } : {}),
+      ...(input.title !== undefined ? { title: input.title.trim() || '新会话' } : {}),
+      ...(input.archived !== undefined ? { archived: input.archived } : {}),
+      updatedAt: now(),
+    });
+    this.changed();
   }
 
   async forkSession(id: string, beforeMessageId?: string): Promise<string> {
