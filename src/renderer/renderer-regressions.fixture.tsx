@@ -8,6 +8,7 @@ import { WorkspaceTools } from './WorkspaceTools';
 import { WorkflowView } from './WorkflowViews';
 import { FileReviewPanel } from './FileReviewPanel';
 import { SessionChat } from './SessionChat';
+import { AppearanceProvider } from './appearance';
 import type { Perform } from './ui';
 
 interface Result { name: string; error?: string }
@@ -44,7 +45,7 @@ let root: Root;
 const errors: string[] = [];
 let operations: Promise<void>[] = [];
 const perform: Perform = (_key, action) => { const operation = action().then(() => {}, error => { errors.push(String(error)); }); operations.push(operation); return operation; };
-async function render(element: ReactElement) { await act(async () => { root.render(<I18nextProvider i18n={i18n}><MotionConfig reducedMotion="always">{element}</MotionConfig></I18nextProvider>); await tick(); }); }
+async function render(element: ReactElement) { await act(async () => { root.render(<I18nextProvider i18n={i18n}><AppearanceProvider><MotionConfig reducedMotion="always">{element}</MotionConfig></AppearanceProvider></I18nextProvider>); await tick(); }); }
 async function click(key: string) { await act(async () => { button(key).click(); await tick(); }); }
 async function settle() { await act(async () => { await Promise.all(operations); await tick(); }); }
 const chat = (overrides: Partial<Parameters<typeof SessionChat>[0]> = {}) => <SessionChat session={session} provider={provider} perform={perform} pending={new Set()} draft={{ text: '' }} onDraftChange={() => {}} workspaceId={workspace.id} openSession={() => {}} {...overrides} />;

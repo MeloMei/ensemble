@@ -17,7 +17,7 @@ test('actual renderer components preserve approval, draft, recovery and settings
   try {
     await build({
       entryPoints: [path.resolve('src/renderer/renderer-regressions.fixture.tsx')], outfile: path.join(directory, 'fixture.js'),
-      bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', loader: { '.css': 'empty' },
+      bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', loader: { '.css': 'empty', '.png': 'file', '.svg': 'file' },
       plugins: [{ name: 'controlled-editor', setup(builder) {
         builder.onLoad({ filter: /[/\\]CodeEditor\.tsx$/ }, () => ({ contents: 'export function CodeEditor({value, onChange, readOnly}) { return <textarea data-test-editor value={value} readOnly={readOnly} onChange={event => onChange(event.target.value)} />; }', loader: 'tsx' }));
       } }],
