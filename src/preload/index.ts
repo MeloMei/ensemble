@@ -86,6 +86,10 @@ const api: WorkbenchAPI = {
   launchCodex: input => ipcRenderer.invoke('workbench:launch-codex', input),
   openPluginDirectory: () => ipcRenderer.invoke('workbench:open-plugin-directory'),
   createWorkspace: input => ipcRenderer.invoke('workbench:create-workspace', input),
+  removeWorktree: async id => {
+    if (unsavedFiles.count) throw new Error('WORKBENCH_UNSAVED_FILES');
+    return ipcRenderer.invoke('workbench:remove-worktree', id);
+  },
   updateWorkspace: (id, input) => ipcRenderer.invoke('workbench:update-workspace', id, input),
   activateTab: (workspaceId, tabId) => ipcRenderer.invoke('workbench:activate-tab', workspaceId, tabId),
   closeTab: (workspaceId, tabId) => ipcRenderer.invoke('workbench:close-tab', workspaceId, tabId),

@@ -256,11 +256,30 @@ export function App() {
 
 function NewWorkspaceDialog({ pending, perform, onClose, onCreated }: { pending: Set<string>; perform: Perform; onClose: () => void; onCreated: (id: string) => void }) {
   const { t } = useTranslation('shell');
+  const live = useRef(true);
+  useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
   const [name, setName] = useState('');
   const [cwd, setCwd] = useState('');
+  const [mode, setMode] = useState<'directory' | 'worktree'>('directory');
+  const [branch, setBranch] = useState('');
   const busy = pending.has('create-workspace');
-  const submit = (event: FormEvent) => { event.preventDefault(); if (!cwd.trim() || busy) return; void perform('create-workspace', async () => onCreated(await window.workbench.createWorkspace({ name: name.trim() || pathName(cwd.trim()), cwd: cwd.trim() }))); };
-  return <Modal title={t('app.newWorkspace')} subtitle={t('app.newWorkspaceNote')} busy={busy} onClose={onClose}><form onSubmit={submit}><label>{t('common.projectDirectory')}<DirectoryField value={cwd} onChange={setCwd} perform={perform} /></label><label>{t('app.workspaceName')}<span className="optional">{t('common.optional')}</span><input autoFocus value={name} onChange={event => setName(event.target.value)} placeholder={cwd ? pathName(cwd) : t('app.directoryNameDefault')} maxLength={200} /></label><div className="modal-actions"><button type="button" className="button subtle" disabled={busy} onClick={onClose}>{t('common.cancel')}</button><button className="button primary" disabled={!cwd.trim() || busy}><BusyIcon busy={busy}><Plus size={14} /></BusyIcon>{t('app.createWorkspace')}</button></div></form></Modal>;
+  const submit = (event: FormEvent) => {
+    event.preventDefault(); if (!cwd.trim() || busy) return;
+    const input = { name: name.trim() || pathName(cwd.trim()), cwd: cwd.trim(), mode, ...(mode === 'worktree' && branch.trim() ? { branch: branch.trim() } : {}) };
+    void perform('create-workspace', () => runSessionCommand('create-workspace', input, async commandId => {
+      const id = await window.workbench.createWorkspace({ ...input, commandId });
+      if (live.current) onCreated(id);
+      return id;
+    }));
+  };
+  return <Modal title={t('app.newWorkspace')} subtitle={t('app.newWorkspaceNote')} busy={busy} onClose={onClose}><form onSubmit={submit}>
+    <label>{t('common.projectDirectory')}<DirectoryField value={cwd} onChange={setCwd} perform={perform} /></label>
+    <label>{t('app.workspaceMode')}<select value={mode} disabled={busy} onChange={event => setMode(event.target.value as typeof mode)}>
+      <option value="directory">{t('app.currentDirectory')}</option><option value="worktree">{t('app.independentWorktree')}</option>
+    </select></label>
+    {mode === 'worktree' && <><p className="form-note">{t('app.worktreeNote')}</p><label>{t('app.worktreeBranch')}<span className="optional">{t('common.optional')}</span><input value={branch} onChange={event => setBranch(event.target.value)} disabled={busy} placeholder={t('app.worktreeBranchDefault')} /></label></>}
+    <label>{t('app.workspaceName')}<span className="optional">{t('common.optional')}</span><input autoFocus value={name} onChange={event => setName(event.target.value)} placeholder={cwd ? pathName(cwd) : t('app.directoryNameDefault')} maxLength={200} /></label>
+    <div className="modal-actions"><button type="button" className="button subtle" disabled={busy} onClick={onClose}>{t('common.cancel')}</button><button className="button primary" disabled={!cwd.trim() || busy}><BusyIcon busy={busy}><Plus size={14} /></BusyIcon>{t('app.createWorkspace')}</button></div></form></Modal>;
 }
 
 function NewAgentDialog({ workspace, providers, pending, perform, onClose }: { workspace: Workspace; providers: ProviderInfo[]; pending: Set<string>; perform: Perform; onClose: () => void }) {

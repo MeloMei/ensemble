@@ -590,6 +590,8 @@ export class WorkbenchEngine {
     if (existing && existing.owner !== owner) throw new ProjectBusyError('这个项目已有会话或编排运行，请等它结束后再开始。');
   }
   private assertProjectAdmission(cwd: string): void {
+    if (this.store.state.worktreeOperations?.some(operation => (operation.status === 'removing' || operation.status === 'removed')
+      && executionPathContains(operation.path, cwd))) throw new ProjectBusyError('工作区正在回收或已经回收，不能提交新任务。');
     const key = this.executionKey(cwd);
     for (const [path, claim] of this.projectClaims) {
       if (claim.kind === 'mutation' && executionPathsOverlap(path, key)) throw new ProjectBusyError('项目正在修改或回收，请完成后再提交新任务。');

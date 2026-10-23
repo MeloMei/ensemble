@@ -7,6 +7,7 @@ import type { FileContent, McpSettingsView, Message, ProviderInfo, Session, Snap
 import type { BackendConnectionState, SessionHistoryWindow } from '../shared/backend';
 import { WorkspaceTools } from './WorkspaceTools';
 import { WorkflowView } from './WorkflowViews';
+import { ManagedWorktreePanel } from './ManagedWorktreePanel';
 import { FileReviewPanel } from './FileReviewPanel';
 import { SessionChat } from './SessionChat';
 import { App } from './App';
@@ -354,6 +355,27 @@ const cases: Record<string, () => Promise<void>> = {
       if (originalVisibility) Object.defineProperty(document, 'visibilityState', originalVisibility); else Reflect.deleteProperty(document, 'visibilityState');
     }
   },
+  'UI-10: workspace creation exposes directory isolation and retries one creation intent': async () => {
+    const creations: Record<string, unknown>[] = [];
+    window.workbench = {
+      subscribe: () => () => {}, snapshot: async () => ({ version: 1, sessions: [], workspaces: [], providers: [], workflows: [], terminals: [], pluginErrors: [], pluginPath: '/plugins', dataPath: '/data' }),
+      getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {}, watchSessions: async () => {},
+      createWorkspace: async (input: Record<string, unknown>) => { creations.push(input); if (creations.length === 1) throw new Error('creation response lost'); return 'created-workspace'; },
+    } as unknown as Window['workbench'];
+    await render(<App />); await click('shell:app.addProject');
+    const mode = input('dialog select') as HTMLSelectElement;
+    assert(mode.value === 'directory', 'Creating a workspace silently defaults to a new worktree');
+    await change(input('.directory-field input'), '/fixture'); await change(mode, 'worktree');
+    await change(input(`input[placeholder="${translate('shell:app.worktreeBranchDefault')}"]`), 'codex/isolated');
+    await click('shell:app.createWorkspace');
+    await waitFor(() => creations.length === 1 && !button('shell:app.createWorkspace').disabled, 'Failed creation did not leave the editable dialog');
+    await click('shell:app.createWorkspace'); await waitFor(() => creations.length === 2, 'Creation retry did not start');
+    await waitFor(() => !document.querySelector('dialog'), 'Successful workspace creation did not close the dialog');
+    assert(creations[0].commandId && creations[0].commandId === creations[1].commandId && creations[1].mode === 'worktree' && creations[1].branch === 'codex/isolated' && creations[1].cwd === '/fixture', 'Workspace retry changed its intent or lost the isolation choice');
+    await click('shell:app.addProject'); await change(input('.directory-field input'), '/fixture'); await click('shell:app.createWorkspace');
+    await waitFor(() => creations.length === 3, 'The next creation did not start');
+    assert(creations[2].mode === 'directory' && creations[2].commandId !== creations[1].commandId, 'An independent creation reused the completed intent');
+  },
   'UI-11: terminal subscriptions consume bounded tails and overlapping appends exactly once': async () => {
     const originalOpen = Terminal.prototype.open;
     let terminal: Terminal | undefined, listener!: Parameters<Window['workbench']['onTerminalOutput']>[1], unsubscribed = 0;
@@ -528,7 +550,28 @@ const cases: Record<string, () => Promise<void>> = {
     await waitFor(() => Boolean(watched.length && watched.at(-1)?.length === 0), 'Closing retained history did not unsubscribe its session');
     assert(!document.querySelector('.chat-pane-readonly') && creations === 0 && openedTabs === 0 && sends === 0, 'Reading retained history created a workspace/tab or sent a prompt');
   },
-
+  'UI-14: worktree removal requires a current directory and branch confirmation and retains rejected work': async () => {
+    const removals: string[] = []; let closed = 0;
+    window.workbench = { removeWorktree: async (id: string) => { removals.push(id); if (removals.length === 1) throw new Error('Worktree has uncommitted files'); } } as unknown as Window['workbench'];
+    const managed: Workspace = { ...workspace, worktree: { repoRoot: '/source/repository', path: '/managed/task-one', branch: 'codex/task-one', baseSha: '0123456789abcdef', createdAt: '2026-10-23T00:00:00Z', ownership: 'created' } };
+    const show = (value: Workspace) => render(<ManagedWorktreePanel workspace={value} onRemoved={() => { closed++; }} />);
+    await show(managed);
+    assert(document.body.textContent?.includes(managed.worktree!.repoRoot) && document.body.textContent?.includes(managed.worktree!.baseSha), 'Worktree source and starting commit were not shown');
+    await click('runtime:worktree.reviewRemoval');
+    assert(removals.length === 0 && document.querySelector('.worktree-removal-confirm')?.textContent?.includes(managed.worktree!.path)
+      && document.querySelector('.worktree-removal-confirm')?.textContent?.includes(managed.worktree!.branch), 'Reviewing removal deleted work or omitted its target');
+    const changed: Workspace = { ...managed, worktree: { ...managed.worktree!, path: '/managed/task-two', branch: 'codex/task-two' } };
+    await show(changed);
+    assert(!document.querySelector('.worktree-removal-confirm') && removals.length === 0, 'A changed removal target reused an old confirmation');
+    await click('runtime:worktree.reviewRemoval'); await click('runtime:worktree.cancel');
+    assert(removals.length === 0, 'Keeping the worktree still issued removal');
+    await click('runtime:worktree.reviewRemoval'); await click('runtime:worktree.confirmRemove');
+    await waitFor(() => document.querySelector('[role=alert]')?.textContent?.includes('uncommitted files') === true, 'A refused removal was hidden');
+    assert(Number(removals.length) === 1 && closed === 0 && document.body.textContent?.includes(changed.worktree!.path), 'Rejected worktree removal closed the panel or lost its target');
+    await click('runtime:worktree.reviewRemoval'); await click('runtime:worktree.confirmRemove');
+    await waitFor(() => closed === 1, 'Confirmed successful removal did not close the workspace tools');
+    assert(Number(removals.length) === 2 && removals.every(id => id === workspace.id), 'Removal was duplicated or used the wrong workspace');
+  },
 };
 fixture.runRendererRegressions = async selected => {
   await i18n.changeLanguage('en');

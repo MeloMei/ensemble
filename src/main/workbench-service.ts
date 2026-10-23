@@ -20,6 +20,7 @@ import { CollaborationServer } from './collaboration-server';
 import { reviewPullRequest } from './pull-request-review';
 import { CollaborationCore } from './collaboration-core';
 import { IdentityService } from './identity-service';
+import { ManagedWorktrees } from './managed-worktrees';
 import { sessionHistory, searchMessages } from './session-history';
 import { searchableMessageText } from '../shared/message-text';
 
@@ -52,12 +53,13 @@ export async function createWorkbenchService(options: {
   const cleanup: (() => Promise<unknown>)[] = [() => store.close()];
   try {
     await store.load();
+    let managedWorktrees: ManagedWorktrees | undefined;
     const pluginPath = join(options.dataPath, 'plugins');
     await mkdir(pluginPath, { recursive: true });
     const publicSnapshot = (snapshot: Snapshot): Snapshot => ({ version: 1, sessions: snapshot.sessions, workflows: snapshot.workflows,
       providers: snapshot.providers, dataPath: snapshot.dataPath,
       pluginPath: snapshot.pluginPath, pluginErrors: snapshot.pluginErrors, terminals: snapshot.terminals, mails: snapshot.mails,
-      workspaces: snapshot.workspaces,
+      workspaces: snapshot.workspaces.map(workspace => ({ ...workspace, ...(managedWorktrees?.metadata(workspace.id) ? { worktree: managedWorktrees.metadata(workspace.id) } : {}) })),
       collaborationEventSeq: store.latestEventSeq(), collaboration: {
       ...store.state.collaboration,
       identities: store.state.collaboration.identities.map(({ tokenHash: _, ...identity }) => identity),
@@ -87,6 +89,10 @@ export async function createWorkbenchService(options: {
     });
     const terminalManager = new TerminalManager(() => engine.setTerminals(terminalManager.metadata()), options.publishTerminal);
     cleanup.push(() => terminalManager.shutdown());
+    managedWorktrees = new ManagedWorktrees(store, engine, join(options.dataPath, 'worktrees'), workspaceId => {
+      const affected = new Set(managedWorktrees!.workspaceIds(workspaceId));
+      if (terminalManager.metadata().some(terminal => affected.has(terminal.workspaceId) && terminal.status === 'running')) throw new Error('请先停止该工作区的终端，再回收目录。');
+    });
     let codexProvider: Awaited<ReturnType<typeof createCodexProvider>> | undefined;
     let openCodeProvider: AcpProvider | undefined;
     let deepSeekProvider: AcpProvider | undefined;
@@ -105,7 +111,12 @@ export async function createWorkbenchService(options: {
 
 
     const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>();
-    const handle = (channel: string, handler: (event: unknown, ...args: unknown[]) => unknown) => { handlers.set(channel, handler); };
+    const workspaceMutations = new Set(['workbench:create-terminal', 'workbench:write-file', 'workbench:git-mutate', 'workbench:git-commit',
+      'workbench:save-skill', 'workbench:save-mcp-settings', 'workbench:test-mcp-server']);
+    const handle = (channel: string, handler: (event: unknown, ...args: unknown[]) => unknown) => {
+      handlers.set(channel, (event, ...args) => workspaceMutations.has(channel)
+        ? managedWorktrees!.access(idSchema.parse(args[0]), () => handler(event, ...args)) : handler(event, ...args));
+    };
     handle('workbench:snapshot', () => publicSnapshot(engine.snapshot()));
     const session = (value: unknown) => {
       const id = idSchema.parse(value);
@@ -136,6 +147,7 @@ export async function createWorkbenchService(options: {
     handle('workbench:remove-queued-prompt', (_event, id, itemId) => engine.removeQueuedPrompt(idSchema.parse(id), idSchema.parse(itemId)));
     handle('workbench:set-session-queue-paused', (_event, id, paused) => engine.setSessionQueuePaused(idSchema.parse(id), z.boolean().parse(paused)));
     handle('workbench:reconcile-session-delivery', (_event, id) => engine.reconcileSessionDelivery(idSchema.parse(id)));
+    handle('workbench:remove-worktree', (_event, id) => managedWorktrees!.remove(idSchema.parse(id)));
     handle('workbench:collaboration-call', async (_event, operation, input) => {
       const name = idSchema.parse(operation);
       if (name === 'issue_identity') {
@@ -156,7 +168,10 @@ export async function createWorkbenchService(options: {
     handle('workbench:create-workflow', (_event, input: unknown) => engine.createWorkflow(workflowSchema.parse(input)));
     handle('workbench:start-workflow', (_event, id: unknown) => engine.startWorkflow(idSchema.parse(id)));
     handle('workbench:cancel-workflow', (_event, id: unknown) => engine.cancelWorkflow(idSchema.parse(id)));
-    handle('workbench:create-workspace', (_event, input: unknown) => engine.createWorkspace(z.object({ name: z.string().max(200), cwd: cwdSchema }).strict().parse(input)));
+    handle('workbench:create-workspace', (_event, input: unknown) => {
+      const parsed = z.object({ name: z.string().max(200), cwd: cwdSchema, mode: z.enum(['directory', 'worktree']).optional(), branch: z.string().trim().min(1).max(200).optional(), commandId: commandIdSchema }).strict().parse(input);
+      return parsed.mode === 'worktree' ? managedWorktrees!.create(parsed) : engine.createWorkspace(parsed);
+    });
     handle('workbench:update-workspace', (_event, id: unknown, input: unknown) => engine.updateWorkspace(idSchema.parse(id), z.object({ name: z.string().trim().min(1).max(200).optional(), pinned: z.boolean().optional() }).strict().parse(input)));
     handle('workbench:activate-tab', (_event, workspaceId: unknown, tabId: unknown) => engine.activateTab(idSchema.parse(workspaceId), idSchema.parse(tabId)));
     handle('workbench:close-tab', (_event, workspaceId: unknown, tabId: unknown) => {
@@ -168,6 +183,7 @@ export async function createWorkbenchService(options: {
     handle('workbench:open-session-tab', (_event, workspaceId: unknown, sessionId: unknown) => engine.openSessionTab(idSchema.parse(workspaceId), idSchema.parse(sessionId)));
     handle('workbench:create-terminal', (_event, workspaceId: unknown) => {
       const workspace = engine.workspace(idSchema.parse(workspaceId));
+      managedWorktrees!.assertWorkspaceAvailable(workspace.id);
       const terminal = terminalManager.create(workspace.id, workspace.cwd);
       engine.setTerminals(terminalManager.metadata());
       engine.addTab(workspace.id, { id: randomUUID(), kind: 'terminal', terminalId: terminal.id });
