@@ -305,6 +305,8 @@ async function runCodex(connection: CodexSessionConnection, context: TurnContext
   let submissionAttempted = false;
   let submissionAccepted = false;
   const earlyNotifications: RpcNotification[] = [];
+  let releaseTurn!: () => void;
+  const turnReady = new Promise<void>(resolve => { releaseTurn = resolve; });
   let settled = false;
   let resolveCompletion!: (error?: Error) => void;
   const completion = new Promise<Error | undefined>(resolve => { resolveCompletion = resolve; });
@@ -405,12 +407,14 @@ async function runCodex(connection: CodexSessionConnection, context: TurnContext
   const rpc = connection.rpc;
   connection.handlers = {
     notification: onNotification,
-    request: request => {
+    request: async request => {
+      if (!submissionAttempted) throw new RpcError(-32000, '当前任务尚未发送');
+      await turnReady;
       const params = object(request.params);
-      if (params.threadId !== threadId || (turnId && params.turnId && params.turnId !== turnId)) {
-        return Promise.reject(new RpcError(-32602, '审批请求不属于当前任务'));
+      if (params.threadId !== threadId || (params.turnId && params.turnId !== turnId)) {
+        throw new RpcError(-32602, '审批请求不属于当前任务');
       }
-      if (context.signal.aborted || settled) return Promise.reject(new RpcError(-32000, '任务已经结束'));
+      if (!turnId || context.signal.aborted || settled) throw new RpcError(-32000, '任务已经结束');
       return handleApproval(request, context, items.get(String(params.itemId)));
     },
     fail: error => finish(error),
@@ -471,6 +475,7 @@ async function runCodex(connection: CodexSessionConnection, context: TurnContext
     completeTurn(started.turn);
     for (const message of earlyNotifications) onNotification(message);
     earlyNotifications.length = 0;
+    releaseTurn();
     const error = await completion;
     if (error) throw error;
   } catch (error) {
@@ -482,6 +487,7 @@ async function runCodex(connection: CodexSessionConnection, context: TurnContext
     throw error;
   } finally {
     settled = true;
+    releaseTurn();
     clearTimeout(timer);
     context.signal.removeEventListener('abort', onAbort);
     try {
