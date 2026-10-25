@@ -500,6 +500,11 @@ export function SessionChat({
   });
   virtualScroll.current = virtualizer;
   const closeFind = () => { history.cancelJump(); setScrollTarget(undefined); setFind(null); };
+  const showLatestOutput = (smooth = false) => {
+    closeFind();
+    history.showLatest();
+    scrollToBottom(smooth);
+  };
   const moveMatch = (direction: number) => {
     if (!matches.length) return;
     history.cancelJump();
@@ -657,7 +662,7 @@ export function SessionChat({
       </button>}
       {history.showingHistory && <><span>{t('chat.historyWindow')}</span>
         {history.hasAfter && <button disabled={history.loading || !connected} onClick={() => void history.loadNewer()}><ArrowDown size={12} />{t('chat.loadLater')}</button>}
-        <button onClick={() => { closeFind(); history.showLatest(); scrollToBottom(); }}><ArrowDown size={12} />{t('chat.returnLatest')}</button></>}
+        <button onClick={() => showLatestOutput()}><ArrowDown size={12} />{t('chat.returnLatest')}</button></>}
       {history.error && <span className="chat-history-error" role="alert">{history.error}</span>}
     </div>}
     <div className="message-scroll" ref={scroll} tabIndex={0} aria-label={t('chat.conversation')}
@@ -737,7 +742,7 @@ export function SessionChat({
       <AnimatePresence initial={false}>
         {showJumpControl && <motion.div className="jump-to-bottom-anchor" key="jump" initial={{ opacity: 0, y: 4 }}
           animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 4 }} transition={transition}>
-          <button className="jump-to-bottom" onClick={() => scrollToBottom(!reducedMotion)}><ArrowDown size={14} />{t('chat.latestOutput')}</button>
+          <button className="jump-to-bottom" onClick={() => showLatestOutput(!reducedMotion)}><ArrowDown size={14} />{t('chat.latestOutput')}</button>
         </motion.div>}
       </AnimatePresence>
       <CollapsibleRegion expanded={showActivity} id={activityId} className="chat-activity-region"
