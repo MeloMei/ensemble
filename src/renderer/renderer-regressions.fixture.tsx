@@ -1,3 +1,5 @@
+import { CollaborationViews } from './CollaborationViews';
+import type { CollaborationRun, CollaborationEvent } from '../shared/collaboration';
 import React, { act, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { I18nextProvider } from 'react-i18next';
@@ -71,7 +73,30 @@ const messageRange = (start: number, end: number): Message[] => Array.from({ len
   return { id: `message-${index}`, role: index % 2 ? 'user' : 'assistant', text: `Message ${index}\n\n${'Variable markdown height. '.repeat(index % 7 + 1)}`, createdAt: '2026-10-23T02:00:00Z' };
 });
 
+function collaborationRun(id: string, updatedAt: string): CollaborationRun {
+  const definition = { id: `${id}-definition`, version: 1, name: id, cwd: workspace.cwd, participants: [], relationships: [], steps: [], limits: {}, createdAt: updatedAt, updatedAt };
+  return { id, definitionId: definition.id, definitionVersion: 1, definitionSnapshot: definition, status: 'running', createdBy: 'user', createdAt: updatedAt, updatedAt };
+}
+function collaborationSnapshot(runs: CollaborationRun[], revision = 1): Snapshot {
+  return { version: 1, sessions: [], workspaces: [], providers: [], workflows: [], terminals: [], pluginErrors: [], pluginPath: '/plugins', dataPath: '/data', collaborationEventSeq: revision,
+    collaboration: { definitions: runs.map(run => run.definitionSnapshot), runs, tasks: [], messages: [], artifacts: [], identities: [], grants: [] } };
+}
+
 const cases: Record<string, () => Promise<void>> = {
+  'UX-C2: background collaboration updates preserve the run the user is viewing': async () => {
+    window.workbench = { queryCollaborationEvents: async () => [] } as unknown as Window['workbench'];
+    const first = collaborationRun('Run A', '2026-10-25T02:00:00Z');
+    const other = collaborationRun('Run B', '2026-10-25T01:00:00Z');
+    const show = (runs: CollaborationRun[]) => render(<CollaborationViews snapshot={collaborationSnapshot(runs)} perform={perform} pending={new Set()} openSession={() => {}} />);
+    await show([first, other]);
+    assert(document.querySelector('.collaboration-run-heading h1')?.textContent === 'Run A', 'The initial run did not open');
+    await show([first, { ...other, updatedAt: '2026-10-25T03:00:00Z' }]);
+    assert(document.querySelector('.collaboration-run-heading h1')?.textContent === 'Run A', 'Another run update switched the current collaboration');
+    await act(async () => { document.querySelectorAll<HTMLButtonElement>('.collaboration-run-item')[0].click(); await tick(); });
+    assert(document.querySelector('.collaboration-run-heading h1')?.textContent === 'Run B', 'Explicit run selection did not work');
+    await show([first]);
+    assert(document.querySelector('.collaboration-run-heading h1')?.textContent === 'Run A', 'Removing the selected run did not select the remaining run');
+  },
   'UI-01: question approvals display the complete request disclosure': async () => {
     const detail = 'Send the address to https://shop.example for a paid purchase.\nConfirm the recipient and purpose first.';
     await render(chat({ session: { ...session, approvals: [{ id: 'approval', sessionId: session.id, title: 'Shipping request', detail, choices: [], questions: [{ id: 'address', question: 'Address', header: 'Address', options: [], multiSelect: false, allowCustomAnswer: true }] }] } }));

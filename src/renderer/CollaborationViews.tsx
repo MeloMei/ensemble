@@ -80,6 +80,7 @@ export function CollaborationViews({ snapshot, perform, pending, openSession, in
   const [connections, setConnections] = useState(false);
   const runs = [...(state?.runs ?? [])].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   const run = runs.find(item => item.id === selectedId) ?? runs[0];
+  useEffect(() => { if (run && run.id !== selectedId) setSelectedId(run.id); }, [run?.id, selectedId]);
   const editorRun = editing ? runs.find(item => item.id === editing) : undefined;
   return <div className="collaboration-page">
     <aside className="collaboration-list"><div className="sidebar-heading"><h2>{t('page.title')}</h2><IconButton label={t('action.create')} onClick={() => setEditing('new')}><Plus size={17} /></IconButton></div><p>{t('page.description')}</p>
