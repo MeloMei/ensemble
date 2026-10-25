@@ -4,7 +4,7 @@ import path from 'node:path';
 import * as pty from '@lydell/node-pty';
 import type { TerminalInfo } from '../shared/types';
 import type { TerminalOutputEvent } from '../shared/backend';
-import { TerminalOutputCoalescer, terminalOutputTail } from './terminal-output';
+import { TerminalOutputBuffer, TerminalOutputCoalescer } from './terminal-output';
 
 interface ManagedTerminal {
   info: TerminalInfo;
@@ -14,6 +14,7 @@ interface ManagedTerminal {
   exited: Promise<void>;
   resolveExit(): void;
   output: TerminalOutputCoalescer;
+  history: TerminalOutputBuffer;
 }
 
 function signalTerminal(terminal: ManagedTerminal, signal: NodeJS.Signals): void {
@@ -49,13 +50,9 @@ export class TerminalManager {
     const info: TerminalInfo = { id: randomUUID(), workspaceId, title: path.basename(shell), status: 'running', exitCode: null, output: '', outputOffset: 0 };
     let resolveExit: () => void = () => {};
     const exited = new Promise<void>((resolve) => { resolveExit = resolve; });
-    const output = new TerminalOutputCoalescer(info.id, this.onOutput, data => {
-      const full = info.output + data;
-      const tail = terminalOutputTail(full);
-      info.outputOffset += full.length - tail.length;
-      info.output = tail;
-    });
-    const terminal: ManagedTerminal = { info, process: child, disposables: [], exited, resolveExit, output };
+    const history = new TerminalOutputBuffer();
+    const output = new TerminalOutputCoalescer(info.id, this.onOutput, data => history.append(data));
+    const terminal: ManagedTerminal = { info, process: child, disposables: [], exited, resolveExit, output, history };
     this.terminals.set(info.id, terminal);
     terminal.disposables.push(child.onData((data) => {
       terminal.output.append(data);
@@ -75,12 +72,12 @@ export class TerminalManager {
     return { ...info };
   }
 
-  snapshot(): TerminalInfo[] { return [...this.terminals.values()].map(({ info }) => ({ ...info })); }
+  snapshot(): TerminalInfo[] { return [...this.terminals.values()].map(({ info, history }) => ({ ...info, ...history.snapshot() })); }
   metadata(): TerminalInfo[] { return [...this.terminals.values()].map(({ info }) => ({ ...info, output: '', outputOffset: 0 })); }
   get(id: string): TerminalInfo {
     const terminal = this.terminals.get(id);
     if (!terminal) throw new Error('Terminal does not exist');
-    return { ...terminal.info };
+    return { ...terminal.info, ...terminal.history.snapshot() };
   }
 
   private running(id: string): ManagedTerminal {

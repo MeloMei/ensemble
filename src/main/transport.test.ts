@@ -11,7 +11,7 @@ import { SnapshotGapError, SnapshotReplica } from '../shared/snapshot-stream';
 import { SnapshotProjection } from './snapshot-projection';
 import { BackendConnectionTracker, connectBackend } from './backend-client';
 import { BoundedEventStream } from './bounded-event-stream';
-import { TerminalOutputCoalescer, TERMINAL_OUTPUT_LIMIT, terminalOutputTail } from './terminal-output';
+import { TerminalOutputBuffer, TerminalOutputCoalescer, TERMINAL_OUTPUT_LIMIT, terminalOutputTail } from './terminal-output';
 
 function session(id: string, count: number): Session {
   return { id, title: id, providerId: 'fixture', cwd: '/tmp', status: 'completed', approvals: [], createdAt: 'now', updatedAt: 'now',
@@ -142,11 +142,8 @@ test('discovery reports an incompatible live backend without replacing its proce
 });
 
 test('terminal leading/trailing output preserves UTF-16 offsets across split Unicode and a bounded tail', async () => {
-  const events: TerminalOutputEvent[] = []; let output = '', outputOffset = 0;
-  const coalescer = new TerminalOutputCoalescer('terminal', event => events.push(event), data => {
-    const full = output + data; const tail = terminalOutputTail(full);
-    outputOffset += full.length - tail.length; output = tail;
-  });
+  const events: TerminalOutputEvent[] = []; const history = new TerminalOutputBuffer();
+  const coalescer = new TerminalOutputCoalescer('terminal', event => events.push(event), data => history.append(data));
   coalescer.append('A'); assert.equal(events.length, 1);
   coalescer.append('\ud83d'); assert.equal(events.length, 1);
   coalescer.append('\ude80中'); coalescer.append('B');
@@ -160,10 +157,31 @@ test('terminal leading/trailing output preserves UTF-16 offsets across split Uni
     assert.equal(event.offset, end); received += event.data; end += event.data.length;
   }
   assert.equal(received, `A🚀中B${burst}`);
+  const { output, outputOffset } = history.snapshot();
   assert.ok(Buffer.byteLength(output) <= TERMINAL_OUTPUT_LIMIT);
   assert.equal(outputOffset + output.length, end);
   assert.equal(received.slice(outputOffset), output);
   assert.equal(/^[\udc00-\udfff]/u.test(output), false);
+});
+
+test('terminal history incrementally evicts small chunks without splitting UTF-8 characters', t => {
+  const history = new TerminalOutputBuffer();
+  let received = '🚀中é'.repeat(40_000);
+  history.append(received);
+  const chunk = 'a'.repeat(61) + '中';
+  const started = performance.now();
+  for (let index = 0; index < 4096; index++) history.append(chunk);
+  const appendMs = performance.now() - started;
+  received += chunk.repeat(4096);
+  for (const addition of ['🚀', 'é', 'a', '中', '🚀'.repeat(100_000), 'b']) {
+    history.append(addition); received += addition;
+    const { output, outputOffset } = history.snapshot();
+    assert.equal(output, terminalOutputTail(received));
+    assert.equal(received.slice(outputOffset), output);
+    assert.ok(Buffer.byteLength(output) <= TERMINAL_OUTPUT_LIMIT);
+    assert.equal(/^[\udc00-\udfff]/u.test(output), false);
+  }
+  t.diagnostic(JSON.stringify({ chunks: 4096, chunkBytes: Buffer.byteLength(chunk), appendMs }));
 });
 
 class SlowResponse extends EventEmitter {
