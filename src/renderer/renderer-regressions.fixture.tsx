@@ -94,6 +94,7 @@ const cases: Record<string, () => Promise<void>> = {
     let skillGate = deferred<void>(), mcpGate = deferred<void>();
     const skillWrites: unknown[] = [], mcpWrites: unknown[] = [];
     window.workbench = {
+      setUnsavedFiles: () => {},
       listSkills: async () => skillFile ? [{ id: 'saved-skill', path: '/fixture/.agents/skills/demo/SKILL.md', name: 'demo', description: '', scope: 'project', editable: true }] : [],
       mcpSettings: async () => config, notificationStatus: async () => ({ supported: true, state: 'idle' }),
       readSkill: async () => skillFile!,
@@ -126,10 +127,136 @@ const cases: Record<string, () => Promise<void>> = {
     mcpGate = deferred<void>(); await click('workspace:tools.saveConfig'); mcpGate.resolve(); await settle();
     assert((mcpWrites[1] as { revision: string }).revision === 'mcp-1', 'Next MCP save used an obsolete revision');
     skillGate = deferred<void>(); await click('Skills'); await click('workspace:tools.saveSkill');
-    await click('workspace:tools.newSkill'); await change(input('.tools-editor input'), 'different'); await change(input('.tools-editor textarea'), 'other draft');
+    await click('workspace:tools.newSkill'); await click('workspace:tools.discardChanges'); await change(input('.tools-editor input'), 'different'); await change(input('.tools-editor textarea'), 'other draft');
     skillGate.resolve(); await settle();
     assert(input('.tools-editor input').value === 'different' && input('.tools-editor textarea').value === 'other draft', 'An old save replaced a different editor');
+    await click('shell:common.close'); await click('workspace:tools.discardChanges');
     assert(errors.length === 0, errors.join('\n'));
+  },
+  'UX-W1: workspace tool navigation and close protect unsaved Skill and MCP edits': async () => {
+    const contents = new Map([['first', { content: 'first saved', revision: 'first-0' }], ['second', { content: 'second saved', revision: 'second-0' }]]);
+    let config: McpSettingsView = { content: 'MCP saved', revision: 'mcp-0', servers: [] };
+    let closed = 0;
+    let pendingRead: ReturnType<typeof deferred<void>> | undefined;
+    window.workbench = {
+      setUnsavedFiles: () => {},
+      listSkills: async () => [...contents.keys()].map(id => ({ id, path: `/fixture/.agents/skills/${id}/SKILL.md`, name: id, description: '', scope: 'project', editable: true })),
+      readSkill: async (_id: string, id: string) => { if (id === 'second') await pendingRead?.promise; return contents.get(id)!; },
+      saveSkill: async (_id: string, value: { name: string; content: string }) => { contents.set(value.name, { content: value.content, revision: `${value.name}-saved` }); },
+      mcpSettings: async () => config, notificationStatus: async () => ({ supported: true, state: 'idle' }),
+      saveMcpSettings: async (_id: string, value: { content: string }) => { config = { ...config, content: value.content, revision: 'mcp-1' }; },
+    } as unknown as Window['workbench'];
+    const selectSkill = async (index: number) => act(async () => { document.querySelectorAll<HTMLButtonElement>('.tools-list-item')[index].click(); await tick(); });
+    await render(<WorkspaceTools workspace={workspace} sessions={[]} perform={perform} onClose={() => { closed++; }} />);
+    await selectSkill(0);
+    pendingRead = deferred<void>(); await selectSkill(1);
+    await change(input('.tools-editor textarea'), 'typed while loading');
+    pendingRead.resolve(); await settle(); pendingRead = undefined;
+    assert(input('.tools-editor textarea').value === 'typed while loading', 'A delayed Skill read replaced newer editing');
+    await click('workspace:tools.keepEditing');
+    await change(input('.tools-editor textarea'), 'first draft');
+    await selectSkill(1);
+    assert(input('.tools-editor textarea').value === 'first draft', 'Switching Skills discarded the unsaved content before a decision');
+    await click('workspace:tools.keepEditing');
+    assert(input('.tools-editor textarea').value === 'first draft', 'Keeping the draft replaced its content');
+    await selectSkill(1); await click('workspace:tools.discardChanges'); await settle();
+    assert(input('.tools-editor textarea').value === 'second saved', 'Confirmed discard did not open the requested Skill');
+    await change(input('.tools-editor textarea'), 'second draft'); await click('workspace:tools.newSkill');
+    assert(input('.tools-editor textarea').value === 'second draft', 'New Skill discarded the current editor without a decision');
+    await click('workspace:tools.keepEditing'); await click('workspace:tools.saveSkill'); await settle();
+    await click('workspace:tools.newSkill');
+    assert(!document.querySelector('dialog[aria-label="Unsaved changes"]') && input('.tools-editor input').value === '', 'A successfully saved Skill still blocked navigation');
+    await click('MCP'); await change(input('.config-editor'), 'MCP draft');
+    await click('shell:common.close');
+    assert(closed === 0 && input('.config-editor').value === 'MCP draft', 'Closing tools discarded unsaved MCP settings');
+    await click('workspace:tools.keepEditing'); await click('workspace:tools.saveConfig'); await settle();
+    await click('shell:common.close');
+    assert(Number(closed) === 1 && !document.querySelector('dialog[aria-label="Unsaved changes"]'), 'Saved settings still blocked closing');
+    await render(<div />);
+    await render(<WorkspaceTools workspace={workspace} sessions={[]} perform={perform} onClose={() => { closed++; }} />);
+    await click('Skills'); await selectSkill(0);
+    pendingRead = deferred<void>(); await selectSkill(1); await change(input('.tools-editor textarea'), 'late close draft');
+    await click('shell:common.close'); pendingRead.resolve(); await settle(); pendingRead = undefined;
+    await click('workspace:tools.discardChanges');
+    assert(Number(closed) === 2, 'A late Skill read replaced the pending close decision');
+    assert(errors.length === 0, errors.join('\n'));
+  },
+  'UX-W2: tool drafts survive navigation and in-flight saves without replacing their original revision': async () => {
+    const first = { ...workspace, id: 'tool-first', name: 'First project' }, other = { ...workspace, id: 'tool-other', name: 'Other project' };
+    const registered = new Map<string, UnsavedFileSummary>();
+    let config: McpSettingsView = { content: 'MCP original', revision: 'mcp-0', servers: [] };
+    let initialLoad: ReturnType<typeof deferred<void>> | undefined = deferred<void>();
+    let saving: ReturnType<typeof deferred<void>> | undefined;
+    let savedSkill: { content: string; revision: string } | undefined;
+    const writes: { content: string; revision?: string }[] = [], mcpWrites: string[] = [];
+    window.workbench = {
+      setUnsavedFiles: (summary: UnsavedFileSummary, source = 'files') => { if (summary.count) registered.set(source, summary); else registered.delete(source); },
+      listSkills: async () => savedSkill ? [{ id: 'retained', path: '/fixture/.agents/skills/retained/SKILL.md', name: 'retained', description: '', scope: 'project', editable: true }] : [],
+      readSkill: async () => savedSkill!, notificationStatus: async () => ({ supported: true, state: 'idle' }),
+      mcpSettings: async () => { await initialLoad?.promise; return config; },
+      saveSkill: async (_id: string, value: { content: string; revision?: string }) => { writes.push(value); await saving?.promise; savedSkill = { content: value.content, revision: 'saved-1' }; },
+      saveMcpSettings: async (_id: string, value: { revision: string }) => { mcpWrites.push(value.revision); if (value.revision !== config.revision) throw new Error('MCP revision changed'); },
+    } as unknown as Window['workbench'];
+    const show = (value: Workspace) => render(<React.StrictMode><WorkspaceTools key={value.id} workspace={value} sessions={[]} perform={perform} onClose={() => {}} /></React.StrictMode>);
+    await show(first); await click('workspace:tools.newSkill'); await change(input('.tools-editor input'), 'retained'); await change(input('.tools-editor textarea'), 'Skill before navigation');
+    await click('MCP'); await change(input('.config-editor'), 'MCP before initial load'); await render(<div />);
+    assert(registered.get('workspace-tools:tool-first')?.count === 2, 'Unmounting dropped the native close and removal guard');
+    initialLoad.resolve(); await settle(); initialLoad = undefined;
+    await show(first); await click('MCP');
+    assert(input('.config-editor').value === 'MCP before initial load', 'Reopening overwrote edits made before the initial MCP read');
+    await click('Skills'); assert(input('.tools-editor textarea').value === 'Skill before navigation', 'Navigation lost the Skill draft');
+    saving = deferred<void>(); await click('workspace:tools.saveSkill'); await change(input('.tools-editor textarea'), 'Skill typed during save');
+    await render(<div />); await show(other); await click('MCP'); await change(input('.config-editor'), 'Other project draft');
+    await render(<div />); await show(first);
+    assert(button('workspace:tools.saveSkill').disabled && button('shell:common.close').disabled, 'Reopening forgot an in-flight save');
+    saving.reject(new Error('controlled write failed')); await settle(); saving = undefined;
+    assert(input('.tools-editor textarea').value === 'Skill typed during save' && !button('workspace:tools.saveSkill').disabled, 'A failed save lost later input or left the editor blocked');
+    assert(registered.get('workspace-tools:tool-first')?.count === 2 && registered.get('workspace-tools:tool-other')?.count === 1, 'One workspace overwrote another workspace guard');
+    saving = deferred<void>(); await click('workspace:tools.saveSkill'); await render(<div />); await show(first);
+    saving.resolve(); await settle(); saving = undefined;
+    assert(savedSkill?.content === 'Skill typed during save' && registered.get('workspace-tools:tool-first')?.count === 1, 'Saving after navigation failed to resolve only the written draft');
+    assert(document.querySelector('.tools-list-item')?.textContent?.includes('retained'), 'A save that began before remount did not refresh the current Skill list');
+    await render(<div />);
+    config = { ...config, content: 'MCP changed elsewhere', revision: 'mcp-1' };
+    await show(first); await click('MCP'); await click('workspace:tools.saveConfig'); await settle();
+    assert(mcpWrites[0] === 'mcp-0' && input('.config-editor').value === 'MCP before initial load', 'Reopening adopted a newer revision and silently overwrote external settings');
+    await click('shell:common.close'); await click('workspace:tools.discardChanges'); await render(<div />);
+    assert(!registered.has('workspace-tools:tool-first') && registered.has('workspace-tools:tool-other'), 'Discard did not clear exactly its own workspace');
+    await show(first); await click('MCP');
+    assert(input('.config-editor').value === config.content, 'A resolved draft retained a stale MCP read cache');
+    await click('Skills'); assert(!document.querySelector('.tools-editor'), 'A resolved Skill editor was retained as a stale cache');
+    await render(<div />); await show(other); await click('MCP');
+    assert(input('.config-editor').value === 'Other project draft', 'Switching projects discarded the other draft');
+    await click('shell:common.close'); await click('workspace:tools.discardChanges');
+    assert(registered.size === 0 && writes.length === 2 && errors.length === 2, `Unexpected remaining drafts, writes or errors: ${registered.size}, ${writes.length}, ${errors.join('; ')}`);
+  },
+  'UX-W3: delayed initial MCP reads cannot roll back a save completed after reopening': async () => {
+    const target = { ...workspace, id: 'tool-refresh', name: 'Refresh project' };
+    const server = (name: string) => ({ name, source: 'project', transport: 'stdio', status: 'disabled' });
+    let config: McpSettingsView = { content: 'MCP A', revision: 'mcp-0', servers: [server('server-A')] };
+    const saveGate = deferred<void>();
+    let notificationGate: ReturnType<typeof deferred<void>> | undefined;
+    const writes: { content: string; revision: string }[] = [];
+    window.workbench = {
+      setUnsavedFiles: () => {}, listSkills: async () => [],
+      mcpSettings: async () => config,
+      notificationStatus: async () => { await notificationGate?.promise; return { supported: true, state: 'idle' }; },
+      saveMcpSettings: async (_id: string, value: { content: string; revision: string }) => {
+        writes.push(value); assert(value.revision === config.revision, 'The next save used a baseline rolled back by an older read');
+        await saveGate.promise; config = { content: value.content, revision: `mcp-${writes.length}`, servers: [server('server-B')] };
+      },
+    } as unknown as Window['workbench'];
+    const show = () => render(<WorkspaceTools workspace={target} sessions={[]} perform={perform} onClose={() => {}} />);
+    await show(); await click('MCP'); await change(input('.config-editor'), 'MCP B'); await click('workspace:tools.saveConfig');
+    await render(<div />); notificationGate = deferred<void>(); await show(); await click('MCP');
+    assert(button('workspace:tools.saveConfig').disabled, 'The reopened editor forgot the pending save');
+    saveGate.resolve();
+    await waitFor(() => !button('workspace:tools.saveConfig').disabled && Boolean(document.querySelector('.tools-item strong')?.textContent?.includes('server-B')), 'The completed save did not update the reopened editor');
+    notificationGate.resolve(); await settle(); notificationGate = undefined;
+    assert(input('.config-editor').value === 'MCP B' && document.querySelector('.tools-item strong')?.textContent === 'server-B', 'An older initial read replaced the saved MCP content or server list');
+    await change(input('.config-editor'), 'MCP C'); await click('workspace:tools.saveConfig'); await settle();
+    assert(writes[1]?.revision === 'mcp-1' && errors.length === 0, `The saved revision was not retained: ${errors.join('; ')}`);
+    await click('shell:common.close');
   },
   'UI-03: recovery confirmation belongs to one workflow and one recovery version': async () => {
     let failResume = true;
