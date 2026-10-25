@@ -16,6 +16,49 @@ export function terminalOutputTail(output: string): string {
   return output.slice(start);
 }
 
+export class TerminalOutputBuffer {
+  private chunks: { text: string; bytes: number }[] = [];
+  private bytes = 0;
+  private length = 0;
+  private end = 0;
+
+  append(data: string): void {
+    if (!data) return;
+    this.end += data.length;
+    const bytes = Buffer.byteLength(data);
+    if (bytes >= TERMINAL_OUTPUT_LIMIT) {
+      const text = terminalOutputTail(data);
+      this.bytes = Buffer.byteLength(text); this.length = text.length;
+      this.chunks = [{ text, bytes: this.bytes }];
+      return;
+    }
+    const last = this.chunks.at(-1);
+    if (last && last.bytes + bytes <= 4096) { last.text += data; last.bytes += bytes; }
+    else this.chunks.push({ text: data, bytes });
+    this.bytes += bytes; this.length += data.length;
+    while (this.bytes > TERMINAL_OUTPUT_LIMIT) {
+      const first = this.chunks[0];
+      const excess = this.bytes - TERMINAL_OUTPUT_LIMIT;
+      if (first.bytes <= excess) {
+        this.chunks.shift(); this.bytes -= first.bytes; this.length -= first.text.length;
+        continue;
+      }
+      let start = 0, removedBytes = 0;
+      while (removedBytes < excess) {
+        const code = first.text.codePointAt(start)!;
+        removedBytes += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+        start += code < 0x10000 ? 1 : 2;
+      }
+      first.text = first.text.slice(start); first.bytes -= removedBytes;
+      this.bytes -= removedBytes; this.length -= start;
+    }
+  }
+
+  snapshot(): { output: string; outputOffset: number } {
+    return { output: this.chunks.map(chunk => chunk.text).join(''), outputOffset: this.end - this.length };
+  }
+}
+
 export class TerminalOutputCoalescer {
   private timer?: ReturnType<typeof setTimeout>;
   private pending = '';
