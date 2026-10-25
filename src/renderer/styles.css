@@ -241,9 +241,9 @@ a { color: var(--accent); text-underline-offset: 3px; }
 .tab-state-waiting_approval { background: var(--warning); border-radius: 1px; transform: rotate(45deg); }
 .tab-state-waiting_children { background: var(--info); }
 .tab-state-failed { background: var(--danger); border-radius: 1px; }
-.tab-add { position: relative; flex-shrink: 0; }
+.tab-add { position: relative; anchor-name: --tab-add; flex-shrink: 0; }
 .menu-dismiss { position: fixed; inset: 0; z-index: 5; cursor: default; }
-.tab-menu { position: absolute; top: 32px; left: -4px; z-index: 6; width: 205px; border: 1px solid var(--border-strong); border-radius: var(--radius-overlay); box-shadow: var(--shadow-popover); background: var(--surface-overlay); backdrop-filter: blur(12px); padding: 5px; }
+.tab-menu { position: fixed; position-anchor: --tab-add; top: calc(anchor(bottom) + 4px); left: anchor(left); position-try-fallbacks: flip-inline; z-index: 6; width: 205px; border: 1px solid var(--border-strong); border-radius: var(--radius-overlay); box-shadow: var(--shadow-popover); background: var(--surface-overlay); backdrop-filter: blur(12px); padding: 5px; }
 .tab-menu button { display: flex; align-items: center; gap: 8px; padding: 8px 9px; width: 100%; color: var(--text); font-size: 12px; text-align: left; border-radius: var(--radius-control); }
 .tab-menu button:hover { background: var(--surface); }
 .tab-menu button svg { color: var(--muted); }
