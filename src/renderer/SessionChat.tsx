@@ -2,6 +2,7 @@ import { AgentIcon } from './AgentIcon';
 import { useTranslation } from 'react-i18next';
 import { formatDate, formatNumber, renderDisplayText } from '../shared/i18n';
 import { validQuestionAnswers } from '../shared/question-answers';
+import { ATTACHMENT_LIMITS, attachmentLimitIssue } from '../shared/prompt-attachments';
 import { memo, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode, type Ref } from 'react';
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
@@ -282,6 +283,14 @@ function CopyAnswer({ message, perform }: { message: Message; perform: Perform }
   })}>{copied ? <Check size={14} /> : <Copy size={14} />}</IconButton>;
 }
 
+function AttachmentLimitNotice({ issue }: { issue: ReturnType<typeof attachmentLimitIssue> }) {
+  const { t } = useTranslation('workspace');
+  if (!issue) return null;
+  return <p className="composer-note" role="alert"><CircleAlert size={13} />{issue === 'count'
+    ? t('chat.attachmentCountExceeded', { count: ATTACHMENT_LIMITS.count })
+    : t('chat.attachmentBytesExceeded', { size: ATTACHMENT_LIMITS.totalBytes / 1024 / 1024 })}</p>;
+}
+
 const markdownPlugins = [remarkGfm];
 const markdownComponents: Components = {
   a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
@@ -344,6 +353,7 @@ function DeliveryState({ message, sessionId, pending, perform, connected, readOn
 function PromptQueue({ session, provider, pending, perform, connected }: Pick<SessionChatProps, 'session' | 'provider' | 'pending' | 'perform'> & { connected: boolean }) {
   const { t } = useTranslation('workspace');
   const [editing, setEditing] = useState<{ id: string; input: PromptInput }>();
+  const editingAttachmentIssue = attachmentLimitIssue(editing?.input.attachments ?? []);
   const queue = session.queue ?? [];
   if (!queue.length) return null;
   const pauseKey = `queue-pause-${session.id}`;
@@ -360,7 +370,7 @@ function PromptQueue({ session, provider, pending, perform, connected }: Pick<Se
       return <li key={item.id} data-queue-id={item.id}>
         {editing?.id === item.id ? <form onSubmit={event => {
           event.preventDefault();
-          if (changing || !connected || (!editing.input.text.trim() && !editing.input.attachments?.length)) return;
+          if (changing || !connected || editingAttachmentIssue || (!editing.input.text.trim() && !editing.input.attachments?.length)) return;
           const input = promptCommandInput(editing.input);
           void perform(`queue-item-${item.id}`, async () => {
             await window.workbench.updateQueuedPrompt(session.id, item.id, input);
@@ -371,7 +381,8 @@ function PromptQueue({ session, provider, pending, perform, connected }: Pick<Se
             onChange={event => setEditing(current => current && ({ ...current, input: { ...current.input, text: event.target.value } }))} />
           <AttachmentChips attachments={editing.input.attachments ?? []} onRemove={changing ? undefined : id =>
             setEditing(current => current && ({ ...current, input: { ...current.input, attachments: current.input.attachments?.filter(attachment => attachment.id !== id) } }))} />
-          <div className="queue-item-actions"><button type="submit" disabled={changing || !connected || (!editing.input.text.trim() && !editing.input.attachments?.length)}>{t('chat.saveQueued')}</button>
+          <AttachmentLimitNotice issue={editingAttachmentIssue} />
+          <div className="queue-item-actions"><button type="submit" disabled={changing || !connected || Boolean(editingAttachmentIssue) || (!editing.input.text.trim() && !editing.input.attachments?.length)}>{t('chat.saveQueued')}</button>
             <button type="button" onClick={() => setEditing(undefined)}>{t('common.cancel')}</button></div>
         </form> : <>
           <div className="queue-item-content"><p>{item.input.text || t('chat.queuedAttachments')}</p>
@@ -426,6 +437,7 @@ export function SessionChat({
   const [sendError, setSendError] = useState('');
   const [expandedProcesses, setExpandedProcesses] = useState<Set<string>>(new Set());
   const attachments = draft.attachments ?? [];
+  const attachmentIssue = attachmentLimitIssue(attachments);
   const attachmentCapabilities = provider?.declaredCapabilities ?? provider?.capabilities;
   const supportsAttachment = (kind: PromptAttachment['kind']) => provider?.source !== 'plugin'
     || (provider.protocolVersion === 2 && attachmentCapabilities?.[kind === 'image' ? 'images' : 'textAttachments'] === true);
@@ -586,7 +598,7 @@ export function SessionChat({
 
   const send = () => {
     const prompt = draft.text.trim();
-    if (readOnly || (!prompt && !attachments.length) || unsupportedAttachments || !connected || !historyReady || busy || settingsBusy || sendLock.current || !provider?.available) return;
+    if (readOnly || (!prompt && !attachments.length) || unsupportedAttachments || attachmentIssue || !connected || !historyReady || busy || settingsBusy || sendLock.current || !provider?.available) return;
     sendLock.current = true;
     setSendError('');
     void perform(`send-${session.id}`, async () => {
@@ -778,10 +790,10 @@ export function SessionChat({
             }} />
           <div className="composer-bottom">
             <div className="composer-controls">
-              <IconButton label={attachmentsSupported ? t('chat.attach') : t('chat.pluginAttachmentsUnsupported')} disabled={!historyReady || !attachmentsSupported || busy || attachments.length >= 8 || pending.has('attachments')}
+              <IconButton label={attachmentsSupported ? t('chat.attach') : t('chat.pluginAttachmentsUnsupported')} disabled={!historyReady || !attachmentsSupported || busy || attachments.length >= ATTACHMENT_LIMITS.count || pending.has('attachments')}
                 onClick={() => void perform('attachments', async () => {
                   const selected = await window.workbench.chooseAttachments();
-                  onDraftChange({ ...currentDraft.current, attachments: [...(currentDraft.current.attachments ?? []), ...selected].slice(0, 8) });
+                  onDraftChange({ ...currentDraft.current, attachments: [...(currentDraft.current.attachments ?? []), ...selected] });
                 })}><Paperclip size={16} /></IconButton>
               <span className="composer-divider" />
               <ComposerSettings session={session} provider={provider} disabled={!historyReady || !connected || active || busy || settingsBusy}
@@ -789,7 +801,7 @@ export function SessionChat({
             </div>
             <motion.button className="send-button" aria-label={t('chat.sendTask')}
               title={active || session.queuePaused ? t('chat.queueNextTurn') : t('chat.sendTask')}
-              disabled={(!draft.text.trim() && !attachments.length) || unsupportedAttachments || !historyReady || !connected || busy || settingsBusy || !provider?.available}
+              disabled={(!draft.text.trim() && !attachments.length) || unsupportedAttachments || Boolean(attachmentIssue) || !historyReady || !connected || busy || settingsBusy || !provider?.available}
               whileTap={reducedMotion ? undefined : { scale: 0.98 }} transition={transition} onClick={send}>
               {busy ? <LoaderCircle className="spin" size={17} /> : <ArrowUp size={18} />}
             </motion.button>
@@ -805,6 +817,7 @@ export function SessionChat({
         {sendError && <p className="composer-note" role="alert"><CircleAlert size={13} />{t('chat.sendUnconfirmed', { error: sendError })}</p>}
         {draftError && <p className="composer-note" role="alert"><CircleAlert size={13} />{t('chat.draftError', { error: draftError })}<button className="text-button" onClick={() => onDraftChange(draft)}>{t('chat.retrySave')}</button></p>}
         {unsupportedAttachments && <p className="composer-note" role="alert"><CircleAlert size={13} />{t(attachmentsSupported ? 'chat.pluginAttachmentKindsRemove' : 'chat.pluginAttachmentsRemove')}</p>}
+        <AttachmentLimitNotice issue={attachmentIssue} />
         {!provider?.available && <p className="composer-note"><CircleAlert size={13} />{t('chat.providerUnavailable')}</p>}
       </div>}
     </div>
