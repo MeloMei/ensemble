@@ -65,6 +65,9 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
     if (token !== directoryGeneration.current) return;
     setEntries(listing); setGit(status); setDirectory(nextDirectory);
   };
+  const refreshPullRequest = async () => {
+    setReview(await window.workbench.reviewPullRequest(workspace.id));
+  };
   const load = async (filePath: string, mode: 'content' | 'diff', force = false) => {
     if (dirty && !force) throw new Error(t('files.saveBeforeOpen'));
     const token = ++fileGeneration.current;
@@ -144,12 +147,12 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
   return <aside className={`file-panel file-review-panel ${expanded ? 'review-expanded' : ''}`} aria-label={t('files.title')}>
     <header className="file-panel-header">
       <span className="file-panel-title"><PanelRight size={15} />{t('files.title')}</span>
-      <IconButton label={t('files.refresh')} disabled={!!busy} onClick={() => run('refresh', () => refresh())}><RefreshCw size={14} /></IconButton>
+      <IconButton label={t('files.refresh')} disabled={!!busy} onClick={() => run('refresh', () => view === 'pr' ? refreshPullRequest() : refresh())}><RefreshCw size={14} /></IconButton>
     </header>
     <div className="file-view-tabs" data-view={view} role="group" aria-label={t('files.views')}>
       <button className={view === 'files' ? 'active' : ''} aria-pressed={view === 'files'} onClick={() => setView('files')}><Files size={13} />{t('files.files')}</button>
       <button className={view === 'changes' ? 'active' : ''} aria-pressed={view === 'changes'} onClick={() => setView('changes')}><GitCompareArrows size={13} />{t('files.changes')}{git?.available && <span>{git.changes.length}</span>}</button>
-      <button className={view === 'pr' ? 'active' : ''} aria-pressed={view === 'pr'} onClick={() => { setView('pr'); run('pr', async () => setReview(await window.workbench.reviewPullRequest(workspace.id))); }}><GitPullRequest size={13} />PR / CI</button>
+      <button className={view === 'pr' ? 'active' : ''} aria-pressed={view === 'pr'} onClick={() => { setView('pr'); run('pr', refreshPullRequest); }}><GitPullRequest size={13} />PR / CI</button>
     </div>
     <div className="file-branch"><GitBranch size={13} /><span>{git?.available ? git.branch : t('files.notGitLabel')}</span>
       {git?.available && <button className="review-text-button" disabled={!!busy || dirty} onClick={() => run('preview', async () => setPreview(await window.workbench.gitCommitPreview(workspace.id)))}>{t('files.commitPreview')}</button>}

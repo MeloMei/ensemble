@@ -258,6 +258,30 @@ const cases: Record<string, () => Promise<void>> = {
     assert(writes[1]?.revision === 'mcp-1' && errors.length === 0, `The saved revision was not retained: ${errors.join('; ')}`);
     await click('shell:common.close');
   },
+  'UX2-FILES-PR: refreshing the PR view rereads its checks without background GitHub requests': async () => {
+    let reviewReads = 0, fileReads = 0;
+    window.workbench = {
+      listFiles: async () => { fileReads++; return []; }, gitState: async () => ({ available: false }),
+      reviewPullRequest: async () => {
+        reviewReads++;
+        return { status: 'ready', number: 42, title: 'Current pull request', url: 'https://github.com/example/project/pull/42', state: 'OPEN',
+          checks: [{ name: 'build', status: reviewReads === 1 ? 'IN_PROGRESS' : 'COMPLETED', conclusion: reviewReads === 1 ? undefined : 'SUCCESS' }] };
+      },
+    } as unknown as Window['workbench'];
+    const show = (refreshKey: string) => render(<FileReviewPanel workspace={workspace} refreshKey={refreshKey} perform={perform} />);
+    await show('r0'); await settle();
+    assert(Number(reviewReads) === 0, 'Opening files made a background GitHub request');
+    await click('PR / CI'); await settle();
+    assert(Number(reviewReads) === 1 && document.querySelector('.review-checks')?.textContent?.includes('IN_PROGRESS'), 'The initial PR check was not shown');
+    await click('workspace:files.refresh'); await settle();
+    assert(Number(reviewReads) === 2 && document.querySelector('.review-checks')?.textContent?.includes('SUCCESS'), 'Refresh left the current PR checks stale');
+    await show('r1'); await settle();
+    assert(Number(reviewReads) === 2, 'A workspace revision polled GitHub without user intent');
+    await click('workspace:files.files');
+    const previousFiles = fileReads;
+    await click('workspace:files.refresh'); await settle();
+    assert(fileReads === previousFiles + 1 && Number(reviewReads) === 2, 'File refresh used the wrong data source');
+  },
   'UI-03: recovery confirmation belongs to one workflow and one recovery version': async () => {
     let failResume = true;
     window.workbench = { resumeWorkflow: async () => { if (failResume) throw new Error('fixture resume failed'); } } as unknown as Window['workbench'];
