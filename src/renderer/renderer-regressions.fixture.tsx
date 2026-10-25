@@ -483,6 +483,39 @@ const cases: Record<string, () => Promise<void>> = {
     await show(queued, { text: 'A newer draft' });
     assert(input('.composer textarea').value === 'A newer draft', 'Queue updates replaced the composer draft');
   },
+  'UX-N1: named session tabs reveal the active tab without stealing focus': async () => {
+    const sessions = Array.from({ length: 10 }, (_, index) => ({ ...session, id: `navigation-${index}`, title: `Independent task ${index}`, messages: [] }));
+    const tabs = sessions.map(value => ({ id: `tab-${value.id}`, kind: 'agent' as const, sessionId: value.id }));
+    let snapshot: Snapshot = { version: 1, sessions, providers: [provider], workspaces: [{ ...workspace, tabs, activeTabId: tabs[0].id }],
+      workflows: [], terminals: [], pluginErrors: [], pluginPath: '/plugins', dataPath: '/data' };
+    let publish!: (value: Snapshot) => void;
+    window.workbench = {
+      snapshot: async () => snapshot, subscribe: (listener: (value: Snapshot) => void) => { publish = listener; return () => {}; },
+      getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
+      watchSessions: async () => {}, listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {},
+    } as unknown as Window['workbench'];
+    await render(<App />); await frames();
+    const strip = document.querySelector<HTMLElement>('.workspace-tabs')!;
+    const names = [...strip.querySelectorAll('.tab-select')].map(element => element.textContent);
+    assert(sessions.every((value, index) => names[index] === value.title), 'Same-provider sessions have indistinguishable labels');
+    assert(strip.scrollWidth > strip.clientWidth, 'The fixture does not overflow the tab strip');
+    const focus = button('shell:app.searchWorkspaces'); focus.focus();
+    const visible = () => {
+      const selected = strip.querySelector<HTMLElement>('.workspace-tab.active')!.getBoundingClientRect(), viewport = strip.getBoundingClientRect();
+      return selected.left >= viewport.left - 1 && selected.right <= viewport.right + 1;
+    };
+    snapshot = { ...snapshot, workspaces: [{ ...snapshot.workspaces[0], activeTabId: tabs.at(-1)!.id }] };
+    await act(async () => { publish(snapshot); await tick(); }); await frames();
+    assert(visible() && strip.scrollLeft > 0, 'A newly active session remains outside the visible tabs');
+    assert(document.activeElement === focus, 'Revealing a session tab stole keyboard focus');
+    const previousWidth = strip.clientWidth;
+    strip.style.maxWidth = `${Math.max(240, previousWidth - 100)}px`; await frames();
+    assert(visible(), 'Resizing hid the active tab');
+    snapshot = { ...snapshot, workspaces: [{ ...snapshot.workspaces[0], activeTabId: tabs[0].id }] };
+    await act(async () => { publish(snapshot); await tick(); }); await frames();
+    assert(visible() && strip.scrollLeft === 0, 'Returning to the first session did not reveal it');
+    assert(document.querySelector('.workspace-header-actions button[aria-label="' + translate('shell:app.collaboration') + '"]'), 'Compact collaboration action has no accessible name');
+  },
   'UI-09: cached snapshots cannot mask disconnects or clear unread failures before reading': async () => {
     const originalFocus = document.hasFocus;
     const originalVisibility = Object.getOwnPropertyDescriptor(document, 'visibilityState');
