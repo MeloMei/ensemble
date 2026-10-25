@@ -1,3 +1,5 @@
+import { CollaborationViews } from './CollaborationViews';
+import type { CollaborationRun, CollaborationEvent } from '../shared/collaboration';
 import React, { act, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { I18nextProvider } from 'react-i18next';
@@ -70,6 +72,15 @@ const messageRange = (start: number, end: number): Message[] => Array.from({ len
   const index = start + offset;
   return { id: `message-${index}`, role: index % 2 ? 'user' : 'assistant', text: `Message ${index}\n\n${'Variable markdown height. '.repeat(index % 7 + 1)}`, createdAt: '2026-10-23T02:00:00Z' };
 });
+
+function collaborationRun(id: string, updatedAt: string): CollaborationRun {
+  const definition = { id: `${id}-definition`, version: 1, name: id, cwd: workspace.cwd, participants: [], relationships: [], steps: [], limits: {}, createdAt: updatedAt, updatedAt };
+  return { id, definitionId: definition.id, definitionVersion: 1, definitionSnapshot: definition, status: 'running', createdBy: 'user', createdAt: updatedAt, updatedAt };
+}
+function collaborationSnapshot(runs: CollaborationRun[], revision = 1): Snapshot {
+  return { version: 1, sessions: [], workspaces: [], providers: [], workflows: [], terminals: [], pluginErrors: [], pluginPath: '/plugins', dataPath: '/data', collaborationEventSeq: revision,
+    collaboration: { definitions: runs.map(run => run.definitionSnapshot), runs, tasks: [], messages: [], artifacts: [], identities: [], grants: [] } };
+}
 
 const cases: Record<string, () => Promise<void>> = {
   'UI-01: question approvals display the complete request disclosure': async () => {
@@ -680,6 +691,38 @@ const cases: Record<string, () => Promise<void>> = {
     await click('runtime:worktree.reviewRemoval'); await click('runtime:worktree.confirmRemove');
     await waitFor(() => closed === 1, 'Confirmed successful removal did not close the workspace tools');
     assert(Number(removals.length) === 2 && removals.every(id => id === workspace.id), 'Removal was duplicated or used the wrong workspace');
+  },
+  'UX-C2: background collaboration updates preserve the run the user is viewing': async () => {
+    window.workbench = { queryCollaborationEvents: async () => [] } as unknown as Window['workbench'];
+    const first = collaborationRun('Run A', '2026-10-25T02:00:00Z');
+    const other = collaborationRun('Run B', '2026-10-25T01:00:00Z');
+    const show = (runs: CollaborationRun[]) => render(<CollaborationViews snapshot={collaborationSnapshot(runs)} perform={perform} pending={new Set()} openSession={() => {}} />);
+    await show([first, other]);
+    assert(document.querySelector('.collaboration-run-heading h1')?.textContent === 'Run A', 'The initial run did not open');
+    await show([first, { ...other, updatedAt: '2026-10-25T03:00:00Z' }]);
+    assert(document.querySelector('.collaboration-run-heading h1')?.textContent === 'Run A', 'Another run update switched the current collaboration');
+    await act(async () => { document.querySelectorAll<HTMLButtonElement>('.collaboration-run-item')[0].click(); await tick(); });
+    assert(document.querySelector('.collaboration-run-heading h1')?.textContent === 'Run B', 'Explicit run selection did not work');
+    await show([first]);
+    assert(document.querySelector('.collaboration-run-heading h1')?.textContent === 'Run A', 'Removing the selected run did not select the remaining run');
+  },
+  'UX-C1: collaboration event reads survive frequent state updates without duplicate requests': async () => {
+    const requests: { runId: string; cursor: number; gate: ReturnType<typeof deferred<CollaborationEvent[]>> }[] = [];
+    window.workbench = { queryCollaborationEvents: (runId: string, cursor = 0) => { const gate = deferred<CollaborationEvent[]>(); requests.push({ runId, cursor, gate }); return gate.promise; } } as unknown as Window['workbench'];
+    const run = collaborationRun('Run A', '2026-10-25T00:00:00Z');
+    const show = (revision: number) => render(<CollaborationViews snapshot={collaborationSnapshot([run], revision)} perform={perform} pending={new Set()} openSession={() => {}} />);
+    await show(1);
+    for (let revision = 2; revision <= 8; revision++) await show(revision);
+    const event: CollaborationEvent = { id: 'event-1', seq: 1, runId: run.id, type: 'run.started', source: 'platform', data: {}, createdAt: '2026-10-25T00:00:00Z' };
+    await act(async () => { requests[0].gate.resolve([event]); await tick(); });
+    assert(document.querySelector('.collaboration-timeline-list')?.textContent?.includes('#1'), 'The accepted event response was dropped during live updates');
+    assert(requests.length === 2 && requests[1].cursor === 1, `Expected one in-flight read followed by one catch-up read; got ${requests.length} requests at ${requests.map(item => item.cursor).join(', ')}`);
+    await act(async () => { requests[1].gate.resolve([{ ...event, id: 'event-2', seq: 2 }]); await tick(); });
+    assert(document.querySelectorAll('.collaboration-timeline-list > button').length === 2, 'Catch-up events did not render exactly once');
+    await show(9);
+    await render(<div />);
+    await act(async () => { requests[2].gate.resolve([{ ...event, id: 'event-3', seq: 3 }]); await tick(); });
+    assert(Number(requests.length) === 3, 'Unmounted collaboration continued reading events');
   },
 };
 fixture.runRendererRegressions = async selected => {
