@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { translate, formatDate, formatNumber } from '../shared/i18n';
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { useReducedMotion } from 'framer-motion';
 import { ArrowUpRight, Check, ChevronRight, Copy, FileText, GitBranch, KeyRound, LoaderCircle, MessageSquare, Network, PanelRight, Pause, Play, Plus, RefreshCw, Settings2, Square, Trash2, X } from 'lucide-react';
 import { Background, Controls, Handle, MarkerType, Position, ReactFlow, useNodes, useNodesInitialized, useReactFlow, type Connection, type Edge, type EdgeChange, type Node, type NodeChange, type NodeProps } from '@xyflow/react';
@@ -354,14 +354,34 @@ function CollaborationRunView({ run, state, stateVersion, providers, sessions, p
   const [eventError, setEventError] = useState('');
   const [more, setMore] = useState(false);
   const [timeline, setTimeline] = useState(true);
-  const cursor = useRef(0), generation = useRef(0);
+  const cursor = useRef(0);
+  const eventRead = useRef<{ active: boolean; requested: boolean; promise?: Promise<void> }>({ active: true, requested: false });
   const revision = [stateVersion, run.updatedAt, ...tasks.map(item => item.updatedAt), ...messages.map(item => `${item.id}:${item.delivery}`), artifacts.length].join('|');
-  const loadEvents = async () => {
-    const current = generation.current;
-    try { const incoming = await window.workbench.queryCollaborationEvents(run.id, cursor.current, 500); if (generation.current !== current) return; cursor.current = incoming.at(-1)?.seq ?? cursor.current; setEvents(previous => [...new Map([...previous, ...incoming].map(event => [event.seq, event])).values()].sort((a, b) => a.seq - b.seq)); setMore(incoming.length === 500); setEventError(''); }
-    catch (reason) { if (generation.current === current) setEventError(reason instanceof Error ? reason.message : String(reason)); }
-  };
-  useEffect(() => { void loadEvents(); return () => { generation.current++; }; }, [run.id, revision]);
+  const loadEvents = useCallback(() => {
+    const read = eventRead.current;
+    read.requested = true;
+    if (read.promise) return read.promise;
+    const drain = async () => {
+      while (read.active && read.requested) {
+        read.requested = false;
+        try {
+          const incoming = await window.workbench.queryCollaborationEvents(run.id, cursor.current, 500);
+          if (!read.active) return;
+          cursor.current = incoming.at(-1)?.seq ?? cursor.current;
+          setEvents(previous => [...new Map([...previous, ...incoming].map(event => [event.seq, event])).values()].sort((a, b) => a.seq - b.seq));
+          setMore(incoming.length === 500); setEventError('');
+        } catch (reason) { if (read.active) setEventError(reason instanceof Error ? reason.message : String(reason)); }
+      }
+    };
+    read.promise = drain().finally(() => { read.promise = undefined; });
+    return read.promise;
+  }, [run.id]);
+  useEffect(() => {
+    const read = eventRead.current;
+    read.active = true;
+    return () => { read.active = false; read.requested = false; };
+  }, []);
+  useEffect(() => { void loadEvents(); }, [revision, loadEvents]);
   const participants = useMemo(() => recordedParticipants(run, state, events), [run, state, events]);
   const graph = useMemo(() => buildGraph(run, participants, tasks, messages, artifacts, events, view, sessions), [run, state, events, view, participants, sessions, i18n.resolvedLanguage]);
   const control = (action: string) => void perform(`collaboration-control-${run.id}`, () => call('control_run', { requestId: requestId(), runId: run.id, action }));
