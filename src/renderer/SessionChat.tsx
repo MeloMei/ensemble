@@ -2,10 +2,10 @@ import { AgentIcon } from './AgentIcon';
 import { useTranslation } from 'react-i18next';
 import { formatDate, formatNumber, renderDisplayText } from '../shared/i18n';
 import { validQuestionAnswers } from '../shared/question-answers';
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode, type Ref } from 'react';
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode, type Ref } from 'react';
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   Activity, Archive, ArrowDown, ArrowUp, ArrowUpLeft, Brain, Check, ChevronDown,
@@ -282,6 +282,14 @@ function CopyAnswer({ message, perform }: { message: Message; perform: Perform }
   })}>{copied ? <Check size={14} /> : <Copy size={14} />}</IconButton>;
 }
 
+const markdownPlugins = [remarkGfm];
+const markdownComponents: Components = {
+  a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
+};
+const MarkdownAnswer = memo(function MarkdownAnswer({ text }: { text: string }) {
+  return <ReactMarkdown remarkPlugins={markdownPlugins} components={markdownComponents}>{text}</ReactMarkdown>;
+});
+
 function SessionProgress({ status }: { status: Session['status'] }) {
   const { t } = useTranslation('workspace');
   const states = {
@@ -500,6 +508,11 @@ export function SessionChat({
   });
   virtualScroll.current = virtualizer;
   const closeFind = () => { history.cancelJump(); setScrollTarget(undefined); setFind(null); };
+  const showLatestOutput = (smooth = false) => {
+    closeFind();
+    history.showLatest();
+    scrollToBottom(smooth);
+  };
   const moveMatch = (direction: number) => {
     if (!matches.length) return;
     history.cancelJump();
@@ -657,7 +670,7 @@ export function SessionChat({
       </button>}
       {history.showingHistory && <><span>{t('chat.historyWindow')}</span>
         {history.hasAfter && <button disabled={history.loading || !connected} onClick={() => void history.loadNewer()}><ArrowDown size={12} />{t('chat.loadLater')}</button>}
-        <button onClick={() => { closeFind(); history.showLatest(); scrollToBottom(); }}><ArrowDown size={12} />{t('chat.returnLatest')}</button></>}
+        <button onClick={() => showLatestOutput()}><ArrowDown size={12} />{t('chat.returnLatest')}</button></>}
       {history.error && <span className="chat-history-error" role="alert">{history.error}</span>}
     </div>}
     <div className="message-scroll" ref={scroll} tabIndex={0} aria-label={t('chat.conversation')}
@@ -703,9 +716,7 @@ export function SessionChat({
                       <time dateTime={message.createdAt}>{formatDate(message.createdAt, { hour: '2-digit', minute: '2-digit' })}</time>
                     </div>
                     <div className="markdown-message">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
-                        a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
-                      }}>{message.text}</ReactMarkdown>
+                      <MarkdownAnswer text={message.text} />
                       {!message.text && active && <span className="stream-cursor" />}
                     </div>
                     <div className="message-tools">
@@ -737,7 +748,7 @@ export function SessionChat({
       <AnimatePresence initial={false}>
         {showJumpControl && <motion.div className="jump-to-bottom-anchor" key="jump" initial={{ opacity: 0, y: 4 }}
           animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 4 }} transition={transition}>
-          <button className="jump-to-bottom" onClick={() => scrollToBottom(!reducedMotion)}><ArrowDown size={14} />{t('chat.latestOutput')}</button>
+          <button className="jump-to-bottom" onClick={() => showLatestOutput(!reducedMotion)}><ArrowDown size={14} />{t('chat.latestOutput')}</button>
         </motion.div>}
       </AnimatePresence>
       <CollapsibleRegion expanded={showActivity} id={activityId} className="chat-activity-region"
