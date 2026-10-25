@@ -344,12 +344,19 @@ const cases: Record<string, () => Promise<void>> = {
   },
   'CHAT-01: latest output leaves a search history window and resumes the live tail': async () => {
     const match = { ...messageRange(300, 301)[0], text: 'Needle in historical output' };
+    const liveMatch = { ...messageRange(950, 951)[0], text: 'Live output [Details](https://example.com/details)' };
     window.workbench = {
-      sessionSearch: async () => ({ messages: [match], truncated: false }),
-      sessionHistoryAround: async () => ({ messages: messageRange(250, 350).map(message => message.id === match.id ? match : message),
-        beforeCursor: '250', hasMore: true, afterCursor: '350', hasAfter: true }),
+      sessionSearch: async (_id: string, query: string) => ({ messages: [query === 'Needle' ? match : liveMatch], truncated: false }),
+      sessionHistoryAround: async () => {
+        await new Promise(resolve => window.setTimeout(resolve, 250));
+        const scroll = document.querySelector<HTMLDivElement>('.message-scroll')!;
+        scroll.scrollTop = scroll.scrollHeight;
+        scroll.dispatchEvent(new Event('scroll'));
+        return { messages: messageRange(250, 350).map(message => message.id === match.id ? match : message),
+          beforeCursor: '250', hasMore: true, afterCursor: '350', hasAfter: true };
+      },
     } as unknown as Window['workbench'];
-    const current: Session = { ...session, messages: messageRange(900, 1000), messageCount: 1000, historyCursor: '900', historyLoaded: true };
+    let current: Session = { ...session, messages: messageRange(900, 1000).map(message => message.id === liveMatch.id ? liveMatch : message), messageCount: 1000, historyCursor: '900', historyLoaded: true };
     await render(chat({ session: current })); await frames(); await click('workspace:chat.find');
     await change(input('.conversation-find input'), 'Needle');
     await waitFor(() => Boolean(document.querySelector('[data-message-id="message-300"].conversation-match')), 'Search did not enter the historical window');
@@ -357,6 +364,27 @@ const cases: Record<string, () => Promise<void>> = {
     await click('workspace:chat.latestOutput');
     await waitFor(() => Boolean(document.querySelector('[data-message-id="message-999"]')), 'Latest output remained in the historical search window');
     await waitFor(() => !document.querySelector('.conversation-find') && !document.querySelector('.conversation-history-controls')?.textContent?.includes(translate('workspace:chat.historyWindow')), 'Returning to live output retained the historical search state');
+    for (const [index, intent] of ['pointer', 'keyboard'].entries()) {
+      await click('workspace:chat.find'); await change(input('.conversation-find input'), 'Live');
+      await waitFor(() => Boolean(document.querySelector('[data-message-id="message-950"].conversation-match')), 'The live search match was not positioned');
+      await frames();
+      const scroll = document.querySelector<HTMLDivElement>('.message-scroll')!;
+      await act(async () => {
+        if (intent === 'pointer') scroll.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'mouse' }));
+        else {
+          const link = document.querySelector<HTMLAnchorElement>('[data-message-id="message-950"] a')!;
+          link.focus(); link.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+        }
+        scroll.scrollTop = scroll.scrollHeight; scroll.dispatchEvent(new Event('scroll')); await tick();
+      });
+      await frames(10);
+      await act(async () => { scroll.scrollTop = scroll.scrollHeight; scroll.dispatchEvent(new Event('scroll')); await tick(); });
+      await click('workspace:chat.closeFind');
+      current = { ...current, messages: [...current.messages, ...messageRange(1000 + index, 1001 + index)], messageCount: 1001 + index };
+      await render(chat({ session: current }));
+      await waitFor(() => scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight <= 40
+        && Boolean(document.querySelector(`[data-message-id="message-${1000 + index}"]`)), () => `${intent} scrolling to the bottom did not restore live following: ${JSON.stringify({ top: scroll.scrollTop, height: scroll.scrollHeight, client: scroll.clientHeight, tail: Boolean(document.querySelector(`[data-message-id="message-${1000 + index}"]`)), history: document.querySelector('.conversation-history-controls')?.textContent })}`);
+    }
   },
   'CHAT-02: draft edits and streaming keep formatted output and focused links mounted': async () => {
     window.workbench = {} as Window['workbench'];

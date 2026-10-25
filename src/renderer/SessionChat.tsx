@@ -471,7 +471,7 @@ export function SessionChat({
   const nativeEvents = nativeAgentId ? history.eventsFor(nativeAgentId) : [];
   const nativeAgent = nativeEvents.find(event => event.kind === 'subagent' && event.nativeId === nativeAgentId);
   const virtualScroll = useRef<{ scrollToEnd(options: { behavior: 'smooth' | 'auto' }): void } | null>(null);
-  const { containerRef: scroll, isPinned, showJumpControl, markUserInput, handleScroll, scrollToBottom } =
+  const { containerRef: scroll, isPinned, showJumpControl, markUserInput, pauseForNavigation, handleScroll, scrollToBottom } =
     useClaudeScrollPinning([session.id, history.showingHistory ? null : history.messages,
       history.showingHistory ? null : session.approvals, history.showingHistory ? null : session.status,
       history.showingHistory ? null : session.error], smooth => virtualScroll.current?.scrollToEnd({ behavior: smooth ? 'smooth' : 'auto' }));
@@ -537,10 +537,10 @@ export function SessionChat({
   useEffect(() => {
     if (!selectedMatch) return;
     let active = true;
-    markUserInput();
+    pauseForNavigation();
     void history.locateMessage(selectedMatch.id).then(found => { if (active && found) setScrollTarget(selectedMatch.id); });
     return () => { active = false; history.cancelJump(); };
-  }, [session.id, selectedMatch?.id, history.cancelJump]);
+  }, [session.id, selectedMatch?.id, history.cancelJump, pauseForNavigation]);
 
   useLayoutEffect(() => {
     if (!scrollTarget) return;
@@ -675,8 +675,10 @@ export function SessionChat({
     </div>}
     <div className="message-scroll" ref={scroll} tabIndex={0} aria-label={t('chat.conversation')}
       onScroll={handleScroll} onWheel={markUserInput} onTouchStart={markUserInput}
+      onPointerDown={event => { if (event.target === event.currentTarget) markUserInput(); }}
       onKeyDown={event => {
-        if (event.target === event.currentTarget && ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) markUserInput();
+        if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)
+          && event.target instanceof HTMLElement && !event.target.closest('input, textarea, select, [contenteditable="true"]')) markUserInput();
       }}>
       <div className="virtual-conversation" style={{ height: virtualizer.getTotalSize() }}>
         {virtualizer.getVirtualItems().map(item => {
