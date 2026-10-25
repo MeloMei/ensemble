@@ -72,22 +72,6 @@ const messageRange = (start: number, end: number): Message[] => Array.from({ len
 });
 
 const cases: Record<string, () => Promise<void>> = {
-  'CHAT-01: latest output leaves a search history window and resumes the live tail': async () => {
-    const match = { ...messageRange(300, 301)[0], text: 'Needle in historical output' };
-    window.workbench = {
-      sessionSearch: async () => ({ messages: [match], truncated: false }),
-      sessionHistoryAround: async () => ({ messages: messageRange(250, 350).map(message => message.id === match.id ? match : message),
-        beforeCursor: '250', hasMore: true, afterCursor: '350', hasAfter: true }),
-    } as unknown as Window['workbench'];
-    const current: Session = { ...session, messages: messageRange(900, 1000), messageCount: 1000, historyCursor: '900', historyLoaded: true };
-    await render(chat({ session: current })); await frames(); await click('workspace:chat.find');
-    await change(input('.conversation-find input'), 'Needle');
-    await waitFor(() => Boolean(document.querySelector('[data-message-id="message-300"].conversation-match')), 'Search did not enter the historical window');
-    await frames(5);
-    await click('workspace:chat.latestOutput');
-    await waitFor(() => Boolean(document.querySelector('[data-message-id="message-999"]')), 'Latest output remained in the historical search window');
-    await waitFor(() => !document.querySelector('.conversation-find') && !document.querySelector('.conversation-history-controls')?.textContent?.includes(translate('workspace:chat.historyWindow')), 'Returning to live output retained the historical search state');
-  },
   'UI-01: question approvals display the complete request disclosure': async () => {
     const detail = 'Send the address to https://shop.example for a paid purchase.\nConfirm the recipient and purpose first.';
     await render(chat({ session: { ...session, approvals: [{ id: 'approval', sessionId: session.id, title: 'Shipping request', detail, choices: [], questions: [{ id: 'address', question: 'Address', header: 'Address', options: [], multiSelect: false, allowCustomAnswer: true }] }] } }));
@@ -219,6 +203,38 @@ const cases: Record<string, () => Promise<void>> = {
     assert(control('model').disabled && control('model').value === '', 'Missing model catalog does not preserve the runtime default');
     assertDraft();
     assert(errors.length === 0, errors.join('\n'));
+  },
+  'CHAT-01: latest output leaves a search history window and resumes the live tail': async () => {
+    const match = { ...messageRange(300, 301)[0], text: 'Needle in historical output' };
+    window.workbench = {
+      sessionSearch: async () => ({ messages: [match], truncated: false }),
+      sessionHistoryAround: async () => ({ messages: messageRange(250, 350).map(message => message.id === match.id ? match : message),
+        beforeCursor: '250', hasMore: true, afterCursor: '350', hasAfter: true }),
+    } as unknown as Window['workbench'];
+    const current: Session = { ...session, messages: messageRange(900, 1000), messageCount: 1000, historyCursor: '900', historyLoaded: true };
+    await render(chat({ session: current })); await frames(); await click('workspace:chat.find');
+    await change(input('.conversation-find input'), 'Needle');
+    await waitFor(() => Boolean(document.querySelector('[data-message-id="message-300"].conversation-match')), 'Search did not enter the historical window');
+    await frames(5);
+    await click('workspace:chat.latestOutput');
+    await waitFor(() => Boolean(document.querySelector('[data-message-id="message-999"]')), 'Latest output remained in the historical search window');
+    await waitFor(() => !document.querySelector('.conversation-find') && !document.querySelector('.conversation-history-controls')?.textContent?.includes(translate('workspace:chat.historyWindow')), 'Returning to live output retained the historical search state');
+  },
+  'CHAT-02: draft edits and streaming keep formatted output and focused links mounted': async () => {
+    window.workbench = {} as Window['workbench'];
+    let current: Session = { ...session, status: 'running', messages: [{ id: 'formatted-answer', role: 'assistant',
+      text: '# A plan\n\n[Project documentation](https://example.com/docs)\n\n| Step | State |\n| --- | --- |\n| Design | Complete |\n\n- [x] Approved\n- [ ] Build\n\n```ts\nconst value = 1;\n```', createdAt: session.createdAt }] };
+    await render(chat({ session: current })); await frames();
+    const link = document.querySelector<HTMLAnchorElement>('.markdown-message a')!;
+    const code = document.querySelector('.markdown-message pre')!;
+    assert(link && code && document.querySelector('.markdown-message table'), 'The formatted reply was not rendered');
+    await render(chat({ session: current, draft: { text: 'A new question' } }));
+    assert(document.querySelector('.markdown-message a') === link && document.querySelector('.markdown-message pre') === code, 'Typing in the composer remounted the existing formatted reply');
+    link.focus();
+    current = { ...current, messages: current.messages.map(message => ({ ...message, text: `${message.text}\n\nStreaming continuation.` })) };
+    await render(chat({ session: current, draft: { text: 'A new question' } })); await frames();
+    assert(document.querySelector('.markdown-message a') === link && document.activeElement === link, 'Streaming replaced the focused link');
+    assert(document.querySelector('.markdown-message')?.textContent?.includes('Streaming continuation.'), 'Memoized output dropped a streamed update');
   },
   'UI-06: paged variable-height messages preserve the reading anchor and concurrent live output': async () => {
     const gate = deferred<{ messages: Message[]; beforeCursor?: string; hasMore: boolean }>();
