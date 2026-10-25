@@ -8,16 +8,20 @@ import type { BackendConnectionState, TerminalOutputEvent } from '../shared/back
 const drafts = new DraftWriter((id, input) => ipcRenderer.invoke('workbench:save-session-draft', id, input));
 const terminalInputs = new TerminalInputWriter((id, data) => ipcRenderer.invoke('workbench:write-terminal', id, data));
 const terminalObservers = new Map<string, number>();
-let unsavedFiles: UnsavedFileSummary = { count: 0, names: [] };
+const unsavedSources = new Map<string, UnsavedFileSummary>();
+const unsavedFiles = (): UnsavedFileSummary => ({
+  count: [...unsavedSources.values()].reduce((count, summary) => count + summary.count, 0),
+  names: [...unsavedSources.values()].flatMap(summary => summary.names).slice(0, 8),
+});
 window.addEventListener('beforeunload', event => {
-  if (unsavedFiles.count || drafts.hasPending || terminalInputs.hasPending) {
+  if (unsavedFiles().count || drafts.hasPending || terminalInputs.hasPending) {
     event.preventDefault(); event.returnValue = '';
   }
 });
 ipcRenderer.on('workbench:prepare-close', (_event, requestId: string) => {
   void Promise.allSettled([drafts.flush(), terminalInputs.flush()]).then(results => {
     const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason instanceof Error ? result.reason.message : String(result.reason)] : []);
-    ipcRenderer.send('workbench:close-ready', { requestId, error: errors.length ? errors.join('\n') : null, unsavedFiles });
+    ipcRenderer.send('workbench:close-ready', { requestId, error: errors.length ? errors.join('\n') : null, unsavedFiles: unsavedFiles() });
   });
 });
 
@@ -62,7 +66,10 @@ const api: WorkbenchAPI = {
   diagnosticTracing: () => ipcRenderer.invoke('workbench:diagnostic-tracing'),
   exportDiagnostics: () => ipcRenderer.invoke('workbench:export-diagnostics'),
   setDiagnosticTracing: enabled => ipcRenderer.invoke('workbench:set-diagnostic-tracing', enabled),
-  setUnsavedFiles: summary => { unsavedFiles = structuredClone(summary); },
+  setUnsavedFiles: (summary, sourceId = 'files') => {
+    if (summary.count) unsavedSources.set(sourceId, structuredClone(summary));
+    else unsavedSources.delete(sourceId);
+  },
   getLanguage: () => ipcRenderer.invoke('workbench:get-language'),
   setLanguage: preference => ipcRenderer.invoke('workbench:set-language', preference),
   onLanguageChanged: listener => {
@@ -92,7 +99,7 @@ const api: WorkbenchAPI = {
   openPluginDirectory: () => ipcRenderer.invoke('workbench:open-plugin-directory'),
   createWorkspace: input => ipcRenderer.invoke('workbench:create-workspace', input),
   removeWorktree: async id => {
-    if (unsavedFiles.count) throw new Error('WORKBENCH_UNSAVED_FILES');
+    if (unsavedFiles().count) throw new Error('WORKBENCH_UNSAVED_FILES');
     return ipcRenderer.invoke('workbench:remove-worktree', id);
   },
   updateWorkspace: (id, input) => ipcRenderer.invoke('workbench:update-workspace', id, input),

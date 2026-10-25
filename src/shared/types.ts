@@ -232,7 +232,7 @@ export interface WorkbenchAPI {
   exportDiagnostics(): Promise<string>;
   setDiagnosticTracing(enabled: boolean): Promise<void>;
   diagnosticTracing(): Promise<boolean>;
-  setUnsavedFiles(summary: UnsavedFileSummary): void;
+  setUnsavedFiles(summary: UnsavedFileSummary, sourceId?: string): void;
   getLanguage(): Promise<LanguageState>;
   setLanguage(preference: LanguagePreference): Promise<LanguageState>;
   onLanguageChanged(listener: (state: LanguageState) => void): () => void;
