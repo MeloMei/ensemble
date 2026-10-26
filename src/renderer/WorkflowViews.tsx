@@ -139,6 +139,14 @@ function providerGuides(): Record<string, { install: string; configure: string; 
     install: 'https://pi.dev/', configure: 'https://pi.dev/docs/latest/models', configureLabel: t('provider.authHelp'),
     note: t('provider.piSetup'),
   },
+  gemini: {
+    install: 'https://geminicli.com/docs/get-started/installation/', configure: 'https://geminicli.com/docs/get-started/authentication/', configureLabel: t('provider.authHelp'),
+    note: t('provider.geminiSetup'),
+  },
+  cursor: {
+    install: 'https://cursor.com/docs/cli/installation', configure: 'https://cursor.com/docs/cli/reference/authentication', configureLabel: t('provider.authHelp'),
+    note: t('provider.cursorSetup'),
+  },
   opencode: {
     install: 'https://opencode.ai/v2/docs/', configure: 'https://opencode.ai/v2/docs/providers/', configureLabel: t('provider.extraProviderDocs'),
     note: t('provider.opencodeSetup'),

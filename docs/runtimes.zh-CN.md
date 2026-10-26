@@ -15,6 +15,8 @@ Ensemble 在会话选定的项目目录中启动本机 Agent 运行时。运行�
 | Codex | [Codex CLI](https://learn.chatgpt.com/docs/codex/cli) | [认证说明](https://learn.chatgpt.com/docs/auth) |
 | Claude Code | [快速开始](https://code.claude.com/docs/en/quickstart) | [认证说明](https://code.claude.com/docs/en/authentication) |
 | Pi | [Pi 官网](https://pi.dev/) · [快速开始](https://pi.dev/docs/latest/quickstart) | [认证与模型](https://pi.dev/docs/latest/models) |
+| Gemini CLI | [安装说明](https://geminicli.com/docs/get-started/installation/) | [认证说明](https://geminicli.com/docs/get-started/authentication/) |
+| Cursor Agent | [CLI 安装说明](https://cursor.com/docs/cli/installation) | [认证说明](https://cursor.com/docs/cli/reference/authentication) |
 | OpenCode V2 | [OpenCode 2](https://opencode.ai/v2/docs/) | [V2 模型提供商](https://opencode.ai/v2/docs/providers/) |
 | DeepSeek Harness | [官方应用与源码](https://www.deepseek.com/en/harness/) | [配置模型](https://deepseek-harness.github.io/deepseek-harness/en/guide/providers) |
 
@@ -33,6 +35,8 @@ DeepSeek Harness 需要提供本机可发现的 `dsh` CLI，Ensemble 使用其[�
 | Codex | `CODEX_BINARY` | `PATH`、macOS 标准 Codex/ChatGPT 应用位置、`~/.local/bin`、`~/.cargo/bin` |
 | Claude Code | `CLAUDE_BINARY` | `PATH`、`~/.local/bin`、Homebrew 位置、已安装的 nvm 版本 |
 | Pi | `PI_BINARY` | `PATH`、`~/.local/bin`、Homebrew 位置、已安装的 nvm 版本 |
+| Gemini CLI | `GEMINI_BINARY` | `PATH`、`~/.local/bin`、Homebrew 位置、已安装的 nvm 版本 |
+| Cursor Agent | `CURSOR_BINARY` | `PATH` 中的 `agent`/`cursor-agent`、`~/.local/bin`、官方 CLI 安装目录 |
 | OpenCode V2 | `OPENCODE_BINARY` | macOS 标准 OpenCode 应用位置、`PATH`、`~/.opencode/bin`、`~/.local/bin` |
 | DeepSeek Harness | `DSH_BINARY` | `PATH`、macOS 标准 DeepSeek Harness 应用位置、`~/.local/bin` |
 
@@ -74,6 +78,28 @@ Ensemble 加载临时受控扩展，不加载用户自定义扩展和项目 Pi �
 
 受控扩展把已配置的 stdio 和 HTTP 服务交给 Pi 原生 MCP，不支持 SSE。已认证的 Ensemble 协作工具使用另行签发的授权，文件只读模式不会取消协作权限。工具守卫和 Ensemble MCP 工具就绪后，才会发送提示。进程关闭后会清理临时扩展及配置。
 
+## Gemini CLI
+
+Ensemble 通过官方 `gemini --acp` 接入。先在 Gemini CLI 中完成认证并确认模型可用。需要当前 CLI 提供 ACP、审批模式和临时管理策略接口；缺少接口时会停止接入。首次任务沿用原生会话的当前模型，初始化后才展示原生模型目录，不预填静态模型列表。显式选择的模型必须由原生目录提供，且设置成功后才发送任务。
+
+模型和权限设置兼容 ACP 的 `configOptions` 及原生 `models`/`modes` 格式。支持原生续聊、流式文本、工具事件、文本附件及运行时声明的图片输入。恢复失败会保留原会话 ID，不会自动创建替代会话。执行前的模式提示和加载的历史消息不会当成本轮助手回答。
+
+临时管理策略将工具执行交给 Ensemble 审批。读取和搜索可以直接执行，只读回合拒绝写入及命令；已签发的协作工具另行检查任务授权。CLI 仅信任本次选定的工作目录，不写入永久信任配置。系统策略会阻止临时策略生效时，接入停止。
+
+Google 已调整 Gemini CLI 的账号支持范围。免费层和 Google One 用户的迁移说明见[官方仓库](https://github.com/google-gemini/gemini-cli)。Ensemble 接入的是 Gemini CLI，认证和模型访问仍以该 CLI 与账号的实际状态为准。
+
+## Cursor Agent
+
+Ensemble 通过官方 `agent acp` 接入，要求 Cursor CLI **2026.10.22 或更新版本**。请单独安装并完成 `agent login`。模型目录来自原生会话，首次任务未指定模型时沿用该会话的默认选择。会话文件单独保存在 Ensemble 数据目录中，后续通过原生 ID 恢复。
+
+接入支持流式消息、工具审批、原生问答和计划确认。问答保留原选项 ID。只读回合仅查看计划；普通回合批准计划后，Cursor 会保存原生计划文件。计划批准不会改变后续文件权限或协作授权。TODO 保留取消状态，子任务和图片结果按原生报告展示。当前 CLI 不提供 ACP token 用量。
+
+工具守卫通过官方 hook 检查执行请求。临时配置清空自动允许列表，保留原有拒绝规则；审批通道不可用时拒绝执行。会话文件持续保留，原生认证存储不变。
+
+项目及 Ensemble 协作 MCP 通过本轮 ACP 配置注入，不修改用户的 `.cursor/mcp.json`。Cursor 团队 Dashboard 的 MCP 不属于当前 ACP 接入范围。工具权限与后台签发的协作权限分别检查。
+
+Gemini CLI 和 Cursor Agent 均等待本轮 Ensemble MCP 完成初始化握手后才发送任务；连接失败或超时会停止发送。
+
 ## OpenCode V2
 
 请单独安装 OpenCode V2。Ensemble 通过其 `acp` 命令接入。ACP 是 Agent Client Protocol，用于交换会话、提示、工具事件和权限请求。
@@ -106,7 +132,7 @@ OpenCode 使用 Ensemble 数据目录下的独立 profile。适配器禁用项�
 - ACP 的模型、推理和权限选项必须由原生提供并确认。不支持的选项会停止任务。审批仅展示原生提供的单次允许或拒绝选项。
 - 图片传输协议可用，不代表所有模型都能理解图片。ACP 上下文占用、运行时 token 和官方账户余额分别记录。
 - DeepSeek 余额由用户主动查询。各币种分别保留，不相加、不换算。用量计数不等于账单，也不能证明没有费用。
-- Claude Code、Pi、OpenCode 和 DeepSeek Harness 当前不支持 Ensemble 内的原生对话回退。上下文分叉会生成可编辑草稿，发送后才开始新任务。
+- Claude Code、Pi、Gemini CLI、Cursor Agent、OpenCode 和 DeepSeek Harness 当前不支持 Ensemble 内的原生对话回退。上下文分叉会生成可编辑草稿，发送后才开始新任务。
 - 文件只读和协作权限分别配置。角色名称不会授予权限。外部 Agent 沿用自身原生权限；Ensemble 只记录它通过 MCP 交换的任务、消息和产物。
 - 运行时出错会停止本次执行尝试。协作可以按运行配置的上限重试，失败记录会保留。后台重启后，未完成工作会中断，需要明确恢复。
 

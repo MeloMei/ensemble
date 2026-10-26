@@ -59,7 +59,7 @@ For individual sessions, language settings, local builds, and packaging, see [Ge
 
 ## Runtime support
 
-**Codex · Claude Code · Pi · OpenCode V2 · DeepSeek Harness**
+**Codex · Claude Code · Pi · Gemini CLI · Cursor Agent · OpenCode V2 · DeepSeek Harness**
 
 Pi requires the official npm CLI version 1.3.0 or newer. OpenCode V2 uses an isolated profile limited to models declared free. DeepSeek Harness cannot fill a read-only role. Runtime detection does not confirm authentication or model access; verify them with an actual task.
 

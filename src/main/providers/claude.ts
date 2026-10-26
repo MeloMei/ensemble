@@ -129,7 +129,7 @@ async function runClaude(binary: string, context: TurnContext): Promise<void> {
       const toolChannels = new Map<string, string>();
       const toolBlocks = new Map<string, { id: string; json: string }>();
       const childTexts = new Map<string, Map<string, string>>();
-      const childStates = new Map<string, { title: string; status: 'pending' | 'running' | 'completed' | 'failed' }>();
+      const childStates = new Map<string, { title: string; status: ReturnType<typeof processStatus> }>();
       const taskToolIds = new Map<string, string>();
       const backgroundTasks = new Set<string>();
       let initialized = false;

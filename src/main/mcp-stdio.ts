@@ -8,14 +8,25 @@ import { connectBackend } from './backend-client';
 async function main(): Promise<void> {
   const endpoint = process.env.WORKBENCH_TOOL_ENDPOINT;
   const capability = process.env.WORKBENCH_TOOL_CAPABILITY;
+  const readyEndpoint = process.env.WORKBENCH_TOOL_READY_ENDPOINT;
   const identityToken = process.env.WORKBENCH_IDENTITY_TOKEN;
   delete process.env.WORKBENCH_TOOL_CAPABILITY;
+  delete process.env.WORKBENCH_TOOL_READY_ENDPOINT;
   delete process.env.WORKBENCH_IDENTITY_TOKEN;
   let remote: Client | undefined;
   let invoke: (tool: string, input: Record<string, unknown>) => Promise<unknown>;
+  let reportReady: (() => Promise<void>) | undefined;
 
   if (endpoint && capability) {
     if (!/^http:\/\/127\.0\.0\.1:\d+\/call$/.test(endpoint)) throw new Error('协作回合地址无效。');
+    if (readyEndpoint) {
+      if (readyEndpoint !== endpoint.replace(/\/call$/, '/ready')) throw new Error('协作 MCP 初始化地址无效。');
+      reportReady = async () => {
+        const response = await fetch(readyEndpoint, { method: 'POST', headers: { Authorization: `Bearer ${capability}` }, signal: AbortSignal.timeout(5_000) });
+        if (!response.ok) throw new Error('协作 MCP 初始化身份已失效。');
+        await response.body?.cancel();
+      };
+    }
     invoke = async (tool, input) => {
       const response = await fetch(endpoint, {
         method: 'POST', headers: { Authorization: `Bearer ${capability}`, 'Content-Type': 'application/json' },
@@ -45,7 +56,13 @@ async function main(): Promise<void> {
   }
 
   const server = createWorkbenchMcpServer(invoke);
-  const stop = () => { void Promise.allSettled([server.close(), remote?.close()]).then(() => process.exit(0)); };
+  const stop = (exitCode = 0) => { void Promise.allSettled([server.close(), remote?.close()]).then(() => process.exit(exitCode)); };
+  if (reportReady) {
+    let reporting: Promise<void> | undefined;
+    server.server.oninitialized = () => {
+      reporting ??= reportReady!().catch(error => { process.stderr.write(`${String(error)}\n`); stop(1); });
+    };
+  }
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
   process.stdin.on('end', stop);
