@@ -43,13 +43,27 @@ npm run dev
 | `npm start` | 通过 Electron 打开已有构建，需要先构建。 |
 | `npm run package:mac` | 构建应用，并按当前机器的架构生成 macOS App。 |
 
-打包输出为 `release/<version>/Ensemble-<version>-macOS-<arch>.zip`。脚本在临时目录中生成应用，执行 ad hoc 签名并用 `codesign` 验证，压缩后清理临时文件。解压后将 `Ensemble.app` 移到 `/Applications`，更新时替换原来的应用。产物是本机包，没有 Developer ID 签名和公证。脚本会拒绝非 macOS 主机。
+打包输出位于 `release/<version>/`，包含 `Ensemble-<version>-macOS-<arch>.zip`、同名 DMG 和 `SHA256SUMS`。脚本在临时目录中生成同一份应用，执行 ad hoc 签名并用 `codesign` 验证，再生成 ZIP、带“应用程序”入口的 DMG 和 SHA-256 校验清单。解压 ZIP 后可将 `Ensemble.app` 移到 `/Applications`；DMG 打开后可将应用拖入“应用程序”。产物没有 Developer ID 签名和公证。脚本会拒绝非 macOS 主机。
 
 包内仅包含构建后的应用、CLI 入口、生产依赖、包信息和许可记录。源码、文档及历史 `release/` 产物不会进入安装包。新增顶层运行时资源时，需要同步更新打包输入清单。
 
 源码或构建配置变化时，GitHub Actions 执行类型检查和构建，也支持手动触发。CI 不执行 Agent 任务，也不调用模型服务。
 
 改动影响构建或打包产物时，再使用对应命令验收。不要求每次编辑都构建或打包。
+
+## 准备 Release
+
+`Prepare Weekly Release Draft` 工作流在合并到 `main` 后生效，每周五北京时间 18:15 运行，也可以从 GitHub Actions 手动启动。GitHub 的定时任务可能延迟；它不依赖开发者电脑开机。
+
+工作流固定本次 `main` 的提交。与最后一个稳定 Release 没有内容变化时跳过；有变化时，必须先有该提交对应的、最新一次 `Build` 工作流成功结果。其他提交或 PR 的检查结果不能替代。若该提交没有触发 Build，可先在 `main` 手动运行 Build，再准备草稿。
+
+版本号在最后已使用或预留的版本之后递增，也尊重源码中更高的版本号。版本修改仅发生在 CI 临时工作区，不会向 `main` 提交或推送。工作流使用 Apple Silicon runner，检查实际运行架构，生成 ZIP、DMG 和 `SHA256SUMS`，再用 GitHub 根据上次发版以来的变更生成可审核的说明，不调用模型服务。
+
+构建与校验完成后，工作流先创建指向固定源码的公开版本 tag，再新建 **Release 草稿**，不会公开发布 Release，也不会改变 Latest。审核安装包和完整说明后，由维护者在 GitHub 发布，并将它设为 **Latest**。应用通过 GitHub 的 `/releases/latest` 发现新版；如果发布时没有设为 Latest，客户端仍可能收到旧版本。相同源码已有完整草稿时不会重复创建；新源码使用独立的新版本草稿，不修改正在审核的旧草稿。打包或上传过程中出现版本冲突、校验失败或其他错误时，工作流停止，不静默覆盖附件。
+
+如果创建 tag 后失败，已预留的 tag 会保留；如果草稿上传不完整，后续运行会明确报错，不会将它当作准备成功。维护者核对尚未发布的草稿和 tag 后，可删除未完成草稿及仅为它预留的 tag，再手动运行流程。不要删除已发布版本的 tag。工作流不会自动删除或修补正在审核的稿件；仅留下 tag 而未创建草稿时，后续运行也会避开这个已预留的版本。
+
+发版规则的局部检查为 `node --test scripts/prepare-release.test.mjs`。工作流在访问发布信息前执行它；该检查仅使用临时文件和 GitHub 替身，不调用模型或创建真实草稿。
 
 ## 本机数据和 CLI
 
