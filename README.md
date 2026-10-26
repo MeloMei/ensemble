@@ -6,12 +6,27 @@
 </p>
 
 <p align="center">
-  <a href="#get-started">Get started</a> ·
+  <a href="https://github.com/MeloMei/ensemble/releases/download/v0.8.1/Ensemble-0.8.1-macOS-arm64.dmg">Download for macOS</a> ·
+  <a href="docs/media/ensemble-overview-en.mp4">Watch in English · 30s</a> ·
   <a href="docs/first-collaboration.md">First collaboration</a> ·
   <a href="README.zh-CN.md">简体中文</a>
 </p>
 
-<p align="center">macOS · Open source · Bring your own runtimes</p>
+<p align="center">macOS · Apple Silicon · Open source · Bring your own runtimes</p>
+
+## Get started
+
+1. **[Download Ensemble for macOS (Apple Silicon)](https://github.com/MeloMei/ensemble/releases/download/v0.8.1/Ensemble-0.8.1-macOS-arm64.dmg).** Open the DMG and drag `Ensemble.app` into Applications. A [ZIP download and release notes](https://github.com/MeloMei/ensemble/releases/latest) are also available.
+2. **Connect your agent runtime.** [Install and authenticate Codex, Claude Code, or another supported runtime](docs/runtimes.md#install-and-configure), then open Ensemble and choose **Runtimes & plugins → Refresh detection**. The desktop app does not require a separate Node.js installation; your chosen runtime may have its own requirements.
+3. **[Try your first collaboration](docs/first-collaboration.md).** Create a workspace for your project and choose **Collaboration → Implement and review**. Review and save the setup, then start when ready. One Codex or Claude Code installation can fill both roles.
+
+The current release is not notarized by Apple, so macOS may block the first launch. See the [release notes](https://github.com/MeloMei/ensemble/releases/latest) and [Apple's instructions](https://support.apple.com/102445) before opening it.
+
+## Watch Ensemble in 30 seconds
+
+[English video](docs/media/ensemble-overview-en.mp4) · [中文视频](docs/media/ensemble-overview-zh-CN.mp4)
+
+The videos show the real interface: task handoffs, agent conversations, file changes, and results. Follow the [first collaboration tutorial](docs/first-collaboration.md) to try the workflow yourself.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/workspace-en-dark.png">
@@ -29,9 +44,9 @@
 
 Within a collaboration, tasks in the same project run in order. Independent, non-overlapping project directories can run concurrently.
 
-## Get started
+## Run from source
 
-You need **macOS**, **Node.js 22.22+**, and at least one supported local agent runtime. [Install and authenticate your runtime](docs/runtimes.md#install-and-configure) separately before starting.
+For development from source, you need **macOS**, **Node.js 22.22+**, and npm, in addition to your configured agent runtime.
 
 ```sh
 git clone https://github.com/MeloMei/ensemble.git
@@ -39,10 +54,6 @@ cd ensemble
 npm ci
 npm run dev
 ```
-
-Create a workspace for your project, then choose **Collaboration → Implement and review**. Review and save the setup, then start the collaboration when ready. One Codex or Claude Code installation can fill both roles.
-
-[Try your first collaboration](docs/first-collaboration.md) · [Recorded walkthrough (v0.7, Chinese)](docs/media/ensemble-demo.mp4)
 
 For individual sessions, language settings, local builds, and packaging, see [Getting started](docs/getting-started.md).
 
@@ -58,7 +69,7 @@ See [Runtime support](docs/runtimes.md) for model selection, permissions, and co
 
 Ensemble stores task records on your Mac and manages local agent processes. Model requests may go to remote services through your runtime and provider account.
 
-The desktop app, CLI, and MCP connections share a local backend. Closing the window leaves it and its tasks running. To stop it, quit the desktop app, then run `bin/workbench stop`.
+The desktop app, CLI, and MCP connections share a local backend. Closing the window leaves it and its tasks running. From a source checkout, quit the desktop app and run `bin/workbench stop` to stop the backend.
 
 Agent execution and collaboration have separate permissions. The file editor and terminal have their own access to your machine; an agent's read-only setting does not restrict them.
 
@@ -77,3 +88,5 @@ Agent execution and collaboration have separate permissions. The file editor and
 ## License
 
 Original Ensemble code is licensed under the [MIT License](LICENSE). Third-party components retain their respective licenses and copyright notices. See [Third-party notices](THIRD_PARTY_NOTICES.md).
+
+The overview videos use “Cat Walk” by Arulo from [Mixkit](https://mixkit.co/free-stock-music/edm/), under the [Mixkit Stock Music Free License](https://mixkit.co/license/#musicFree). The music is not covered by Ensemble's MIT license.
