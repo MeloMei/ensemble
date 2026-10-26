@@ -47,6 +47,8 @@ The adaptation uses an exclusive temporary file in the same directory, write-and
 
 ## Protocol and UI dependencies
 
+The application update check, bounded SHA-256 download, same-directory staging, and whole-directory rollback flow in `src/main/application-updates.ts` and `bin/apply-app-update.sh` are adapted from [zszz3/AgentRecall](https://github.com/zszz3/AgentRecall), commit `e130f72a1a34a87e4065d9f85f7733bdf632f1b6`, `apps/main-1.0/bin/update-client.cjs` and `apps/main-1.0/bin/apply-update.cjs`. Copyright (c) 2026 AgentRecall contributors. The original MIT license is retained in [licenses/AgentRecall-MIT.txt](licenses/AgentRecall-MIT.txt). Ensemble replaces a complete macOS app bundle and adds independent-backend quiescence, archive/bundle validation and new-renderer readiness before accepting the update; it does not reuse AgentRecall's npm installer or change macOS security policy.
+
 - `@agentclientprotocol/sdk@1.9.0`: Apache-2.0.
 - `@modelcontextprotocol/sdk@1.32.1`: MIT; Copyright (c) 2024 Anthropic, PBC.
 - CodeMirror packages: MIT; their license files credit Copyright (C) 2018-2021 by Marijn Haverbeke and others.

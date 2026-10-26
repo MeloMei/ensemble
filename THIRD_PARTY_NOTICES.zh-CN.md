@@ -47,6 +47,8 @@
 
 ## 协议与界面依赖
 
+`src/main/application-updates.ts` 与 `bin/apply-app-update.sh` 的更新检查、受限 SHA-256 下载、同目录暂存和整目录回滚流程，改写自 [zszz3/AgentRecall](https://github.com/zszz3/AgentRecall) 提交 `e130f72a1a34a87e4065d9f85f7733bdf632f1b6` 的 `apps/main-1.0/bin/update-client.cjs` 和 `apps/main-1.0/bin/apply-update.cjs`。版权为 Copyright (c) 2026 AgentRecall contributors，MIT 原文保留在 [licenses/AgentRecall-MIT.txt](licenses/AgentRecall-MIT.txt)。Ensemble 改为替换完整 macOS App，增加独立后台停机守卫、压缩包与应用校验，以及新版界面就绪确认；不复用 npm 安装器，也不改动 macOS 安全策略。
+
 - `@agentclientprotocol/sdk@1.9.0`：Apache-2.0。
 - `@modelcontextprotocol/sdk@1.32.1`：MIT；Copyright (c) 2024 Anthropic, PBC。
 - CodeMirror 相关包：MIT；许可注明 Copyright (C) 2018-2021 by Marijn Haverbeke and others。

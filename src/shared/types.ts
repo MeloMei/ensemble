@@ -3,6 +3,7 @@ import type { LanguagePreference, LanguageState } from './i18n';
 import type { DisplayText } from './display-text';
 import type { BackendConnectionState, SessionHistoryPage, TerminalOutputEvent } from './backend';
 import type { ProviderCapabilities } from './provider-capabilities';
+import type { AppUpdateState } from './application-updates';
 export type { ProviderCapabilities } from './provider-capabilities';
 
 export type SessionStatus = 'idle' | 'queued' | 'running' | 'waiting_approval' | 'waiting_children' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
@@ -212,6 +213,13 @@ export interface Snapshot {
 export interface UnsavedFileSummary { count: number; names: string[] }
 
 export interface WorkbenchAPI {
+  getApplicationUpdate(): Promise<AppUpdateState>;
+  checkApplicationUpdate(): Promise<AppUpdateState>;
+  downloadApplicationUpdate(): Promise<AppUpdateState>;
+  installApplicationUpdate(): Promise<AppUpdateState>;
+  setApplicationUpdateAutoCheck(enabled: boolean): Promise<AppUpdateState>;
+  onApplicationUpdateChanged(listener: (state: AppUpdateState) => void): () => void;
+  confirmApplicationUpdateReady(): Promise<void>;
   getConnection(): Promise<BackendConnectionState>;
   onConnectionChanged(listener: (state: BackendConnectionState) => void): () => void;
   watchSessions(ids: string[]): Promise<void>;

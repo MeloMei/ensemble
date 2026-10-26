@@ -1,0 +1,25 @@
+.application-update-notice { display: flex; flex-shrink: 0; align-items: center; gap: 9px; padding: 9px 18px; color: var(--text); background: var(--accent-soft); border-bottom: 1px solid var(--border); font-size: 12px; }
+.application-update-notice > span { flex: 1; }
+.application-update-notice > button { border: 0; background: none; color: var(--accent); cursor: pointer; font: inherit; white-space: nowrap; }
+.application-update-settings { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border); }
+.application-update-heading, .application-update-release-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.application-update-heading h3 { margin: 0 0 5px; font-size: 14px; }
+.application-update-heading p, .application-update-note { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.application-update-auto { display: flex; align-items: center; gap: 8px; margin-top: 16px; font-size: 12px; cursor: pointer; }
+.application-update-auto input { accent-color: var(--accent); }
+.application-update-note { margin-top: 7px; }
+.application-update-status { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 12px; font-size: 12px; }
+.application-update-status small { color: var(--muted); font-size: 11px; }
+.application-update-release { padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.application-update-release-heading strong { font-size: 13px; overflow-wrap: anywhere; }
+.application-update-release-heading a { display: inline-flex; align-items: center; gap: 3px; color: var(--accent); font-size: 11px; white-space: nowrap; }
+.application-update-release-notes { max-height: 210px; margin-top: 12px; overflow: auto; overflow-wrap: anywhere; font-size: 12px; line-height: 1.65; }
+.application-update-release-notes :first-child { margin-top: 0; }
+.application-update-release-notes :last-child { margin-bottom: 0; }
+.application-update-release-notes h1, .application-update-release-notes h2, .application-update-release-notes h3 { font-size: 13px; margin: 14px 0 6px; }
+.application-update-release-notes ul, .application-update-release-notes ol { padding-left: 20px; }
+.application-update-release-notes a { color: var(--accent); }
+.application-update-release-notes pre { overflow: auto; }
+.application-update-actions { display: flex; justify-content: flex-end; margin-top: 14px; }
+.application-update-progress { display: flex; align-items: center; gap: 10px; margin-top: 14px; font-size: 11px; }
+.application-update-progress progress { width: 100%; height: 6px; accent-color: var(--accent); }

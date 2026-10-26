@@ -4,6 +4,7 @@ import { DraftWriter } from '../shared/draft-writer';
 import { TerminalInputWriter } from '../shared/terminal-input-writer';
 import type { LanguageState } from '../shared/i18n';
 import type { BackendConnectionState, TerminalOutputEvent } from '../shared/backend';
+import type { AppUpdateState } from '../shared/application-updates';
 
 const drafts = new DraftWriter((id, input) => ipcRenderer.invoke('workbench:save-session-draft', id, input));
 const terminalInputs = new TerminalInputWriter((id, data) => ipcRenderer.invoke('workbench:write-terminal', id, data));
@@ -18,7 +19,17 @@ window.addEventListener('beforeunload', event => {
     event.preventDefault(); event.returnValue = '';
   }
 });
-ipcRenderer.on('workbench:prepare-close', (_event, requestId: string) => {
+let closeFocus: HTMLElement | undefined;
+ipcRenderer.on('workbench:release-close-lock', () => {
+  document.documentElement.inert = false;
+  if (closeFocus?.isConnected) closeFocus.focus();
+  closeFocus = undefined;
+});
+ipcRenderer.on('workbench:prepare-close', (_event, requestId: string, intent?: 'update') => {
+  if (intent === 'update') {
+    closeFocus = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+    document.documentElement.inert = true;
+  }
   void Promise.allSettled([drafts.flush(), terminalInputs.flush()]).then(results => {
     const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason instanceof Error ? result.reason.message : String(result.reason)] : []);
     ipcRenderer.send('workbench:close-ready', { requestId, error: errors.length ? errors.join('\n') : null, unsavedFiles: unsavedFiles() });
@@ -26,6 +37,17 @@ ipcRenderer.on('workbench:prepare-close', (_event, requestId: string) => {
 });
 
 const api: WorkbenchAPI = {
+  getApplicationUpdate: () => ipcRenderer.invoke('workbench:application-update'),
+  checkApplicationUpdate: () => ipcRenderer.invoke('workbench:check-application-update'),
+  downloadApplicationUpdate: () => ipcRenderer.invoke('workbench:download-application-update'),
+  installApplicationUpdate: () => ipcRenderer.invoke('workbench:install-application-update'),
+  setApplicationUpdateAutoCheck: enabled => ipcRenderer.invoke('workbench:set-application-update-auto-check', enabled),
+  onApplicationUpdateChanged: listener => {
+    const receive = (_event: Electron.IpcRendererEvent, state: AppUpdateState) => listener(state);
+    ipcRenderer.on('workbench:application-update-changed', receive);
+    return () => ipcRenderer.removeListener('workbench:application-update-changed', receive);
+  },
+  confirmApplicationUpdateReady: () => ipcRenderer.invoke('workbench:application-update-ready'),
   getConnection: () => ipcRenderer.invoke('workbench:get-connection'),
   onConnectionChanged: listener => {
     const receive = (_event: Electron.IpcRendererEvent, state: BackendConnectionState) => listener(state);

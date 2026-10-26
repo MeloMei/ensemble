@@ -16,6 +16,7 @@ import { sessionAttentionReason, sessionIsUnread } from './session-attention';
 import { PRODUCT_NAME } from '../shared/app-identity';
 import ensembleLogo from '../../docs/brand/ensemble-avatar.png';
 import { AgentIcon } from './AgentIcon';
+import { ApplicationUpdateNotice, ApplicationUpdateSettings, useApplicationUpdates } from './ApplicationUpdates';
 import { FileReviewPanel } from './FileReviewPanel';
 import { WorkspaceTools } from './WorkspaceTools';
 import './features.css';
@@ -50,11 +51,13 @@ function AttentionBadge({ session }: { session: Session }) {
 
 export function App() {
   const { t } = useTranslation('shell');
+  const applicationUpdates = useApplicationUpdates();
   const { theme, setPreference } = useAppearance();
   const reducedMotion = useReducedMotion();
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [connection, setConnection] = useState<BackendConnectionState>({ status: 'connecting', synced: false });
   const [loadError, setLoadError] = useState('');
+  const applicationReady = useRef(false);
   const [page, setPage] = useState<Page>('workspace');
   const [readingSessionId, setReadingSessionId] = useState<string | null>(null);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
@@ -153,6 +156,13 @@ export function App() {
   const readingSession = page === 'history' ? sessions.find(session => session.id === readingSessionId) : undefined;
   const connected = connection.status === 'connected' && connection.synced;
   useEffect(() => {
+    if (!connected || !snapshot || applicationReady.current) return;
+    applicationReady.current = true;
+    void window.workbench.confirmApplicationUpdateReady().catch(error => {
+      setToast(error instanceof Error ? error.message : String(error));
+    });
+  }, [connected, snapshot]);
+  useEffect(() => {
     if (connected && snapshot) void recoverSessionCommands();
   }, [connected, snapshot]);
   const watchedIds = JSON.stringify(page === 'workspace' ? [activeTab, secondaryTab].flatMap(tab => tab?.kind === 'agent' ? [tab.sessionId] : [])
@@ -229,6 +239,7 @@ export function App() {
     <main className={`main-workspace ${page === 'workspace' && workspace && rightPane ? 'with-file-panel' : ''}`}><header className="workspace-header"><div className="workspace-heading">{page === 'workspace' && workspace ? <><FolderOpen size={16} /><h1 title={workspace.name}>{workspace.name}</h1><span title={workspace.cwd}>{pathName(workspace.cwd)}</span><IconButton label={workspace.pinned ? t('app.unpin') : t('app.pin')} aria-pressed={workspace.pinned} onClick={() => void perform('pin-workspace', () => window.workbench.updateWorkspace(workspace.id, { pinned: !workspace.pinned }))}><Pin size={13} fill={workspace.pinned ? 'currentColor' : 'none'} /></IconButton></> : <h1>{{ workspace: PRODUCT_NAME, history: t('app.history'), workflows: t('app.workflows'), providers: t('app.providers'), collaboration: t('app.agentCollaboration') }[page]}</h1>}</div>
       <div className="workspace-header-actions">{page === 'workspace' && workspace && <><button className="header-button" aria-label={t('app.collaboration')} title={t('app.collaboration')} onClick={() => setPage('collaboration')}><Network size={14} /><span>{t('app.collaboration')}</span></button><IconButton label={t('app.projectTools')} onClick={() => setDialog('tools')}><Settings2 size={15} /></IconButton><button className="header-button" disabled={workspace.tabs.length < 2} onClick={() => void perform('split', () => window.workbench.splitWorkspace(workspace.id, secondaryTab ? {} : { tabId: workspace.tabs.find(tab => tab.id !== activeTab?.id)?.id, direction: 'horizontal' }))}>{secondaryTab ? t('app.mergePanes') : t('app.splitPanes')}</button>{secondaryTab && <button className="header-button" onClick={() => void perform('split-direction', () => window.workbench.splitWorkspace(workspace.id, { tabId: secondaryTab.id, direction: workspace.splitDirection === 'vertical' ? 'horizontal' : 'vertical' }))}>{t('app.changeDirection')}</button>}</>}<span className="local-indicator"><i />{t('app.local')}</span><IconButton label={theme === 'light' ? t('app.switchDark') : t('app.switchLight')} onClick={() => setPreference(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={16} /> : <Sun size={16} />}</IconButton>{page === 'workspace' && <button className="header-button" onClick={() => setDialog('codex')} aria-label={t('app.openCodex')} title={t('app.openCodexHint')}><ArrowUpRight size={13} /><span>Codex App</span></button>}{page === 'workspace' && workspace && <IconButton label={rightPane ? t('app.hideFiles') : t('app.showFiles')} aria-pressed={rightPane} onClick={() => setRightPane(value => !value)}><PanelRight size={16} /></IconButton>}</div>
     </header>
+      <ApplicationUpdateNotice state={applicationUpdates.state} onOpen={() => setDialog('appearance')} />
       {snapshot && !connected && <div className="connection-banner" role="status"><CircleAlert size={14} /><span>{t('connection.stale')}{connection.lastReceivedAt && ` · ${t('connection.lastUpdate', { time: relativeTime(connection.lastReceivedAt) })}`}</span>{connection.error && <small>{connection.error}</small>}</div>}
       {!snapshot ? <div className="loading-view">{loadError ? <><CircleAlert size={23} /><p>{loadError}</p><button className="button" onClick={() => void perform('reload', async () => { setSnapshot(await window.workbench.snapshot()); setLoadError(''); })}>{t('common.reload')}</button></> : <><LoaderCircle className="spin" size={23} /><p>{t('app.loading')}</p></>}</div> : <>
         {page === 'workspace' && (workspace ? <div className="workspace-columns"><div className="workspace-center"><div className="tabbar"><div className="workspace-tabs">{workspace.tabs.map(tab => {
@@ -259,7 +270,7 @@ export function App() {
         {page === 'providers' && <ProvidersView snapshot={snapshot} perform={perform} pending={pending} />}
       </>}
     </main>
-    {dialog === 'appearance' && <Modal title={t('preferences.title')} subtitle={t('preferences.subtitle')} onClose={() => setDialog(null)}><LanguageOptions /><h3 className="preferences-heading">{t('preferences.theme')}</h3><ThemeOptions /><p className="appearance-note">{t('preferences.themeNote')}</p></Modal>}
+    {dialog === 'appearance' && <Modal title={t('preferences.title')} subtitle={t('preferences.subtitle')} onClose={() => setDialog(null)}><LanguageOptions /><h3 className="preferences-heading">{t('preferences.theme')}</h3><ThemeOptions /><p className="appearance-note">{t('preferences.themeNote')}</p><ApplicationUpdateSettings {...applicationUpdates} /></Modal>}
     {dialog === 'providers' && snapshot && <ProvidersDialog snapshot={snapshot} perform={perform} pending={pending} onClose={() => setDialog(null)} />}
     {dialog === 'tools' && workspace && <WorkspaceTools key={workspace.id} workspace={workspace} sessions={sessions} perform={perform} onClose={() => setDialog(null)} />}
     {dialog === 'workspace' && <NewWorkspaceDialog perform={perform} pending={pending} onClose={() => setDialog(null)} onCreated={id => { setDialog(null); selectWorkspace(id); }} />}

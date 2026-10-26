@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
+import { DATA_SCHEMA_VERSION } from '../shared/data-schema';
 import type { AgentMail, MutationReceipt, Session, Workflow, Workspace, WorktreeOperation } from '../shared/types';
 import { moveSession, moveStep, moveWorkflow } from './lifecycle';
 import { recordSessionAttention } from './attention';
@@ -324,7 +325,7 @@ export class StateStore {
     const database = new DatabaseSync(this.databasePath);
     try {
       chmodSync(this.databasePath, 0o600);
-      if (Number(database.prepare('PRAGMA user_version').get()?.user_version) > 1) throw new Error('数据由更新版本创建，请使用兼容版本打开');
+      if (Number(database.prepare('PRAGMA user_version').get()?.user_version) > DATA_SCHEMA_VERSION) throw new Error('数据由更新版本创建，请使用兼容版本打开');
       database.exec(`
         PRAGMA busy_timeout = 1000;
         PRAGMA locking_mode = EXCLUSIVE;
@@ -338,7 +339,7 @@ export class StateStore {
         );
         CREATE INDEX IF NOT EXISTS collaboration_events_run_seq ON collaboration_events (run_id, seq);
         CREATE TABLE IF NOT EXISTS collaboration_receipts (key TEXT PRIMARY KEY, payload TEXT NOT NULL);
-        PRAGMA user_version = 1;
+        PRAGMA user_version = ${DATA_SCHEMA_VERSION};
         BEGIN IMMEDIATE;
         COMMIT;
       `);
