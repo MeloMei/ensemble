@@ -15,19 +15,29 @@ export function useClaudeScrollPinning(dependencies: readonly unknown[], scrollT
   const pinned = useRef(true);
   const lastUserInputAt = useRef(Number.NEGATIVE_INFINITY);
   const programmaticScroll = useRef(false);
+  const navigationOwnsScroll = useRef(false);
   const followTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const scrollToEndRef = useRef(scrollToEnd);
   scrollToEndRef.current = scrollToEnd;
 
   const updatePinned = useCallback((value: boolean) => {
-    pinned.current = value;
-    setIsPinned(value);
+    const next = value && !navigationOwnsScroll.current;
+    pinned.current = next;
+    setIsPinned(next);
   }, []);
 
   const markUserInput = useCallback(() => {
+    navigationOwnsScroll.current = false;
     programmaticScroll.current = false;
     lastUserInputAt.current = performance.now();
   }, []);
+
+  const pauseForNavigation = useCallback(() => {
+    clearTimeout(followTimer.current);
+    navigationOwnsScroll.current = true;
+    programmaticScroll.current = false;
+    updatePinned(false);
+  }, [updatePinned]);
 
   const handleScroll = useCallback(() => {
     const element = containerRef.current;
@@ -43,6 +53,7 @@ export function useClaudeScrollPinning(dependencies: readonly unknown[], scrollT
     const element = containerRef.current;
     if (!element) return;
     clearTimeout(followTimer.current);
+    navigationOwnsScroll.current = false;
     programmaticScroll.current = Math.abs(element.scrollHeight - element.clientHeight - element.scrollTop) > 1;
     updatePinned(true);
     setShowJumpControl(false);
@@ -70,5 +81,5 @@ export function useClaudeScrollPinning(dependencies: readonly unknown[], scrollT
     return () => clearTimeout(followTimer.current);
   }, dependencies);
 
-  return { containerRef, isPinned, showJumpControl, markUserInput, handleScroll, scrollToBottom };
+  return { containerRef, isPinned, showJumpControl, markUserInput, pauseForNavigation, handleScroll, scrollToBottom };
 }
