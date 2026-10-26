@@ -1,0 +1,60 @@
+name: Prepare Weekly Release Draft
+
+"on":
+  schedule:
+    - cron: '15 18 * * 5'
+      timezone: Asia/Shanghai
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ensemble-release-draft
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.22.0
+          cache: npm
+      - name: Verify release planning and draft-only publication
+        run: node --test scripts/prepare-release.test.mjs
+      - name: Plan a release from the checked source
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SOURCE: ${{ github.sha }}
+        run: node scripts/prepare-release.mjs plan --repository "$GITHUB_REPOSITORY" --source "$RELEASE_SOURCE" --output "$RUNNER_TEMP/ensemble-release-plan.json"
+      - name: Install locked dependencies
+        if: steps.plan.outputs.ready == 'true'
+        run: npm ci
+      - name: Set the packaged version without changing main
+        if: steps.plan.outputs.ready == 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.plan.outputs.version }}
+        run: npm version "$RELEASE_VERSION" --no-git-tag-version --ignore-scripts
+      - name: Build and package the Apple Silicon release
+        if: steps.plan.outputs.ready == 'true'
+        run: |
+          node -e 'if (process.arch !== "arm64") throw Error("The release runner must be arm64.")'
+          npm run package:mac
+      - name: Upload an unpublished draft for review
+        if: steps.plan.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/prepare-release.mjs draft --repository "$GITHUB_REPOSITORY" --plan "$RUNNER_TEMP/ensemble-release-plan.json"

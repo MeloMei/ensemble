@@ -43,13 +43,27 @@ Stop the backend after closing the desktop application. An open desktop client r
 | `npm start` | Open the already built application with Electron. Run a build first. |
 | `npm run package:mac` | Build and package a macOS application for the current machine's architecture. |
 
-The packaging script writes `release/<version>/Ensemble-<version>-macOS-<arch>.zip`. It builds the app in a temporary directory, applies an ad hoc signature, verifies that signature with `codesign`, then archives the app and removes the temporary files. Unzip the archive and move `Ensemble.app` to `/Applications`, replacing the existing copy when updating. This is a local package, without Developer ID signing or notarization. The script rejects non-macOS hosts.
+The packaging script writes `Ensemble-<version>-macOS-<arch>.zip`, a DMG with the same name, and `SHA256SUMS` to `release/<version>/`. It builds one application in a temporary directory, applies an ad hoc signature, verifies it with `codesign`, and produces the ZIP, a DMG with an Applications link, and SHA-256 checksums. Move the unzipped `Ensemble.app` to `/Applications`, or drag it to Applications from the DMG. These packages do not have Developer ID signing or notarization. The script rejects non-macOS hosts.
 
 The package includes only the built application, CLI entry point, production dependencies, package metadata, and license records. Source files, documentation, and previous `release/` outputs are excluded. Add any new top-level runtime resource to the packaging input list.
 
 GitHub Actions runs the type check and build when source or build configuration changes, or when started manually. It does not run agent tasks or call model services.
 
 Use build or packaging commands when the change affects their output. They are not required acceptance steps for every edit.
+
+## Prepare a Release
+
+After it is merged into `main`, `Prepare Weekly Release Draft` runs every Friday at 18:15 in `Asia/Shanghai`, and can also be started manually in GitHub Actions. Scheduled runs can be delayed by GitHub; they do not depend on a developer's computer being awake.
+
+The workflow fixes the source to the selected `main` commit. It skips sources with no content changes since the latest stable Release. The latest `Build` run for that exact main commit must succeed first; checks from other commits or PRs cannot substitute for it. If that commit did not trigger Build, run Build manually on `main` before preparing the draft.
+
+The version advances beyond versions already used or reserved, while respecting a higher version in the source package. The version is changed only in the temporary CI checkout; the workflow never commits or pushes to `main`. An Apple Silicon runner checks its actual architecture, produces the ZIP, DMG, and `SHA256SUMS`, and uses GitHub to generate reviewable notes from changes since the previous Release without calling a model service.
+
+After building and verifying the assets, the workflow first creates a public version tag pointing to the fixed source, then an unpublished **Release draft**, without publishing the Release or changing Latest. A maintainer reviews the packages and complete notes, then publishes in GitHub and marks it **Latest**. Installed apps discover versions through GitHub's `/releases/latest`; publishing without marking Latest may leave them receiving the previous version. An existing complete draft for the same source is not duplicated; a new source receives a separate version and draft without changing an earlier draft under review. A version conflict, checksum failure, or upload error stops the workflow instead of silently overwriting attachments.
+
+A tag reserved before a failure remains in place. Later runs report an incomplete draft as an error rather than a successful preparation. After inspecting the unpublished draft and its tag, a maintainer can delete the incomplete draft and the tag reserved solely for it, then run the workflow manually. Do not delete a published version's tag. The workflow never deletes or repairs a draft under review; if only a tag was created, later runs also avoid reusing that reserved version.
+
+The focused release-rule check is `node --test scripts/prepare-release.test.mjs`. The workflow runs it before accessing release information. It uses temporary files and GitHub substitutes, without model calls or real drafts.
 
 ## Local data and the CLI
 

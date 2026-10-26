@@ -2,9 +2,10 @@ import { packager } from '@electron/packager';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { basename, join } from 'node:path';
-import { mkdtemp, mkdir, readFile, rename, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { fileSha256, macReleaseAssets } from './mac-release-assets.mjs';
 
 if (process.platform !== 'darwin') throw new Error('此打包命令用于本机 macOS。');
 const projectRoot = fileURLToPath(new URL('../', import.meta.url));
@@ -17,8 +18,11 @@ const nonRuntimeEntries = new RegExp(`^/(?!(${runtimeEntries.map(entry => entry.
 const run = promisify(execFile);
 const temporaryDirectory = await mkdtemp(join(tmpdir(), 'ensemble-package-'));
 const releaseDirectory = join(projectRoot, 'release', version);
-const archive = join(releaseDirectory, `${productName}-${version}-macOS-${process.arch}.zip`);
+const [archiveName, imageName] = macReleaseAssets(version, process.arch);
+const archive = join(releaseDirectory, archiveName);
 const temporaryArchive = `${archive}.${basename(temporaryDirectory)}.tmp`;
+const temporaryImage = join(releaseDirectory, `.${basename(temporaryDirectory)}.dmg`);
+const temporaryChecksums = join(releaseDirectory, `.${basename(temporaryDirectory)}.SHA256SUMS`);
 try {
   const paths = await packager({
     dir: projectRoot, name: productName, platform: 'darwin', arch: process.arch,
@@ -27,18 +31,30 @@ try {
     appCategoryType: 'public.app-category.developer-tools',
     ignore: [nonRuntimeEntries],
   });
+  if (paths.length !== 1) throw new Error('Expected exactly one macOS application.');
   await mkdir(releaseDirectory, { recursive: true });
-  for (const path of paths) {
-    const app = join(path, `${productName}.app`);
-    await run('codesign', ['--force', '--deep', '--sign', '-', app]);
-    await run('codesign', ['--verify', '--deep', '--strict', app]);
-    await run('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', app, temporaryArchive]);
-    await rename(temporaryArchive, archive);
-    process.stdout.write(`${archive}\n`);
+  const app = join(paths[0], `${productName}.app`);
+  await run('codesign', ['--force', '--deep', '--sign', '-', app]);
+  await run('codesign', ['--verify', '--deep', '--strict', app]);
+  await run('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', app, temporaryArchive]);
+  const imageRoot = join(temporaryDirectory, 'image');
+  await mkdir(imageRoot);
+  await run('ditto', [app, join(imageRoot, `${productName}.app`)]);
+  await symlink('/Applications', join(imageRoot, 'Applications'));
+  await run('hdiutil', ['create', '-volname', productName, '-srcfolder', imageRoot, '-format', 'UDZO', '-fs', 'HFS+', temporaryImage]);
+  await run('hdiutil', ['verify', temporaryImage]);
+  const checksums = `${await fileSha256(temporaryArchive)}  ${archiveName}\n${await fileSha256(temporaryImage)}  ${imageName}\n`;
+  await writeFile(temporaryChecksums, checksums);
+  for (const [temporary, name] of [[temporaryArchive, archiveName], [temporaryImage, imageName], [temporaryChecksums, 'SHA256SUMS']]) {
+    const destination = join(releaseDirectory, name);
+    await rename(temporary, destination);
+    process.stdout.write(`${destination}\n`);
   }
 } finally {
   await Promise.all([
     rm(temporaryDirectory, { recursive: true, force: true }),
     rm(temporaryArchive, { force: true }),
+    rm(temporaryImage, { force: true }),
+    rm(temporaryChecksums, { force: true }),
   ]);
 }
