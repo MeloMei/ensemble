@@ -13,6 +13,7 @@ const sourceLabels: Record<string, string> = {
   'codex-app-server': 'codex', 'claude-local-configuration': 'claude',
   'pi-native-rpc': 'pi',
   'acp-runtime-discovery': 'acp', 'acp-discovery-error': 'acpError', 'plugin-manifest': 'manifest',
+  'acp-native-session': 'acpSession',
 };
 
 export function useRuntimeHealth(providers: ProviderInfo[], cwd: string) {

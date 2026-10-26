@@ -10,10 +10,12 @@ import { createPiProvider } from './providers/pi';
 import { createAcpProvider, type AcpProvider } from './providers/acp';
 import { createOpenCodeDescriptor } from './providers/opencode';
 import { createDeepSeekHarnessDescriptor } from './providers/deepseek-harness';
+import { createGeminiDescriptor } from './providers/gemini';
+import { createCursorDescriptor } from './providers/cursor';
 import { loadPluginProviders } from './providers/plugins';
 import { TerminalManager } from './terminal-manager';
 import { WorkspaceFiles } from './workspace-files';
-import type { ProviderInfo, Snapshot } from '../shared/types';
+import type { Snapshot } from '../shared/types';
 import type { TerminalOutputEvent } from '../shared/backend';
 import { AttachmentService } from './attachment-service';
 import { RuntimeSettings, readDeepSeekBalance } from './runtime-settings';
@@ -47,10 +49,6 @@ const workflowSchema = z.object({
   name: z.string().trim().min(1).max(200), cwd: cwdSchema,
   steps: z.array(z.object({ id: idSchema, title: z.string().trim().min(1).max(200), providerId: idSchema, modelId: modelIdSchema, prompt: promptSchema, dependsOn: z.array(idSchema).max(50) }).strict()).min(1).max(50),
 }).strict();
-
-const unavailable: ProviderInfo[] = [
-  { id: 'cursor', name: 'Cursor', source: 'builtin', available: false, detail: '接入适配器待实现。本机尚未检测到 Cursor Agent。', capabilities: { resume: false, approvals: false } },
-];
 
 export async function createWorkbenchService(options: {
   dataPath: string; command: string; bridgePath: string; publish(snapshot: Snapshot): void;
@@ -135,6 +133,8 @@ export async function createWorkbenchService(options: {
     let codexProvider: Awaited<ReturnType<typeof createCodexProvider>> | undefined;
     let openCodeProvider: AcpProvider | undefined;
     let deepSeekProvider: AcpProvider | undefined;
+    let geminiProvider: AcpProvider | undefined;
+    let cursorProvider: AcpProvider | undefined;
     async function refreshProviders(): Promise<void> {
       if (codexProvider) await codexProvider.refreshInfo();
       else codexProvider = await createCodexProvider();
@@ -143,9 +143,11 @@ export async function createWorkbenchService(options: {
         createClaudeProvider(), createPiProvider({ dataPath }), loadPluginProviders(engine.pluginPath),
         openCodeProvider ? openCodeProvider.refreshInfo() : createAcpProvider('opencode', 'OpenCode', () => createOpenCodeDescriptor({ dataPath })).then(provider => { openCodeProvider = provider; }),
         deepSeekProvider ? deepSeekProvider.refreshInfo() : createAcpProvider('deepseek-harness', 'DeepSeek Harness', () => createDeepSeekHarnessDescriptor({ dataPath })).then(provider => { deepSeekProvider = provider; }),
+        geminiProvider ? geminiProvider.refreshInfo() : createAcpProvider('gemini', 'Gemini CLI', () => createGeminiDescriptor({ dataPath })).then(provider => { geminiProvider = provider; }),
+        cursorProvider ? cursorProvider.refreshInfo() : createAcpProvider('cursor', 'Cursor Agent', () => createCursorDescriptor({ dataPath })).then(provider => { cursorProvider = provider; }),
       ]);
       const codex = codexProvider;
-      engine.setProviders([codex, claude, pi, openCodeProvider!, deepSeekProvider!, ...plugins.adapters].map(instrument), unavailable, plugins.errors);
+      engine.setProviders([codex, claude, pi, geminiProvider!, cursorProvider!, openCodeProvider!, deepSeekProvider!, ...plugins.adapters].map(instrument), [], plugins.errors);
     }
 
 

@@ -35,8 +35,9 @@ const configOptions = () => [
 ];
 const update = (update, id = sessionId) => send({ method: 'session/update', params: { sessionId: id, update } });
 const chunk = (messageId, text, id = sessionId) => update({ sessionUpdate: 'agent_message_chunk', messageId, content: { type: 'text', text } }, id);
-const finish = stopReason => { if (promptId !== undefined) { respond(promptId, { stopReason }); promptId = undefined; } };
+const finish = stopReason => { if (promptId !== undefined) { respond(promptId, { stopReason, ...(mode === 'rich' ? {usage:{inputTokens:12,outputTokens:4,totalTokens:16,cachedReadTokens:2}} : {}) }); promptId = undefined; } };
 const stream = () => {
+  if (mode === 'mode-upgrade') update({ sessionUpdate: 'current_mode_update', currentModeId: 'build' });
   if (mode === 'rich') {
     update({ sessionUpdate: 'tool_call', toolCallId: 'native-tool', title: 'Observed tool', status: 'in_progress', rawInput: { command: 'literal' } });
     update({ sessionUpdate: 'tool_call_update', toolCallId: 'native-tool', title: null, status: 'completed', rawOutput: 'real tool result' });
@@ -77,6 +78,7 @@ if (mode === 'dispose') {
 createInterface({ input: process.stdin }).on('line', line => {
   const frame = JSON.parse(line); log(frame);
   if (!frame.method) {
+    if (frame.id === 'vendor-opaque') { if (cancelled) finish('cancelled'); else stream(); return; }
     if (frame.id === 'form-opaque') { stream(); return; }
     if (frame.id !== 'permission-opaque') return;
     permissionAnswered = true;
@@ -93,8 +95,17 @@ createInterface({ input: process.stdin }).on('line', line => {
     if (mode === 'resume-rejected') { send({ id: frame.id, error: { code: -32602, message: 'saved session unavailable' } }); return; }
     sessionId = frame.params.sessionId || sessionId;
     chunk('history', 'historical output');
+    if (mode.startsWith('legacy')) {
+      respond(frame.id, { ...(frame.method === 'session/new' ? { sessionId } : {}), models: { currentModelId: model, availableModels: [{ modelId: 'runtime-free', name: 'Free' }, { modelId: 'runtime-review', name: 'Review' }] },
+        modes: { currentModeId: sessionMode, availableModes: [{ id: 'build', name: 'Build' }, { id: 'plan', name: 'Plan' }] } }); return;
+    }
     respond(frame.id, { ...(frame.method === 'session/new' ? { sessionId } : {}), configOptions: configOptions() }); return;
   }
+  if (frame.method === 'session/set_model') {
+    if (mode === 'legacy-model-refused') { send({ id: frame.id, error: { code: -32602, message: 'selected model unavailable' } }); return; }
+    model = frame.params.modelId; respond(frame.id, {}); return;
+  }
+  if (frame.method === 'session/set_mode') { sessionMode = frame.params.modeId; chunk('mode-update', '[MODE_UPDATE] ' + sessionMode); respond(frame.id, {}); return; }
   if (frame.method === 'session/set_config_option') {
     if (frame.params.configId === 'model' && mode !== 'unconfirmed') model = frame.params.value;
     if (frame.params.configId === 'reasoning_effort') reasoning = frame.params.value;
@@ -104,11 +115,14 @@ createInterface({ input: process.stdin }).on('line', line => {
   if (frame.method === 'session/close') { respond(frame.id, {}); return; }
   if (frame.method === 'session/cancel') {
     cancelled = true;
-    if (permissionAnswered || !['approval', 'dispose'].includes(mode)) finish('cancelled');
+    if (permissionAnswered || !['approval', 'dispose', 'vendor-abort'].includes(mode)) finish('cancelled');
     return;
   }
   if (frame.method === 'session/prompt') {
     promptId = frame.id;
+    if (mode.startsWith('vendor')) {
+      send({ id: 'vendor-opaque', method: 'fixture/confirm', params: { sessionId: mode === 'vendor-foreign' ? 'foreign' : sessionId, title: 'Native extension' } }); return;
+    }
     if (mode === 'form') {
       send({ id: 'foreign-form', method: 'elicitation/create', params: { mode: 'form', sessionId: 'another-session', message: 'Foreign question', requestedSchema: { type: 'object', properties: {} } } });
       send({ id: 'form-opaque', method: 'elicitation/create', params: { mode: 'form', sessionId, toolCallId: 'native-question', message: 'Native question', requestedSchema: { type: 'object', properties: {
@@ -208,6 +222,113 @@ test('ACP native form elicitation uses the user approval UI and returns typed or
   } finally { await f.cleanup(); }
 });
 
+test('ACP legacy model and mode acknowledgments use native catalogs without replaying startup messages', async () => {
+  const f = await fixture('legacy');
+  try {
+    f.descriptor.models = undefined; f.descriptor.defaultModelId = undefined;
+    f.descriptor.tracksDelivery = true;
+    f.descriptor.sessionModes = { review: 'build', 'read-only': 'plan' };
+    f.descriptor.selectModel = (choices, id) => {
+      const choice = choices.find(choice => choice.value === id);
+      if (!choice) throw new Error('native model unavailable');
+      return choice;
+    };
+    f.context.session.modelId = undefined;
+    f.context.session.settings = { permission: 'read-only' };
+    await f.provider.refreshInfo();
+    assert.equal(Object.hasOwn(f.provider.info, 'models') && f.provider.info.models !== undefined, false);
+    await f.provider.run(f.context);
+    const frames = await f.trace();
+    assert(frames.some(frame => frame.method === 'session/set_model' && (frame.params as any).modelId === 'runtime-review'));
+    assert(frames.some(frame => frame.method === 'session/set_mode' && (frame.params as any).modeId === 'plan'));
+    assert(!frames.some(frame => frame.method === 'session/set_config_option'));
+    assert.deepEqual(f.provider.info.models?.map(model => model.id), ['runtime-free', 'runtime-review']);
+    assert.equal(f.provider.info.defaultModelId, undefined);
+    assert(f.events.filter(event => event.type === 'text').every(event => !/historical|MODE_UPDATE/.test(event.text)));
+    assert(f.events.some(event => event.type === 'delivery' && event.status === 'accepted'));
+  } finally { await f.cleanup(); }
+});
+
+test('ACP extension requests receive the active context and the exact user reply', async () => {
+  const f = await fixture('vendor');
+  try {
+    let asked = 0;
+    f.context.approve = async input => { asked++; assert.equal(input.title, 'Native extension'); return 'confirm'; };
+    f.descriptor.clientRequests = { 'fixture/confirm': async (params, context, signal) => {
+      assert.equal(context, f.context); assert.equal(signal.aborted, false);
+      return { decision: await context.approve({ title: String((params as any).title), detail: '', choices: [{ id: 'confirm', label: 'Confirm' }] }, signal) };
+    } };
+    await f.provider.run(f.context);
+    assert.equal(asked, 1);
+    assert.deepEqual((await f.trace()).find(frame => frame.id === 'vendor-opaque' && !frame.method)?.result, { decision: 'confirm' });
+  } finally { await f.cleanup(); }
+});
+
+test('ACP runtime permission decisions deny operations without asking and delivery failures remain distinguishable', async () => {
+  const denied = await fixture('approval');
+  try {
+    denied.descriptor.permissionDecision = () => 'deny';
+    await assert.rejects(denied.provider.run(denied.context), { name: 'AbortError' });
+    assert.deepEqual((await denied.trace()).find(frame => frame.id === 'permission-opaque' && !frame.method)?.result,
+      { outcome: { outcome: 'selected', optionId: 'opaque-reject' } });
+  } finally { await denied.cleanup(); }
+  for (const mode of ['unconfirmed', 'exit-error']) {
+    const f = await fixture(mode);
+    try {
+      f.descriptor.tracksDelivery = true;
+      await assert.rejects(f.provider.run(f.context));
+      const delivery = f.events.filter(event => event.type === 'delivery');
+      assert.equal(delivery.some(event => event.status === 'rejected'), mode === 'unconfirmed');
+      assert.equal(delivery.some(event => event.status === 'accepted'), false);
+    } finally { await f.cleanup(); }
+  }
+});
+
+test('ACP stops a native mode change that escalates a read-only session', async () => {
+  const f = await fixture('mode-upgrade');
+  try {
+    f.descriptor.sessionModes = { review: 'build', 'read-only': 'plan' };
+    f.context.session.settings = { permission: 'read-only' };
+    await assert.rejects(f.provider.run(f.context), /改变了只读权限模式/);
+    assert((await f.trace()).some(frame => frame.method === 'session/cancel'));
+  } finally { await f.cleanup(); }
+});
+
+test('ACP refuses to dispatch while a native MCP initialization gate has failed', async () => {
+  const f = await fixture();
+  const launch = f.descriptor.launch;
+  f.descriptor.tracksDelivery = true;
+  f.descriptor.launch = async (...args) => ({ ...await launch(...args), async waitUntilReady() { throw new Error('MCP initialization incomplete'); } });
+  try {
+    await assert.rejects(f.provider.run(f.context), /MCP initialization incomplete/);
+    assert(!(await f.trace()).some(frame => frame.method === 'session/prompt'));
+    assert(f.events.some(event => event.type === 'delivery' && event.status === 'rejected'));
+  } finally { await f.cleanup(); }
+});
+
+test('ACP vendor cancellation replies remain protocol results when identity or lifetime guards reject a request', async () => {
+  for (const mode of ['vendor-foreign', 'vendor-abort']) {
+    const f = await fixture(mode);
+    let asked!: () => void;
+    const awaitingApproval = new Promise<void>(resolve => { asked = resolve; });
+    f.descriptor.clientRequestCancellation = { 'fixture/confirm': { outcome: { outcome: 'cancelled' } } };
+    f.descriptor.clientRequests = { 'fixture/confirm': async (_input, context, signal) => ({ result: await context.approve({ title: 'Native', detail: '', choices: [{ id: 'allow', label: 'Allow' }] }, signal) }) };
+    f.context.approve = async (_input, signal) => {
+      asked();
+      return new Promise((_, reject) => signal!.addEventListener('abort', () => reject(new Error('approval withdrawn')), { once: true }));
+    };
+    try {
+      const done = f.provider.run(f.context);
+      if (mode === 'vendor-abort') {
+        const rejected = assert.rejects(done, { name: 'AbortError' });
+        await awaitingApproval; f.controller.abort(); await rejected;
+      } else await done;
+      const frames = await f.trace();
+      assert.deepEqual(frames.find(frame => frame.id === 'vendor-opaque' && !frame.method)?.result, { outcome: { outcome: 'cancelled' } });
+    } finally { await f.cleanup(); }
+  }
+});
+
 test('ACP confirms model and reasoning before prompt, resumes the native session and routes message chunks', { timeout: 8000 }, async () => {
   const f = await fixture();
   try {
@@ -266,6 +387,7 @@ test('ACP carries actual attachments and MCP environment, confirms mode, and pre
     assert(tools.some(event => event.type === 'structured' && event.event.title === 'Observed tool' && event.event.status === 'completed' && event.event.output === 'real tool result' && event.event.input?.includes('literal')));
     assert(f.events.some(event => event.type === 'structured' && event.event.kind === 'plan' && event.event.entries?.[0].text === 'native plan'));
     assert(f.events.some(event => event.type === 'usage' && event.usage.scope === 'context' && event.usage.contextUsed === 12 && event.usage.cost === undefined));
+    assert(f.events.some(event => event.type === 'usage' && event.usage.scope === 'cumulative' && event.usage.inputTokens === 12 && event.usage.outputTokens === 4 && event.usage.cachedTokens === 2));
   } finally { await f.cleanup(); }
 });
 

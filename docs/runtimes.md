@@ -15,6 +15,8 @@ Use the official guides for the current installation and sign-in steps. The same
 | Codex | [Codex CLI](https://learn.chatgpt.com/docs/codex/cli) | [Authentication](https://learn.chatgpt.com/docs/auth) |
 | Claude Code | [Quickstart](https://code.claude.com/docs/en/quickstart) | [Authentication](https://code.claude.com/docs/en/authentication) |
 | Pi | [Official Pi](https://pi.dev/) · [Quickstart](https://pi.dev/docs/latest/quickstart) | [Authentication and models](https://pi.dev/docs/latest/models) |
+| Gemini CLI | [Installation](https://geminicli.com/docs/get-started/installation/) | [Authentication](https://geminicli.com/docs/get-started/authentication/) |
+| Cursor Agent | [CLI installation](https://cursor.com/docs/cli/installation) | [Authentication](https://cursor.com/docs/cli/reference/authentication) |
 | OpenCode V2 | [OpenCode 2](https://opencode.ai/v2/docs/) | [V2 providers](https://opencode.ai/v2/docs/providers/) |
 | DeepSeek Harness | [Official application and source](https://www.deepseek.com/en/harness/) | [Configure models](https://deepseek-harness.github.io/deepseek-harness/en/guide/providers) |
 
@@ -33,6 +35,8 @@ Open **接入与插件 → 刷新检测** after installing a runtime. The follow
 | Codex | `CODEX_BINARY` | `PATH`, standard macOS Codex/ChatGPT application locations, `~/.local/bin`, `~/.cargo/bin` |
 | Claude Code | `CLAUDE_BINARY` | `PATH`, `~/.local/bin`, Homebrew locations, installed nvm versions |
 | Pi | `PI_BINARY` | `PATH`, `~/.local/bin`, Homebrew locations, installed nvm versions |
+| Gemini CLI | `GEMINI_BINARY` | `PATH`, `~/.local/bin`, Homebrew locations, installed nvm versions |
+| Cursor Agent | `CURSOR_BINARY` | `agent`/`cursor-agent` on `PATH`, `~/.local/bin`, official CLI installation directory |
 | OpenCode V2 | `OPENCODE_BINARY` | Standard macOS OpenCode application locations, `PATH`, `~/.opencode/bin`, `~/.local/bin` |
 | DeepSeek Harness | `DSH_BINARY` | `PATH`, standard macOS DeepSeek Harness application locations, `~/.local/bin` |
 
@@ -74,6 +78,28 @@ Ensemble loads a temporary controlled extension instead of user extensions or pr
 
 Native MCP receives the configured stdio and HTTP servers through this extension. SSE is not supported. Authenticated Ensemble collaboration tools use their separately issued authorization; file read-only mode does not remove collaboration permissions. The prompt is not sent unless the tool guard and Ensemble MCP tools are ready. Temporary extension files and configuration are removed after the process closes.
 
+## Gemini CLI
+
+Ensemble uses the official `gemini --acp` entry point. Authenticate in Gemini CLI and confirm model access first. The installed CLI must expose ACP, approval modes, and temporary administrator policies; missing interfaces stop integration. The first task uses the native session's current model, and the native model catalog appears after initialization. No static model catalog is substituted. An explicit model must be offered and successfully selected before sending a task.
+
+Model and mode configuration supports both ACP `configOptions` and native `models`/`modes` responses. Native continuation, streamed text, tool events, text attachments, and declared image input are supported. Failed continuation preserves the original ID without creating a replacement. Mode notices and replayed history during setup are excluded from the new assistant response.
+
+A temporary administrator policy routes tool execution through Ensemble approvals. Reads and searches may run directly; read-only turns deny writes and commands. Issued collaboration tools have separate task authorization. The CLI trusts only the selected working directory for this run without changing permanent trust configuration. Integration stops if system policies prevent the temporary policy from taking effect.
+
+Google has changed Gemini CLI account eligibility. See the [official repository](https://github.com/google-gemini/gemini-cli) for its unpaid-tier and Google One migration notice. This integration runs Gemini CLI; authentication and model access depend on that CLI and the actual account.
+
+## Cursor Agent
+
+Ensemble uses the official `agent acp` entry point and requires Cursor CLI **2026.10.22 or newer**. Install the CLI separately and complete `agent login`. Models come from the native session. An unspecified model keeps that session's default choice. Conversation files are stored separately under Ensemble's data directory and resumed with the original native ID.
+
+The integration supports streaming, tool approvals, native questions, and plan confirmation. Questions retain original option IDs. Read-only turns only display plans; accepting a plan in a regular turn lets Cursor save its native plan file. Plan acceptance does not change subsequent file permissions or collaboration grants. TODOs retain cancellation status, while task and image results reflect native reports. The current CLI does not provide ACP token usage.
+
+An official hook checks tool execution requests. Temporary configuration clears automatic allow rules and preserves existing deny rules. An unavailable approval channel denies execution. Conversation files persist, and native authentication storage is unchanged.
+
+Project and Ensemble collaboration MCP servers are injected through the current ACP session without editing the user's `.cursor/mcp.json`. Cursor Dashboard team MCP servers are outside the current ACP integration. Tool permissions and issued collaboration permissions are checked separately.
+
+Gemini CLI and Cursor Agent wait for the current Ensemble MCP initialization handshake before sending a task. Connection failure or timeout stops dispatch.
+
 ## OpenCode V2
 
 Install OpenCode V2 separately. Ensemble starts its `acp` command using ACP, the Agent Client Protocol used to exchange sessions, prompts, tool events, and permission requests.
@@ -106,7 +132,7 @@ The temporary overlay is removed when the process closes. A missing or unconfirm
 - ACP model, reasoning, and permission choices must be offered and confirmed by the runtime. Unsupported choices stop the task. Permission prompts expose only the native single-use allow/reject choices.
 - Image transport support does not mean every selected model can interpret images. ACP context usage, runtime token usage, and official account balances are separate records.
 - DeepSeek balance lookup is user-initiated. Each returned currency is retained separately, without adding or converting balances. Usage counters are not an invoice or proof of zero cost.
-- Claude Code, Pi, OpenCode, and DeepSeek Harness do not currently offer native conversation rewind in Ensemble. A context fork creates an editable draft; it starts a new task only when sent.
+- Claude Code, Pi, Gemini CLI, Cursor Agent, OpenCode, and DeepSeek Harness do not currently offer native conversation rewind in Ensemble. A context fork creates an editable draft; it starts a new task only when sent.
 - Read-only file access and collaboration permissions are separate. Role names grant no permissions. External agents keep their own native permission settings; Ensemble records only the tasks, messages, and artifacts they exchange through its MCP interface.
 - A runtime error stops that execution attempt. Collaboration can retry according to the run's configured limits, but a failed attempt is retained. A backend restart interrupts unfinished work and requires explicit recovery.
 

@@ -9,7 +9,7 @@ export type SessionStatus = 'idle' | 'queued' | 'running' | 'waiting_approval' |
 export type StepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'blocked' | 'cancelled';
 export type RunStatus = 'draft' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
 
-export const BUILTIN_PROVIDER_IDS = ['codex', 'claude', 'pi', 'opencode', 'deepseek-harness', 'cursor'] as const;
+export const BUILTIN_PROVIDER_IDS = ['codex', 'claude', 'pi', 'gemini', 'cursor', 'opencode', 'deepseek-harness'] as const;
 export interface ProviderModel { id: string; name: string; free: boolean; efforts?: string[] }
 
 export interface ProviderInfo {
@@ -304,9 +304,9 @@ export interface SessionSettings { effort?: string; permission?: 'review' | 'rea
 export type SessionSettingsPatch = { [K in keyof SessionSettings]?: SessionSettings[K] | null };
 export interface ProcessEvent {
   id: string; kind: 'tool' | 'plan' | 'task' | 'subagent'; title: string;
-  status: 'pending' | 'running' | 'completed' | 'failed';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
   nativeId?: string; parentId?: string; input?: string; output?: string; sessionId?: string;
-  entries?: { text: string; status: 'pending' | 'running' | 'completed' }[];
+  entries?: { text: string; status: 'pending' | 'running' | 'completed' | 'cancelled' }[];
 }
 export interface UsageRecord {
   id: string; source: string; scope: 'turn' | 'cumulative' | 'context';
