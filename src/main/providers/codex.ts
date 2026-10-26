@@ -160,6 +160,7 @@ export async function createCodexProvider(): Promise<CodexProvider> {
   let catalog: CatalogModel[] = [];
   const sessions = new Map<string, CodexSessionConnection>();
   const provider: CodexProvider = {
+    tracksDelivery: true,
     info: {
       id: 'codex', name: 'Codex', source: 'builtin', available: false, detail, detailI18n,
       capabilities: { resume: true, approvals: true, images: true, rewind: true, permissions: true, effort: true },

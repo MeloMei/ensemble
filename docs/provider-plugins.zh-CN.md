@@ -2,7 +2,7 @@
 
 [English](provider-plugins.md) | 简体中文
 
-把每个本地插件放在插件目录的独立子目录里，提供 `manifest.json`，再在 App 中刷新 Providers。插件以本机当前用户权限运行，只加载自己信任的代码。每个 turn 启动一个子进程，不使用 shell。内置 ID `codex`、`claude`、`opencode`、`deepseek-harness`、`cursor` 保留，使用这些 ID 的插件会被拒绝加载。如果多个插件使用同一 ID，这些插件全部拒绝加载。
+把每个本地插件放在插件目录的独立子目录里，提供 `manifest.json`，再在 App 中刷新 Providers。插件以本机当前用户权限运行，只加载自己信任的代码。每个 turn 启动一个子进程，不使用 shell。内置 ID `codex`、`claude`、`pi`、`opencode`、`deepseek-harness`、`cursor` 保留，使用这些 ID 的插件会被拒绝加载。如果多个插件使用同一 ID，这些插件全部拒绝加载。
 
 ## 协议版本
 

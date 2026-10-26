@@ -14,6 +14,7 @@ Ensemble 在会话选定的项目目录中启动本机 Agent 运行时。运行�
 | --- | --- | --- |
 | Codex | [Codex CLI](https://learn.chatgpt.com/docs/codex/cli) | [认证说明](https://learn.chatgpt.com/docs/auth) |
 | Claude Code | [快速开始](https://code.claude.com/docs/en/quickstart) | [认证说明](https://code.claude.com/docs/en/authentication) |
+| Pi | [Pi 官网](https://pi.dev/) · [快速开始](https://pi.dev/docs/latest/quickstart) | [认证与模型](https://pi.dev/docs/latest/models) |
 | OpenCode V2 | [OpenCode 2](https://opencode.ai/v2/docs/) | [V2 模型提供商](https://opencode.ai/v2/docs/providers/) |
 | DeepSeek Harness | [官方应用与源码](https://www.deepseek.com/en/harness/) | [配置模型](https://deepseek-harness.github.io/deepseek-harness/en/guide/providers) |
 
@@ -31,6 +32,7 @@ DeepSeek Harness 需要提供本机可发现的 `dsh` CLI，Ensemble 使用其[�
 | --- | --- | --- |
 | Codex | `CODEX_BINARY` | `PATH`、macOS 标准 Codex/ChatGPT 应用位置、`~/.local/bin`、`~/.cargo/bin` |
 | Claude Code | `CLAUDE_BINARY` | `PATH`、`~/.local/bin`、Homebrew 位置、已安装的 nvm 版本 |
+| Pi | `PI_BINARY` | `PATH`、`~/.local/bin`、Homebrew 位置、已安装的 nvm 版本 |
 | OpenCode V2 | `OPENCODE_BINARY` | macOS 标准 OpenCode 应用位置、`PATH`、`~/.opencode/bin`、`~/.local/bin` |
 | DeepSeek Harness | `DSH_BINARY` | `PATH`、macOS 标准 DeepSeek Harness 应用位置、`~/.local/bin` |
 
@@ -57,6 +59,20 @@ Codex 支持原生续聊、工具和计划事件、审批及已接入的问答�
 只读使用原生 `plan` 模式，并在适配器内限制工具。未经过只读验证的工具会被拒绝，包括 shell 命令、文件编辑和未知 MCP 工具。已认证的 Ensemble 协作工具使用另行签发的授权。这是工具权限控制，不是操作系统文件沙箱。
 
 每轮 MCP 配置通过权限为 `0600` 的临时文件传入，结束后清理。当前不支持原生对话回退，可以用上下文分叉准备新会话。
+
+## Pi
+
+请通过 npm 安装官方包 `@earendil-works/pi-coding-agent`，版本需为 **1.3.0 或更新版本**。适配器需要官方包提供的 SDK、RPC 接口和原生 MCP。包或协议能力不兼容时，检测或本轮任务会停止，不会自动改用其他运行时。自动查找不到时，可以用 `PI_BINARY` 指向该包的 `pi` 程序。
+
+先按[官方模型指南](https://pi.dev/docs/latest/models)在 Pi CLI 中完成认证并选择默认模型。Ensemble 沿用全局 Pi 认证、模型配置和环境变量。模型列表来自 Pi 原生目录。显式选择的模型和思考档必须由运行时提供并确认，才会发送提示。图片附件要求所选模型声明支持图片输入。
+
+每轮启动独立的 RPC 进程。原生对话文件保存在 Ensemble 数据目录的 `pi/sessions` 下，续聊时复用。原文件无法恢复时，本轮失败，不会另建对话代替。接入支持流式文本、文本和图片附件、工具事件及运行时报告的 token 用量。Ensemble 当前未接入 Pi 原生回退和执行中的实时引导。
+
+任务可能已被接收、但确认响应丢失时，投递状态会保留为未知，并阻止直接重发。当前未接入 Pi 历史投递核对；需要继续时，可以先用上下文分叉准备新草稿。
+
+Ensemble 加载临时受控扩展，不加载用户自定义扩展和项目 Pi 配置。全局认证与模型设置仍可使用，依赖自定义扩展的工具和模型提供商不会加载。扩展允许标准 read、grep、find 和 ls 工具。普通审批模式下，命令执行、文件写入及其他工具每次调用都需要审批；只读模式拒绝这些工具。这是工具权限控制，不是操作系统沙箱。
+
+受控扩展把已配置的 stdio 和 HTTP 服务交给 Pi 原生 MCP，不支持 SSE。已认证的 Ensemble 协作工具使用另行签发的授权，文件只读模式不会取消协作权限。工具守卫和 Ensemble MCP 工具就绪后，才会发送提示。进程关闭后会清理临时扩展及配置。
 
 ## OpenCode V2
 
@@ -90,7 +106,7 @@ OpenCode 使用 Ensemble 数据目录下的独立 profile。适配器禁用项�
 - ACP 的模型、推理和权限选项必须由原生提供并确认。不支持的选项会停止任务。审批仅展示原生提供的单次允许或拒绝选项。
 - 图片传输协议可用，不代表所有模型都能理解图片。ACP 上下文占用、运行时 token 和官方账户余额分别记录。
 - DeepSeek 余额由用户主动查询。各币种分别保留，不相加、不换算。用量计数不等于账单，也不能证明没有费用。
-- Claude Code、OpenCode 和 DeepSeek Harness 当前不支持 Ensemble 内的原生对话回退。上下文分叉会生成可编辑草稿，发送后才开始新任务。
+- Claude Code、Pi、OpenCode 和 DeepSeek Harness 当前不支持 Ensemble 内的原生对话回退。上下文分叉会生成可编辑草稿，发送后才开始新任务。
 - 文件只读和协作权限分别配置。角色名称不会授予权限。外部 Agent 沿用自身原生权限；Ensemble 只记录它通过 MCP 交换的任务、消息和产物。
 - 运行时出错会停止本次执行尝试。协作可以按运行配置的上限重试，失败记录会保留。后台重启后，未完成工作会中断，需要明确恢复。
 

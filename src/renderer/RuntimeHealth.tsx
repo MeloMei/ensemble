@@ -11,6 +11,7 @@ const sourceLabels: Record<string, string> = {
   'no-authentication-evidence': 'noAuthentication', 'no-quota-source': 'noQuota',
   'plugin-ready': 'plugin',
   'codex-app-server': 'codex', 'claude-local-configuration': 'claude',
+  'pi-native-rpc': 'pi',
   'acp-runtime-discovery': 'acp', 'acp-discovery-error': 'acpError', 'plugin-manifest': 'manifest',
 };
 

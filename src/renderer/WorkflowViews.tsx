@@ -5,7 +5,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
 import { ArrowUpRight, Check, Copy, CircleAlert, CircleStop, Folder, FolderOpen, GitBranch, LoaderCircle, MessageSquare, Plug, Plus, RefreshCw, ShieldCheck, Trash2, X } from 'lucide-react';
 import type { ProviderInfo, Session, Snapshot, Workflow, WorkflowInput, WorkflowStep, WorkflowStepInput } from '../shared/types';
-import { DirectoryField, IconButton, Modal, ModelField, ProviderSelect, Status, defaultModelId, statusLabel, modelName, modelPolicy, validModelSelection, type Perform } from './ui';
+import { DirectoryField, IconButton, Modal, ModelField, ProviderSelect, Status, defaultModelId, statusLabel, modelName, modelPolicy, validModelSelection, usesCliModelDefault, type Perform } from './ui';
 import { motionMessageFadeUp } from './vendor/open-claude-ui/ClaudeMotionPresets';
 import { RuntimeHealth, useRuntimeHealth } from './RuntimeHealth';
 import './WorkflowViews.css';
@@ -117,7 +117,7 @@ export function WorkflowView({ workflow, providers, sessions = [], perform, pend
 
 function ProviderModelSummary({ provider }: { provider: ProviderInfo }) {
   const { t } = useTranslation('shell');
-  if (!provider.models || (!provider.defaultModelId && ['codex', 'claude'].includes(provider.id))) return provider.id === 'codex' || provider.id === 'claude'
+  if (!provider.models || (!provider.defaultModelId && usesCliModelDefault(provider))) return usesCliModelDefault(provider)
     ? <p className="provider-model-note">{t('provider.cliModel')}</p> : null;
   const model = provider.models.find(item => item.id === provider.defaultModelId);
   const policy = modelPolicy(provider);
@@ -134,6 +134,10 @@ function providerGuides(): Record<string, { install: string; configure: string; 
   claude: {
     install: 'https://code.claude.com/docs/en/quickstart', configure: 'https://code.claude.com/docs/en/authentication', configureLabel: t('provider.authHelp'),
     note: t('provider.claudeSetup'),
+  },
+  pi: {
+    install: 'https://pi.dev/', configure: 'https://pi.dev/docs/latest/models', configureLabel: t('provider.authHelp'),
+    note: t('provider.piSetup'),
   },
   opencode: {
     install: 'https://opencode.ai/v2/docs/', configure: 'https://opencode.ai/v2/docs/providers/', configureLabel: t('provider.extraProviderDocs'),
