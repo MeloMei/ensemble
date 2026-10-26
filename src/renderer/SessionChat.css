@@ -239,11 +239,25 @@
 .chat-pane .composer-select > svg { flex-shrink: 0; }
 .chat-pane .composer-select > svg:last-of-type { color: var(--dim); }
 .chat-pane .composer-select-value { max-width: 150px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.chat-pane .composer-select select { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; margin: 0; opacity: 0; cursor: pointer; }
-.chat-pane .composer-select:hover:not(:has(select:disabled)) { color: var(--text); background: var(--bg); }
-.chat-pane .composer-select:has(select:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
-.chat-pane .composer-select:has(select:disabled) { opacity: .55; }
-.chat-pane .composer-select select:disabled { cursor: default; }
+.chat-pane .composer-select:hover:not(:disabled),
+.chat-pane .composer-select[data-state=open] { color: var(--text); background: var(--selected); }
+.chat-pane .composer-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.chat-pane .composer-select:disabled { opacity: .55; }
+.composer-select-menu { z-index: 20; min-width: max(210px, var(--radix-select-trigger-width)); max-width: min(340px, calc(100vw - 20px)); max-height: min(360px, var(--radix-select-content-available-height)); overflow: hidden; border: 1px solid var(--border-strong); border-radius: var(--radius-overlay); color: var(--text); background: var(--surface-overlay); box-shadow: var(--shadow-popover); backdrop-filter: blur(12px); transform-origin: var(--radix-select-content-transform-origin); }
+.composer-select-menu[data-state=open] { animation: composer-menu-in var(--duration-normal) var(--ease-out); }
+.composer-select-menu[data-state=closed] { animation: composer-menu-out var(--duration-fast) var(--ease-out); }
+.composer-select-viewport { padding: 5px; }
+.composer-select-scroll { display: flex; justify-content: center; padding: 3px 0; color: var(--muted); background: var(--surface-raised); }
+.composer-select-heading { padding: 6px 9px 8px; margin-bottom: 4px; border-bottom: 1px solid var(--border); color: var(--dim); font-size: 10px; font-weight: 550; line-height: 1.4; }
+.composer-select-option { position: relative; display: flex; align-items: center; gap: 14px; min-height: 31px; padding: 7px 30px 7px 9px; border-radius: var(--radius-control); font-size: 12px; line-height: 1.5; cursor: pointer; outline: none; user-select: none; }
+.composer-select-option[data-state=checked] { background: var(--accent-soft); }
+.composer-select-option[data-highlighted] { background: var(--selected); }
+.composer-select-option[data-disabled] { color: var(--dim); opacity: .55; cursor: default; }
+.composer-select-option-copy { display: flex; flex-direction: column; min-width: 0; overflow-wrap: anywhere; }
+.composer-select-option-copy small { color: var(--muted); font-size: 10px; line-height: 1.5; }
+.composer-select-check { position: absolute; right: 9px; display: flex; color: var(--accent); }
+@keyframes composer-menu-in { from { opacity: 0; transform: translateY(3px) scale(.99); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@keyframes composer-menu-out { from { opacity: 1; } to { opacity: 0; } }
 .chat-pane .composer-settings-saving { display: inline-flex; align-items: center; padding: 0 4px; color: var(--dim); }
 .chat-pane .send-button { display: grid; place-items: center; width: 30px; height: 30px; flex-shrink: 0; border-radius: var(--radius-control); color: var(--surface-raised); background: var(--text); transition: background var(--duration-fast) var(--ease-out); }
 .chat-pane .send-button:hover:not(:disabled) { background: var(--muted); }
