@@ -4,13 +4,13 @@ English | [简体中文](first-collaboration.zh-CN.md)
 
 Use two participants to fix a small search function and review the change. You can assign Codex to both roles; each gets its own session and permissions.
 
-The application guides you through **Describe the goal → Review the setup → Start collaboration**. [Watch the workflow](media/ensemble-demo.mp4). The video was recorded in Ensemble 0.7.0 with the Simplified Chinese interface.
+The application guides you through **Describe the goal → Review the setup → Start collaboration**. [Watch the 30-second English overview](media/ensemble-overview-en.mp4), then follow the steps below to try it yourself.
 
 These instructions use English. Open **Preferences** (偏好设置) and select **English** before creating the collaboration. You can also choose **简体中文** or **Follow system**; the first launch follows your system language, and your choice is saved locally. Existing conversations, task text, code, and runtime diagnostics keep their original language. The task and role names below belong to a newly created English template.
 
 ## 1. Prepare a small project
 
-You need Ensemble running, Node.js 22.22 or newer, Git, and a configured runtime that supports read-only execution. See [Getting started](getting-started.md) and the [official runtime guides](runtimes.md#install-and-configure).
+You need Ensemble running, Node.js 22.22 or newer, Git, and a configured runtime that supports read-only execution. Node.js runs this example's tests; the packaged desktop app does not require a separate Node.js installation. See [Download and setup](../README.md#get-started) and the [official runtime guides](runtimes.md#install-and-configure).
 
 Create a new folder named `ensemble-search-demo`, with these files:
 
