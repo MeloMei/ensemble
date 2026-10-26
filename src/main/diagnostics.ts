@@ -203,7 +203,7 @@ export class DiagnosticJournal {
 export function diagnosticScope(): { journal: DiagnosticJournal; context: Context } | undefined { return scope.getStore(); }
 export function withProviderDiagnostics(adapter: ProviderAdapter, journal: DiagnosticJournal): ProviderAdapter {
   const sessionContext = (session: Session): Context => ({ providerId: adapter.info.id, sessionId: session.id });
-  return { get info() { return adapter.info; },
+  return { get info() { return adapter.info; }, get tracksDelivery() { return adapter.tracksDelivery; },
     run: context => journal.run({ ...sessionContext(context.session), attemptId: context.session.attempts?.at(-1)?.id }, () => adapter.run(context)),
     ...(adapter.rewind ? { rewind: (session: Session, nativeTurnId: string) => journal.run(sessionContext(session), () => adapter.rewind!(session, nativeTurnId)) } : {}),
     ...(adapter.dispose ? { dispose: adapter.dispose.bind(adapter) } : {}),

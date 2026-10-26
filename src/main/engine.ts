@@ -665,7 +665,7 @@ export class WorkbenchEngine {
   private recordTurnInput(session: Session, input: PromptInput, userMessageId: string): void {
     const timestamp = now();
     session.messages.push({ id: userMessageId, role: 'user', text: input.text, attachments: structuredClone(input.attachments), createdAt: timestamp,
-      ...(session.providerId === 'codex' ? { delivery: { id: randomUUID(), clientUserMessageId: userMessageId, status: 'pending' as const,
+      ...(this.adapters.get(session.providerId)?.tracksDelivery ? { delivery: { id: randomUUID(), clientUserMessageId: userMessageId, status: 'pending' as const,
         createdAt: timestamp, updatedAt: timestamp, ...(session.externalId ? { nativeThreadId: session.externalId } : {}) } } : {}) });
   }
 

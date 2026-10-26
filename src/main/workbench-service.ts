@@ -6,6 +6,7 @@ import { WorkbenchEngine } from './engine';
 import { StateStore } from './store';
 import { createCodexProvider } from './providers/codex';
 import { createClaudeProvider } from './providers/claude';
+import { createPiProvider } from './providers/pi';
 import { createAcpProvider, type AcpProvider } from './providers/acp';
 import { createOpenCodeDescriptor } from './providers/opencode';
 import { createDeepSeekHarnessDescriptor } from './providers/deepseek-harness';
@@ -138,13 +139,13 @@ export async function createWorkbenchService(options: {
       if (codexProvider) await codexProvider.refreshInfo();
       else codexProvider = await createCodexProvider();
       const dataPath = dirname(engine.store.path);
-      const [claude, plugins] = await Promise.all([
-        createClaudeProvider(), loadPluginProviders(engine.pluginPath),
+      const [claude, pi, plugins] = await Promise.all([
+        createClaudeProvider(), createPiProvider({ dataPath }), loadPluginProviders(engine.pluginPath),
         openCodeProvider ? openCodeProvider.refreshInfo() : createAcpProvider('opencode', 'OpenCode', () => createOpenCodeDescriptor({ dataPath })).then(provider => { openCodeProvider = provider; }),
         deepSeekProvider ? deepSeekProvider.refreshInfo() : createAcpProvider('deepseek-harness', 'DeepSeek Harness', () => createDeepSeekHarnessDescriptor({ dataPath })).then(provider => { deepSeekProvider = provider; }),
       ]);
       const codex = codexProvider;
-      engine.setProviders([codex, claude, openCodeProvider!, deepSeekProvider!, ...plugins.adapters].map(instrument), unavailable, plugins.errors);
+      engine.setProviders([codex, claude, pi, openCodeProvider!, deepSeekProvider!, ...plugins.adapters].map(instrument), unavailable, plugins.errors);
     }
 
 

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { WorkbenchEngine } from './engine';
 import { StateStore } from './store';
+import { DiagnosticJournal, withProviderDiagnostics } from './diagnostics';
 import type { ProviderAdapter, TurnContext } from './providers/types';
 
 async function until(predicate: () => boolean): Promise<void> {
@@ -155,6 +156,54 @@ test('approval and cancellation replays never resolve or cancel a later live req
   } finally { await restarted?.shutdown(); await engine.shutdown(); await rm(directory, { recursive: true, force: true }); }
 });
 
+test('delivery tracking follows adapter declarations through diagnostics and blocks an unconfirmed resend', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'ensemble-declared-delivery-'));
+  const store = new StateStore(join(directory, 'state.json'));
+  const engine = new WorkbenchEngine(store, '', () => {});
+  const journal = new DiagnosticJournal(join(directory, 'diagnostics.ndjson'));
+  let calls = 0;
+  const runtime = adapter(async context => {
+    calls++;
+    assert.equal(context.session.messages.at(-1)?.delivery?.status, 'pending');
+    if (context.prompt === 'accepted') {
+      context.emit({ type: 'delivery', status: 'accepted', nativeThreadId: 'native-thread', nativeTurnId: 'native-turn' });
+      return;
+    }
+    if (context.prompt === 'rejected') context.emit({ type: 'delivery', status: 'rejected', reason: 'Native input was refused' });
+    throw new Error('Native response unavailable');
+  }, 'delivery-fixture');
+  runtime.tracksDelivery = true;
+  const wrapped = withProviderDiagnostics(runtime, journal);
+  engine.setProviders([wrapped], [], []);
+  try {
+    assert.equal(wrapped.tracksDelivery, true);
+    for (const status of ['accepted', 'rejected', 'unknown']) {
+      const id = await engine.createSession({ title: status, providerId: runtime.info.id, cwd: directory });
+      await engine.executeSession(id, { text: status }).done;
+      const session = engine.getSession(id);
+      const message = session.messages[0];
+      assert.equal(message.delivery?.status, status);
+      assert.equal(message.delivery?.clientUserMessageId, message.id);
+      if (status === 'accepted') {
+        assert.equal(session.status, 'completed');
+        assert.equal(message.nativeTurnId, 'native-turn');
+        assert.equal(message.delivery?.nativeThreadId, 'native-thread');
+      } else assert.equal(session.status, 'failed');
+      if (status === 'unknown') {
+        assert.throws(() => engine.sendPrompt(id, { text: 'do not repeat' }), /核对/);
+        assert.throws(() => engine.executeSession(id, { text: 'do not repeat' }), /核对/);
+        await assert.rejects(engine.reconcileSessionDelivery(id), /保持未知/);
+        assert.equal(engine.getSession(id).messages[0].delivery?.status, 'unknown');
+        const fork = engine.getSession(await engine.forkSession(id));
+        assert.equal(fork.status, 'idle');
+        assert.equal(fork.externalId, undefined);
+        assert(fork.draft?.text);
+      }
+    }
+    assert.equal(calls, 3);
+  } finally { await engine.shutdown(); await journal.flush(); await rm(directory, { recursive: true, force: true }); }
+});
+
 test('restart changes pending delivery to unknown and history reconciliation never resends it', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'ensemble-delivery-recovery-'));
   const store = new StateStore(join(directory, 'state.json'));
@@ -171,6 +220,7 @@ test('restart changes pending delivery to unknown and history reconciliation nev
     const restored = new StateStore(store.path); await restored.load();
     const engine = new WorkbenchEngine(restored, '', () => {});
     const runtime = adapter(async () => { calls++; }, 'codex');
+    runtime.tracksDelivery = true;
     runtime.reconcileDelivery = async (_session, deliveries) => deliveries.map(delivery => ({ clientUserMessageId: delivery.clientUserMessageId,
       status: 'accepted', nativeThreadId: 'native-thread', nativeTurnId: 'native-turn', nativeItemId: 'native-user' }));
     engine.setProviders([runtime], [], []);
@@ -224,11 +274,13 @@ test('cancelling an unsent Codex task rejects its pending delivery before restar
   const engine = new WorkbenchEngine(store, '', () => {});
   let calls = 0, release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
-  engine.setProviders([adapter(async context => {
+  const runtime = adapter(async context => {
     calls++;
     context.emit({ type: 'delivery', status: 'accepted', nativeTurnId: 'first-turn' });
     await gate;
-  }, 'codex')], [], []);
+  }, 'codex');
+  runtime.tracksDelivery = true;
+  engine.setProviders([runtime], [], []);
   try {
     const first = await engine.createSession({ title: 'active owner', providerId: 'codex', cwd: directory });
     const second = await engine.createSession({ title: 'unsent owned task', providerId: 'codex', cwd: directory });

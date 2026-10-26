@@ -29,6 +29,7 @@ export interface TurnContext {
 
 export interface ProviderAdapter {
   info: ProviderInfo;
+  tracksDelivery?: boolean;
   run(context: TurnContext): Promise<void>;
   rewind?(session: Session, nativeTurnId: string): Promise<void>;
   reconcileDelivery?(session: Session, deliveries: MessageDelivery[]): Promise<DeliveryReconciliation[]>;

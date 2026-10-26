@@ -59,9 +59,9 @@ npm run dev
 
 ## 运行时支持
 
-**Codex · Claude Code · OpenCode V2 · DeepSeek Harness**
+**Codex · Claude Code · Pi · OpenCode V2 · DeepSeek Harness**
 
-OpenCode V2 使用独立配置，仅接入目录声明免费的模型。DeepSeek Harness 不能担任只读角色。运行时检测只确认本机程序入口，认证和模型访问由实际任务确认。
+Pi 需要官方 npm CLI 1.3.0 或更新版本。OpenCode V2 使用独立配置，仅接入目录声明免费的模型。DeepSeek Harness 不能担任只读角色。运行时检测不确认登录和模型访问，需通过实际任务验证。
 
 模型选择、权限与续聊能力见[运行时支持](docs/runtimes.zh-CN.md)。新增本地适配器见 [Provider 插件](docs/provider-plugins.zh-CN.md)。
 

@@ -75,7 +75,7 @@ export function validModelSelection(provider: ProviderInfo | undefined, modelId?
   return Boolean(provider?.available && (provider.models === undefined || (usesCliModelDefault(provider) && !modelId) || provider.models.some(model => model.id === modelId)));
 }
 
-function usesCliModelDefault(provider: ProviderInfo): boolean { return provider.id === 'codex' || provider.id === 'claude'; }
+export function usesCliModelDefault(provider: ProviderInfo): boolean { return ['codex', 'claude', 'pi'].includes(provider.id); }
 
 export function modelPolicy(provider: ProviderInfo): string | undefined {
   if (provider.id === 'opencode') return t('provider.opencodePolicy');

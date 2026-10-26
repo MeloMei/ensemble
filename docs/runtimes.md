@@ -14,6 +14,7 @@ Use the official guides for the current installation and sign-in steps. The same
 | --- | --- | --- |
 | Codex | [Codex CLI](https://learn.chatgpt.com/docs/codex/cli) | [Authentication](https://learn.chatgpt.com/docs/auth) |
 | Claude Code | [Quickstart](https://code.claude.com/docs/en/quickstart) | [Authentication](https://code.claude.com/docs/en/authentication) |
+| Pi | [Official Pi](https://pi.dev/) · [Quickstart](https://pi.dev/docs/latest/quickstart) | [Authentication and models](https://pi.dev/docs/latest/models) |
 | OpenCode V2 | [OpenCode 2](https://opencode.ai/v2/docs/) | [V2 providers](https://opencode.ai/v2/docs/providers/) |
 | DeepSeek Harness | [Official application and source](https://www.deepseek.com/en/harness/) | [Configure models](https://deepseek-harness.github.io/deepseek-harness/en/guide/providers) |
 
@@ -31,6 +32,7 @@ Open **接入与插件 → 刷新检测** after installing a runtime. The follow
 | --- | --- | --- |
 | Codex | `CODEX_BINARY` | `PATH`, standard macOS Codex/ChatGPT application locations, `~/.local/bin`, `~/.cargo/bin` |
 | Claude Code | `CLAUDE_BINARY` | `PATH`, `~/.local/bin`, Homebrew locations, installed nvm versions |
+| Pi | `PI_BINARY` | `PATH`, `~/.local/bin`, Homebrew locations, installed nvm versions |
 | OpenCode V2 | `OPENCODE_BINARY` | Standard macOS OpenCode application locations, `PATH`, `~/.opencode/bin`, `~/.local/bin` |
 | DeepSeek Harness | `DSH_BINARY` | `PATH`, standard macOS DeepSeek Harness application locations, `~/.local/bin` |
 
@@ -57,6 +59,20 @@ The integration handles images, text, tools, plans, native subagents, task event
 Read-only uses native `plan` mode together with an adapter allowlist. Tools outside the verified read-only set are denied, including shell commands, file editing, and unverified MCP tools. Authenticated Ensemble collaboration tools use their separately issued authorization. This is tool permission enforcement, not an operating system file sandbox.
 
 Per-turn MCP configuration is passed through a temporary file with mode `0600` and removed afterward. The adapter does not provide native conversation rewind; use a context fork to prepare a new session.
+
+## Pi
+
+Install the official npm package `@earendil-works/pi-coding-agent`, version **1.3.0 or newer**. The adapter requires the official package's SDK, RPC interface, and native MCP support. An incompatible package or missing protocol capability stops detection or the turn; Ensemble does not fall back to another runtime. Use `PI_BINARY` to point to its `pi` executable when automatic discovery cannot find it.
+
+Authenticate and choose a default model in the Pi CLI first, following the [official model guide](https://pi.dev/docs/latest/models). Ensemble reuses global Pi authentication, model configuration, and environment variables. The model list comes from Pi's native catalog. Explicit model and thinking choices must be offered and confirmed by the runtime before the prompt is sent. Image attachments require a model that declares image input.
+
+Each turn starts a separate RPC process. Native conversation files live under `pi/sessions` in Ensemble's data directory and are reused for continuation. If the original file cannot be resumed, the turn fails without creating a replacement conversation. Text streaming, text and image attachments, tool events, and reported token usage are supported. Native rewind and live steering are not supported in Ensemble.
+
+When a prompt may have been accepted but its acknowledgment is lost, delivery remains unknown and direct resending is blocked. Pi history reconciliation is not integrated yet; use a context fork to prepare a new draft when needed.
+
+Ensemble loads a temporary controlled extension instead of user extensions or project Pi configuration. Global authentication and model settings remain available; custom tools and providers that depend on user extensions are not loaded. The extension allows the standard read, grep, find, and ls tools. In review mode, command execution, file writes, and other tools require approval for each call. Read-only mode denies those tools. These checks enforce tool permissions and do not provide an operating system sandbox.
+
+Native MCP receives the configured stdio and HTTP servers through this extension. SSE is not supported. Authenticated Ensemble collaboration tools use their separately issued authorization; file read-only mode does not remove collaboration permissions. The prompt is not sent unless the tool guard and Ensemble MCP tools are ready. Temporary extension files and configuration are removed after the process closes.
 
 ## OpenCode V2
 
@@ -90,7 +106,7 @@ The temporary overlay is removed when the process closes. A missing or unconfirm
 - ACP model, reasoning, and permission choices must be offered and confirmed by the runtime. Unsupported choices stop the task. Permission prompts expose only the native single-use allow/reject choices.
 - Image transport support does not mean every selected model can interpret images. ACP context usage, runtime token usage, and official account balances are separate records.
 - DeepSeek balance lookup is user-initiated. Each returned currency is retained separately, without adding or converting balances. Usage counters are not an invoice or proof of zero cost.
-- Claude Code, OpenCode, and DeepSeek Harness do not currently offer native conversation rewind in Ensemble. A context fork creates an editable draft; it starts a new task only when sent.
+- Claude Code, Pi, OpenCode, and DeepSeek Harness do not currently offer native conversation rewind in Ensemble. A context fork creates an editable draft; it starts a new task only when sent.
 - Read-only file access and collaboration permissions are separate. Role names grant no permissions. External agents keep their own native permission settings; Ensemble records only the tasks, messages, and artifacts they exchange through its MCP interface.
 - A runtime error stops that execution attempt. Collaboration can retry according to the run's configured limits, but a failed attempt is retained. A backend restart interrupts unfinished work and requires explicit recovery.
 
