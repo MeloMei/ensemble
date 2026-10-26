@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import { randomUUID } from 'node:crypto';
-import { mkdir } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { mkdir, realpath } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { BackendConnectionTracker, connectBackend, type BackendClient } from './backend-client';
@@ -11,6 +11,8 @@ import { DesktopPreferences } from './preferences';
 import { DATA_DIRECTORY_NAME, PRODUCT_NAME } from '../shared/app-identity';
 import { initializeI18n, resolveLanguage, setLanguage, translate, type LanguagePreference, type LanguageState } from '../shared/i18n';
 import type { Snapshot, UnsavedFileSummary } from '../shared/types';
+import type { AppUpdateState } from '../shared/application-updates';
+import { ApplicationUpdates } from './application-updates';
 
 app.setName(PRODUCT_NAME);
 app.setPath('userData', process.env.WORKBENCH_DATA_DIR ?? join(app.getPath('appData'), DATA_DIRECTORY_NAME));
@@ -19,6 +21,13 @@ if (!gotLock) app.quit();
 const root = dirname(fileURLToPath(import.meta.url));
 let window: BrowserWindow | null = null;
 let backend: BackendClient;
+let updates: ApplicationUpdates;
+let requestUpdateClose: (() => Promise<AppUpdateState>) | undefined;
+let rendererReady = false;
+let rendererConfirmed = false;
+let updateReadyAcknowledged = false;
+let quitting = false;
+let updatesDisposed = false;
 let notifications: WorkbenchNotifications;
 const preferences = new DesktopPreferences(app.getPath('userData'));
 let languageState: LanguageState;
@@ -27,6 +36,8 @@ interface CloseRequest {
   id: string;
   window: BrowserWindow;
   phase: 'saving' | 'confirming';
+  intent: 'close' | 'update';
+  complete?: (state: AppUpdateState) => void;
   timer?: ReturnType<typeof setTimeout>;
 }
 let closeRequest: CloseRequest | undefined;
@@ -67,8 +78,15 @@ function finishCloseRequest(request: CloseRequest, error: string | null, files?:
   request.phase = 'confirming';
   const decide = (close: boolean, discard = false) => {
     if (closeRequest !== request || request.window.isDestroyed()) return;
-    closeRequest = undefined;
-    if (close) { allowWindowClose = true; discardPendingWork = discard; request.window.close(); }
+    const release = () => {
+      if (closeRequest === request) closeRequest = undefined;
+      if (!request.window.isDestroyed()) request.window.webContents.send('workbench:release-close-lock');
+    };
+    if (!close) { release(); request.complete?.(updates.snapshot); return; }
+    discardPendingWork = discard;
+    if (request.intent === 'update') {
+      void updates.install().then(state => { release(); request.complete?.(state); });
+    } else { closeRequest = undefined; allowWindowClose = true; request.window.close(); }
   };
   if (error === null && !files?.count) { decide(true); return; }
   const fileWarning = files?.count ? translate('native:close.fileList', { count: files.count, names: files.names.join('\n') })
@@ -134,6 +152,18 @@ function registerIPC(commands: string[]): void {
     const error = await shell.openPath(path); if (error) throw new Error(error);
   });
   handle('workbench:notification-status', () => notifications.status());
+  handle('workbench:application-update', () => updates.snapshot);
+  handle('workbench:check-application-update', () => updates.check());
+  handle('workbench:download-application-update', () => updates.download());
+  handle('workbench:install-application-update', () => requestUpdateClose?.() ?? updates.snapshot);
+  handle('workbench:set-application-update-auto-check', value => updates.setAutoCheck(z.boolean().parse(value)));
+  handle('workbench:application-update-ready', () => { rendererConfirmed = true; acknowledgeUpdateReady(); });
+}
+
+function acknowledgeUpdateReady(): void {
+  if (updateReadyAcknowledged || !rendererReady || !rendererConfirmed || !connection.current.synced) return;
+  updateReadyAcknowledged = true;
+  void updates.acknowledgeReady().catch(error => process.stderr.write(`更新启动确认失败：${String(error)}\n`));
 }
 
 function watchTerminal(id: string): void {
@@ -179,6 +209,24 @@ async function createWindow(): Promise<void> {
   });
   const currentWindow = window;
   let rendererFailure: string | undefined;
+  rendererReady = false;
+  rendererConfirmed = false;
+  const prepareClose = (intent: CloseRequest['intent'], complete?: CloseRequest['complete']) => {
+    if (closeRequest) { complete?.(updates.snapshot); return; }
+    const request: CloseRequest = { id: randomUUID(), window: currentWindow, phase: 'saving', intent, complete };
+    closeRequest = request;
+    if (rendererFailure || currentWindow.webContents.isDestroyed()) {
+      finishCloseRequest(request, rendererFailure ? translate('native:close.rendererStopped', { reason: rendererFailure }) : translate('native:close.rendererUnavailable'));
+      return;
+    }
+    request.timer = setTimeout(() => finishCloseRequest(request, translate('native:close.saveTimeout')), 10_000);
+    try { currentWindow.webContents.send('workbench:prepare-close', request.id, intent === 'update' ? 'update' : undefined); }
+    catch (error) { finishCloseRequest(request, error instanceof Error ? error.message : String(error)); }
+  };
+  requestUpdateClose = () => new Promise(resolveClose => {
+    if (updates.snapshot.phase !== 'ready') { resolveClose(updates.snapshot); return; }
+    prepareClose('update', resolveClose);
+  });
   currentWindow.on('focus', () => {
     void synchronizeLanguage().catch(error => process.stderr.write(`Language preference refresh failed: ${String(error)}\n`));
   });
@@ -187,16 +235,7 @@ async function createWindow(): Promise<void> {
   currentWindow.on('close', event => {
     if (allowWindowClose) return;
     event.preventDefault();
-    if (closeRequest) return;
-    const request: CloseRequest = { id: randomUUID(), window: currentWindow, phase: 'saving' };
-    closeRequest = request;
-    if (rendererFailure || currentWindow.webContents.isDestroyed()) {
-      finishCloseRequest(request, rendererFailure ? translate('native:close.rendererStopped', { reason: rendererFailure }) : translate('native:close.rendererUnavailable'));
-      return;
-    }
-    request.timer = setTimeout(() => finishCloseRequest(request, translate('native:close.saveTimeout')), 10_000);
-    try { currentWindow.webContents.send('workbench:prepare-close', request.id); }
-    catch (error) { finishCloseRequest(request, error instanceof Error ? error.message : String(error)); }
+    if (updates.snapshot.phase !== 'installing') prepareClose('close');
   });
   currentWindow.webContents.on('render-process-gone', (_event, details) => {
     releaseViewSubscriptions();
@@ -211,7 +250,7 @@ async function createWindow(): Promise<void> {
     else allowWindowClose = false;
   });
   currentWindow.webContents.on('did-finish-load', () => { rendererFailure = undefined; });
-  currentWindow.once('ready-to-show', () => currentWindow.show());
+  currentWindow.once('ready-to-show', () => { rendererReady = true; currentWindow.show(); acknowledgeUpdateReady(); });
   window.webContents.setWindowOpenHandler(({ url }) => {
     try {
       const link = new URL(url);
@@ -226,6 +265,7 @@ async function createWindow(): Promise<void> {
       closeRequest = undefined;
     }
     if (window === currentWindow) window = null;
+    requestUpdateClose = undefined;
     releaseViewSubscriptions();
   });
   if (process.env.WORKBENCH_DEV_URL) await window.loadURL(process.env.WORKBENCH_DEV_URL);
@@ -239,12 +279,25 @@ if (gotLock) void app.whenReady().then(async () => {
   await initializeI18n(languageState.language);
   const launch = { command: process.execPath, entryPath: join(root, 'backend-entry.js') };
   backend = await connectBackend(dataPath, launch);
+  delete process.env.WORKBENCH_UPDATE_TOKEN;
   backend.assertSnapshotStreaming();
+  updates = new ApplicationUpdates({
+    currentVersion: app.getVersion(), appPath: app.isPackaged && process.platform === 'darwin' ? await realpath(resolve(process.execPath, '../../..')) : undefined,
+    dataPath, arch: process.arch, helperPath: join(root, '../../bin/apply-app-update.sh'),
+    getAutoCheck: () => preferences.autoCheckUpdates,
+    setAutoCheck: enabled => preferences.setAutoCheckUpdates(enabled),
+    publish: state => { if (window && !window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send('workbench:application-update-changed', state); },
+    prepareInstall: async token => { await backend.call('workbench:begin-application-update', token); return backend.endpoint.pid; },
+    cancelInstall: token => backend.call<void>('workbench:cancel-application-update', token),
+    requestQuit: () => { allowWindowClose = true; window?.close(); },
+  });
+  await updates.load();
   notifications = new WorkbenchNotifications(sessionId => {
     window?.show(); window?.focus(); window?.webContents.send('workbench:focus-session', sessionId);
   });
   registerIPC(await backend.request<string[]>('/commands'));
   await createWindow();
+  updates.schedule();
   void (async () => {
     while (!subscription.signal.aborted) {
       const client = backend;
@@ -254,6 +307,7 @@ if (gotLock) void app.whenReady().then(async () => {
         await client.subscribe((snapshot, frame) => {
           if (subscription.signal.aborted || client !== backend || !connection.received(generation, frame)) return;
           latestSnapshot = snapshot;
+          acknowledgeUpdateReady();
           notifications.observe(snapshot); window?.webContents.send('workbench:changed', snapshot);
         }, subscription.signal);
         connection.disconnected(generation);
@@ -276,9 +330,17 @@ if (gotLock) void app.whenReady().then(async () => {
 });
 
 app.on('second-instance', () => { if (window?.isMinimized()) window.restore(); window?.focus(); });
-app.on('activate', () => { if (backend && !window) void createWindow(); });
+app.on('activate', () => { if (!quitting && backend && !window) void createWindow(); });
 app.on('window-all-closed', () => app.quit());
-app.on('will-quit', () => {
+app.on('will-quit', event => {
+  if (updates && !updatesDisposed) {
+    event.preventDefault();
+    if (!quitting) {
+      quitting = true;
+      void updates.dispose().finally(() => { updatesDisposed = true; app.quit(); });
+    }
+    return;
+  }
   subscription.abort(); connection.stop(); notifications?.dispose();
   for (const watched of terminalWatches.values()) watched.controller.abort();
   terminalWatches.clear();

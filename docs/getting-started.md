@@ -37,7 +37,21 @@ To create a macOS application:
 npm run package:mac
 ```
 
-The packaging script builds for the host architecture and writes `release/<version>/Ensemble-<version>-macOS-<arch>.zip`. Unzip it and move `Ensemble.app` to `/Applications`, replacing the existing copy when updating. Temporary build files are removed after packaging. The script applies an ad hoc signature and verifies it. It does not perform Developer ID signing or notarization.
+The packaging script builds for the host architecture and writes `release/<version>/Ensemble-<version>-macOS-<arch>.zip`. For the first installation, unzip it and move `Ensemble.app` to `/Applications`. Temporary build files are removed after packaging. The script applies an ad hoc signature and verifies it. It does not perform Developer ID signing or notarization.
+
+## Application updates
+
+Open **Preferences → Application updates** to see your installed version and **Check for updates**. Automatic checks run after startup, at most once a day, and can be disabled. Checking for updates does not call an agent or model and uses no model credits.
+
+1. When a new public release is available, read its notes and choose **Download update**. Drafts and prereleases are excluded from this update channel.
+2. After the download is verified, choose **Restart and install**. Finish running or queued agent, workflow, and collaboration tasks and close terminals first.
+3. Ensemble saves drafts, checks unsaved changes, stops its shared backend, replaces the application, and restarts. Your workspaces, conversations, and settings stay in their existing data directory.
+
+Failures display a reason. If installation fails, the updater attempts to restore the previous application. If the installation directory is not writable, adjust its location or permissions first. Application updates are available in installed macOS packages, not source development sessions.
+
+Automatic updates only accept packages compatible with the current local data format. If a release needs a data migration or does not declare compatibility, Ensemble keeps the current application and asks you to follow its manual upgrade instructions.
+
+Older versions without an update entry, including the original `0.8.1` release, need one manual installation of a version containing this feature. Subsequent upgrades can happen inside the application. Before manually replacing an app, quit the desktop and stop the shared backend as described below.
 
 ## Choose the interface language
 

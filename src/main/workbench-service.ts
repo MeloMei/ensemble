@@ -1,5 +1,6 @@
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { WorkbenchEngine } from './engine';
@@ -27,6 +28,7 @@ import { DiagnosticJournal, withProviderDiagnostics } from './diagnostics';
 import { sessionHistory, searchMessages } from './session-history';
 import { searchableMessageText } from '../shared/message-text';
 import { ATTACHMENT_LIMITS, attachmentLimitIssue } from '../shared/prompt-attachments';
+import { ApplicationUpdateGuard } from './application-update-guard';
 
 const idSchema = z.string().min(1).max(200);
 const cwdSchema = z.string().min(1).max(4096);
@@ -78,6 +80,7 @@ export async function createWorkbenchService(options: {
     } });
     const publish = (snapshot: Snapshot) => options.publish(publicSnapshot(snapshot));
     const engine = new WorkbenchEngine(store, pluginPath, publish);
+    const updateGuard = new ApplicationUpdateGuard(() => publicSnapshot(engine.liveSnapshot()));
     cleanup.push(() => engine.shutdown());
     await engine.prepareExecutionKeys();
     const attachments = new AttachmentService(join(options.dataPath, 'attachments'));
@@ -87,8 +90,8 @@ export async function createWorkbenchService(options: {
     let publicEndpoint = '';
     const runtimeSettings = new RuntimeSettings(join(options.dataPath, 'mcp-settings'));
     const workspaceFiles = new WorkspaceFiles();
-    const collaboration = new CollaborationServer((caller, tool, input) => core.call(core.managedCaller(caller.sessionId, caller.attemptId)
-      ?? { kind: 'session', ...caller }, tool, input), options.command, options.bridgePath);
+    const collaboration = new CollaborationServer((caller, tool, input) => updateGuard.run(() => core.call(core.managedCaller(caller.sessionId, caller.attemptId)
+      ?? { kind: 'session', ...caller }, tool, input)), options.command, options.bridgePath);
     cleanup.push(() => collaboration.close());
     await collaboration.start();
     engine.setTurnEnricher(async (session, prompt, userMessageId) => {
@@ -284,16 +287,32 @@ export async function createWorkbenchService(options: {
 
     if (options.providers) engine.setProviders(options.providers.map(instrument), [], []);
     else await refreshProviders();
+    const readUpdateRecord = async (name: string): Promise<unknown> => {
+      try { return JSON.parse(await readFile(join(options.dataPath, 'updates', name), 'utf8')); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error; }
+    };
+    const pendingUpdate = z.object({ token: z.string().uuid(), version: z.string() }).optional().parse(await readUpdateRecord('pending.json'));
+    const metadata = JSON.parse(await readFile(join(dirname(fileURLToPath(import.meta.url)), '../../package.json'), 'utf8'));
+    if (pendingUpdate && pendingUpdate.version === metadata.version) {
+      if (process.env.WORKBENCH_UPDATE_TOKEN && process.env.WORKBENCH_UPDATE_TOKEN !== pendingUpdate.token) throw new Error('更新启动凭据与当前安装包不匹配。');
+      const result = z.object({ token: z.string(), version: z.string(), status: z.string() }).optional().parse(await readUpdateRecord('result.json'));
+      if (result?.status !== 'installed' || result.token !== pendingUpdate.token || result.version !== metadata.version) updateGuard.begin(pendingUpdate.token);
+    } else if (process.env.WORKBENCH_UPDATE_TOKEN) {
+      throw new Error('更新启动凭据与当前安装包不匹配。');
+    }
+    delete process.env.WORKBENCH_UPDATE_TOKEN;
     return {
       engine, store, attachments, runtimeSettings, collaboration, core,
       setPublicEndpoint: (url: string) => { publicEndpoint = url; },
       authenticate: (token: string) => identities.authenticate(token),
-      externalCall: (token: string, operation: string, input: unknown) => core.call({ kind: 'external', identityId: identities.authenticate(token).id }, operation, input),
-      commands: [...handlers.keys()],
+      externalCall: (token: string, operation: string, input: unknown) => updateGuard.run(() => core.call({ kind: 'external', identityId: identities.authenticate(token).id }, operation, input)),
+      commands: [...handlers.keys(), 'workbench:begin-application-update', 'workbench:cancel-application-update'],
       async call(channel: string, args: unknown[]): Promise<unknown> {
+        if (channel === 'workbench:begin-application-update') { updateGuard.begin(z.string().uuid().parse(args[0])); return null; }
+        if (channel === 'workbench:cancel-application-update') { updateGuard.cancel(z.string().uuid().parse(args[0])); return null; }
         const handler = handlers.get(channel);
         if (!handler) throw new Error('未知的后台命令。');
-        return handler(null, ...args);
+        return updateGuard.run(() => handler(null, ...args));
       },
       snapshot: () => publicSnapshot(engine.snapshot()),
       streamSnapshot: () => publicSnapshot(engine.liveSnapshot()),

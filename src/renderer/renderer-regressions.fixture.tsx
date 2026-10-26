@@ -14,6 +14,8 @@ import { ManagedWorktreePanel } from './ManagedWorktreePanel';
 import { FileReviewPanel } from './FileReviewPanel';
 import { SessionChat } from './SessionChat';
 import { App } from './App';
+import { ApplicationUpdateNotice, ApplicationUpdateSettings, useApplicationUpdates } from './ApplicationUpdates';
+import type { AppUpdateState } from '../shared/application-updates';
 import { TerminalPane } from './TerminalPane';
 import { Terminal } from '@xterm/xterm';
 import { AppearanceProvider } from './appearance';
@@ -27,6 +29,8 @@ fixture.IS_REACT_ACT_ENVIRONMENT = true;
 const workspace: Workspace = { id: 'workspace', name: 'Workspace', cwd: '/fixture', pinned: false, tabs: [], activeTabId: null, createdAt: '2026-10-23', updatedAt: '2026-10-23' };
 const session: Session = { id: 'session', title: 'Session', providerId: 'codex', cwd: workspace.cwd, status: 'idle', messages: [], approvals: [], settings: { permission: 'review', effort: 'low' }, createdAt: '2026-10-23', updatedAt: '2026-10-23' };
 const provider: ProviderInfo = { id: 'codex', name: 'Codex', source: 'builtin', available: true, detail: '', capabilities: { resume: true, approvals: true, permissions: true, effort: true }, efforts: ['low', 'high'] };
+const installedUpdateState: AppUpdateState = { currentVersion: '0.8.1', supported: true, autoCheck: true, phase: 'idle' };
+const applicationUpdateApi = { getApplicationUpdate: async () => installedUpdateState, onApplicationUpdateChanged: () => () => {}, confirmApplicationUpdateReady: async () => {} };
 const tick = () => new Promise<void>(resolve => setTimeout(resolve, 0));
 async function frames(count = 3) {
   for (let index = 0; index < count; index++) await act(async () => { await new Promise<void>(resolve => requestAnimationFrame(() => resolve())); });
@@ -83,6 +87,47 @@ function collaborationSnapshot(runs: CollaborationRun[], revision = 1): Snapshot
 }
 
 const cases: Record<string, () => Promise<void>> = {
+  'UPDATES-UI: discovery, download and installation remain separate user actions': async () => {
+    const release = { version: '0.8.2', title: 'Ensemble 0.8.2', notes: '## Changes\n\n- Keep your work when updating.', publishedAt: '2026-10-26T03:00:00Z', url: 'https://github.com/MeloMei/ensemble/releases/tag/v0.8.2', downloadUrl: 'https://github.com/MeloMei/ensemble/releases/download/v0.8.2/Ensemble-0.8.2-macOS-arm64.zip', sha256: 'a'.repeat(64), size: 1024 * 1024 };
+    let state: AppUpdateState = installedUpdateState;
+    let publish!: (value: AppUpdateState) => void;
+    let checks = 0, downloads = 0, installs = 0, unsubscribed = 0, notices = 0;
+    const download = deferred<AppUpdateState>();
+    window.workbench = {
+      getApplicationUpdate: async () => state,
+      onApplicationUpdateChanged: (listener: typeof publish) => { publish = listener; return () => { unsubscribed++; }; },
+      checkApplicationUpdate: async () => { checks++; state = { ...state, phase: 'available', release }; return state; },
+      downloadApplicationUpdate: async () => { downloads++; return download.promise; },
+      installApplicationUpdate: async () => { installs++; return state; },
+      setApplicationUpdateAutoCheck: async (autoCheck: boolean) => { state = { ...state, autoCheck }; return state; },
+    } as unknown as Window['workbench'];
+    function UpdateSettings() {
+      const updates = useApplicationUpdates();
+      return <div style={{ width: 600 }}><ApplicationUpdateNotice state={updates.state} onOpen={() => { notices++; }} /><ApplicationUpdateSettings {...updates} /></div>;
+    }
+    await render(<UpdateSettings />);
+    assert(checks === 0 && downloads === 0 && installs === 0, 'Opening settings started an update operation');
+    await click('shell:updates.check');
+    assert(Number(checks) === 1 && downloads === 0 && installs === 0, 'Checking for a release downloaded or installed it');
+    assert(document.querySelector('.application-update-release-notes li')?.textContent === 'Keep your work when updating.', 'The new release notes are missing');
+    await click('shell:updates.view');
+    assert(notices === 1 && downloads === 0, 'Opening a release notice started its download');
+    await change(input('.application-update-auto input'), false);
+    assert(!state.autoCheck && downloads === 0, 'Changing automatic checks started a download');
+    const downloadButton = document.querySelector<HTMLButtonElement>('.application-update-actions button')!;
+    await act(async () => { downloadButton.click(); downloadButton.click(); await tick(); });
+    assert(Number(downloads) === 1 && downloadButton.disabled && installs === 0, 'Repeated download clicks started concurrent operations or installed the app');
+    state = { ...state, phase: 'downloading', downloadedBytes: 25, totalBytes: 100 };
+    await act(async () => { publish(state); await tick(); });
+    assert(document.querySelector('progress')?.value === 25, 'Download progress is not shown');
+    state = { ...state, phase: 'ready' };
+    await act(async () => { download.resolve(state); await tick(); });
+    assert(installs === 0 && !button('shell:updates.install').disabled, 'A completed download installed without confirmation');
+    await click('shell:updates.install');
+    assert(Number(installs) === 1, 'The explicit restart and install action was not sent');
+    await render(<div />);
+    assert(unsubscribed === 1, 'Update notifications remain subscribed after unmount');
+  },
   'UI-01: question approvals display the complete request disclosure': async () => {
     const detail = 'Send the address to https://shop.example for a paid purchase.\nConfirm the recipient and purpose first.';
     await render(chat({ session: { ...session, approvals: [{ id: 'approval', sessionId: session.id, title: 'Shipping request', detail, choices: [], questions: [{ id: 'address', question: 'Address', header: 'Address', options: [], multiSelect: false, allowCustomAnswer: true }] }] } }));
@@ -623,6 +668,7 @@ const cases: Record<string, () => Promise<void>> = {
     let publish!: (value: Snapshot) => void;
     window.workbench = {
       snapshot: async () => snapshot, subscribe: (listener: (value: Snapshot) => void) => { publish = listener; return () => {}; },
+      ...applicationUpdateApi,
       getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
       watchSessions: async () => {}, listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {},
     } as unknown as Window['workbench'];
@@ -652,6 +698,7 @@ const cases: Record<string, () => Promise<void>> = {
     let publish!: (value: Snapshot) => void;
     window.workbench = {
       snapshot: async () => snapshot, subscribe: (listener: (value: Snapshot) => void) => { publish = listener; return () => {}; },
+      ...applicationUpdateApi,
       getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
       watchSessions: async () => {}, listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {},
     } as unknown as Window['workbench'];
@@ -692,6 +739,7 @@ const cases: Record<string, () => Promise<void>> = {
       const watched: string[][] = [], seen: { id: string; revision: number }[] = [];
       window.workbench = {
         subscribe: (listener: (snapshot: Snapshot) => void) => { publish = listener; return () => {}; }, snapshot: async () => snapshot,
+        ...applicationUpdateApi,
         getConnection: async () => ({ status: 'connected', synced: true }),
         onConnectionChanged: (listener: (state: BackendConnectionState) => void) => { connectionChanged = listener; return () => {}; },
         onFocusSession: () => () => {}, watchSessions: async (ids: string[]) => { watched.push(ids); },
@@ -724,6 +772,7 @@ const cases: Record<string, () => Promise<void>> = {
     const creations: Record<string, unknown>[] = [];
     window.workbench = {
       subscribe: () => () => {}, snapshot: async () => ({ version: 1, sessions: [], workspaces: [], providers: [], workflows: [], terminals: [], pluginErrors: [], pluginPath: '/plugins', dataPath: '/data' }),
+      ...applicationUpdateApi,
       getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {}, watchSessions: async () => {},
       createWorkspace: async (input: Record<string, unknown>) => { creations.push(input); if (creations.length === 1) throw new Error('creation response lost'); return 'created-workspace'; },
     } as unknown as Window['workbench'];
@@ -923,6 +972,7 @@ const cases: Record<string, () => Promise<void>> = {
     const oldMatch = { ...messageRange(50, 51)[0], text: 'Ancient retained result from the removed checkout' };
     window.workbench = {
       snapshot: async () => snapshot, subscribe: (listener: (value: Snapshot) => void) => { publish = listener; return () => {}; },
+      ...applicationUpdateApi,
       getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
       watchSessions: async (ids: string[]) => {
         watched.push(ids);
