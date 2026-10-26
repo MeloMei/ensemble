@@ -583,6 +583,34 @@ const cases: Record<string, () => Promise<void>> = {
     await show(queued, { text: 'A newer draft' });
     assert(input('.composer textarea').value === 'A newer draft', 'Queue updates replaced the composer draft');
   },
+  'UX2-SHELL: add-tab menus remain inside the workspace at both ends of the tab strip': async () => {
+    const values = Array.from({ length: 12 }, (_, index) => ({ ...session, id: `menu-${index}`, title: `Independent task ${index}` }));
+    const tabs = values.map(value => ({ id: `tab-${value.id}`, kind: 'agent' as const, sessionId: value.id }));
+    let snapshot: Snapshot = { version: 1, sessions: values, providers: [provider], workspaces: [{ ...workspace, tabs, activeTabId: tabs[0].id }], workflows: [], terminals: [], pluginErrors: [], pluginPath: '/plugins', dataPath: '/data' };
+    let publish!: (value: Snapshot) => void;
+    window.workbench = {
+      snapshot: async () => snapshot, subscribe: (listener: (value: Snapshot) => void) => { publish = listener; return () => {}; },
+      getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
+      watchSessions: async () => {}, listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {},
+    } as unknown as Window['workbench'];
+    await render(<App />);
+    document.querySelector<HTMLElement>('.workbench')!.parentElement!.style.width = `${window.innerWidth}px`;
+    await frames(); await click('shell:app.hideFiles');
+    await waitFor(() => document.querySelector('.file-panel-transition')!.getBoundingClientRect().width < 1, 'The file panel did not finish closing');
+    const checkMenu = async () => {
+      await click('shell:app.addTab'); await frames();
+      const menu = document.querySelector<HTMLElement>('.tab-menu')!.getBoundingClientRect();
+      const bounds = document.querySelector<HTMLElement>('.main-workspace')!.getBoundingClientRect();
+      assert(menu.left >= bounds.left && menu.right <= bounds.right, `Add-tab menu is clipped (${menu.left}..${menu.right}, workspace ${bounds.left}..${bounds.right})`);
+      assert(document.activeElement?.getAttribute('role') === 'menuitem', 'Opening the menu lost its keyboard focus');
+      await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await tick(); });
+      assert(document.activeElement === button('shell:app.addTab'), 'Closing the menu did not restore trigger focus');
+    };
+    await checkMenu();
+    snapshot = { ...snapshot, workspaces: [{ ...snapshot.workspaces[0], tabs: tabs.slice(0, 1) }] };
+    await act(async () => { publish(snapshot); await tick(); }); await frames();
+    await checkMenu();
+  },
   'UX-N1: named session tabs reveal the active tab without stealing focus': async () => {
     const sessions = Array.from({ length: 10 }, (_, index) => ({ ...session, id: `navigation-${index}`, title: `Independent task ${index}`, messages: [] }));
     const tabs = sessions.map(value => ({ id: `tab-${value.id}`, kind: 'agent' as const, sessionId: value.id }));
