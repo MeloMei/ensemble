@@ -59,7 +59,12 @@
 
 ## 运行时品牌素材
 
-`src/renderer/assets/providers/` 下的 Logo 用于标识受支持的运行时。相关商标及图形归 OpenAI 和 Anthropic 所有，不属于 Ensemble 的 MIT 授权范围。展示这些标识不代表官方背书。
+`src/renderer/assets/providers/` 下的 Logo 用于标识受支持的运行时。图形及商标归各自权利人所有，展示这些标识不代表官方背书。以下保留上游许可证记录，Ensemble 的 MIT 许可证不授予相关商标权利。
 
 - `codex-light.png` 与 `codex-dark.png`：原样取自 OpenAI 官方 macOS 应用 `26.1016.61520`（构建 `21421`，标识 `com.openai.codex`）中的 `icon-codex-light.png` 和 `icon-codex-dark-color.png`。参见 [Codex](https://openai.com/codex/) 与 [OpenAI 品牌规范](https://openai.com/brand/)。
 - `claude.svg`：原样取自 [Anthropic 官方媒体素材包](https://www.anthropic.com/press-kit)中的 `Claude Spark - Clay.svg`，获取日期为 2026 年 10 月 23 日。[原始压缩包](https://www-cdn.anthropic.com/ae59ca4ca194dac9c9dc3bc78c5829468cb0e8af.zip)。
+- `opencode-light.svg` 与 `opencode-dark.svg`：原样取自 [OpenCode 官方品牌素材](https://opencode.ai/brand)，固定为 [`anomalyco/opencode` 的 `ed74ec82ce1fe3a36da6c0815a935473ef4bb0fb` 提交](https://github.com/anomalyco/opencode/tree/ed74ec82ce1fe3a36da6c0815a935473ef4bb0fb/packages/console/app/src/asset/brand)。仓库 MIT 许可原文保留在 [licenses/OpenCode-MIT.txt](licenses/OpenCode-MIT.txt)。
+- `deepseek-harness-light.svg` 与 `deepseek-harness-dark.svg`：原样取自 [`deepseek-ai/deepseek-harness` 的 `22ddee3792402c3e70ec5f86a63c3e3e895a2f60` 提交](https://github.com/deepseek-ai/deepseek-harness/tree/22ddee3792402c3e70ec5f86a63c3e3e895a2f60/apps/web/public)中的 `favicon.svg` 和 `favicon-dark.svg`。MIT 许可原文保留在 [licenses/DeepSeek-Harness-MIT.txt](licenses/DeepSeek-Harness-MIT.txt)，另见上游[品牌使用规范](https://github.com/deepseek-ai/deepseek-harness/blob/22ddee3792402c3e70ec5f86a63c3e3e895a2f60/BRAND_GUIDELINES.md)。
+- `pi-light.svg` 与 `pi-dark.svg`：取自 [Pi 官方媒体素材](https://pi.dev/press-kit)中的紧凑标识 [`favicon.svg`](https://pi.dev/favicon.svg)，获取日期为 2026 年 10 月 26 日。保留原路径形状和官方明暗配色，将原媒体查询中的颜色拆为两个文件，使其跟随 Ensemble 的外观设置。
+- `gemini.png`：原样取自 [`google-gemini/gemini-cli` 的 `cd1b45c2db0a5ea7b7fc3b67c1ba5879601d6005` 提交](https://github.com/google-gemini/gemini-cli/blob/cd1b45c2db0a5ea7b7fc3b67c1ba5879601d6005/packages/vscode-ide-companion/assets/icon.png)中的官方 Gemini CLI companion 图标。Apache-2.0 许可原文保留在 [licenses/Gemini-CLI-Apache-2.0.txt](licenses/Gemini-CLI-Apache-2.0.txt)。
+- `cursor-light.svg` 与 `cursor-dark.svg`：原样取自 [Cursor 官方品牌素材包](https://cursor.com/brand)中的 `CUBE_2D_LIGHT.svg` 和 `CUBE_2D_DARK.svg`，获取日期为 2026 年 10 月 26 日。[原始压缩包](https://ptht05hbb1ssoooe.public.blob.vercel-storage.com/assets/brand/cursor-brand-assets.zip)。
