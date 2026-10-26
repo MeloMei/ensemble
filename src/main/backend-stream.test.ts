@@ -80,6 +80,51 @@ test('backend watch changes and restart recover bounded session tails without cl
   }
 });
 
+test('rapid watch changes coalesce into one latest-target catch-up without repeated history resets', async t => {
+  const dataPath = await realpath(await mkdtemp(join(tmpdir(), 'ensemble-watch-burst-')));
+  const backend = await startBackend({ dataPath, command: process.execPath, bridgePath: join(dataPath, 'bridge.cjs'), providers: [{
+    info: { id: 'fixture', name: 'fixture', source: 'plugin', available: true, detail: '', capabilities: { resume: false, approvals: false } }, async run() {},
+  }] });
+  const controller = new AbortController();
+  const originalFetch = globalThis.fetch;
+  const watches: string[][] = [];
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  globalThis.fetch = async (input, init) => {
+    if (String(input).endsWith('/watch')) {
+      watches.push(JSON.parse(String(init?.body)).sessionIds);
+      if (watches.length === 1) await gate;
+    }
+    return originalFetch(input, init);
+  };
+  let latest: Snapshot | undefined, resets = 0, subscription: Promise<void> | undefined;
+  try {
+    const ids: string[] = [];
+    for (const title of ['first', 'second', 'latest']) ids.push(await backend.service.engine.createSession({ title, cwd: dataPath, providerId: 'fixture' }));
+    for (const session of backend.service.store.state.sessions) session.messages = [{ id: `${session.id}-message`, role: 'assistant', text: session.title, createdAt: 'now' }];
+    const client = new BackendClient(backend.endpoint);
+    await client.watchSessions([ids[0]]);
+    subscription = client.subscribe((snapshot, frame) => { latest = snapshot; if (frame.type === 'reset') resets++; }, controller.signal)
+      .catch(error => { if (!controller.signal.aborted) throw error; });
+    await until(() => latest?.sessions.find(session => session.id === ids[0])?.historyLoaded === true);
+    const pending = [client.watchSessions([ids[1]])];
+    await until(() => watches.length === 1);
+    for (let index = 0; index < 12; index++) pending.push(client.watchSessions([ids[index % 2 ? 2 : 0]]));
+    release(); await Promise.all(pending);
+    await until(() => latest?.sessions.find(session => session.id === ids[2])?.historyLoaded === true);
+    await until(() => resets === watches.length + 1);
+    t.diagnostic(JSON.stringify({ watchChanges: pending.length, watchRequests: watches.length, historyResets: resets - 1 }));
+    assert.deepEqual(watches, [[ids[1]], [ids[2]]]);
+    assert.equal(resets, 3);
+    assert.equal(latest!.sessions.find(session => session.id === ids[0])!.messages.length, 0);
+    assert.equal(latest!.sessions.find(session => session.id === ids[2])!.messages[0].text, 'latest');
+  } finally {
+    release(); globalThis.fetch = originalFetch; controller.abort();
+    await subscription;
+    await backend.close(); await rm(dataPath, { recursive: true, force: true });
+  }
+});
+
 test('failed watch changes restart the current stream while late failures cannot cancel its replacement', async () => {
   const dataPath = await realpath(await mkdtemp(join(tmpdir(), 'ensemble-watch-recovery-')));
   const backend = await startBackend({ dataPath, command: process.execPath, bridgePath: join(dataPath, 'bridge.cjs'), providers: [{

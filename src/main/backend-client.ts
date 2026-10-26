@@ -46,7 +46,8 @@ export class BackendClient {
   private sessions: string[] = [];
   private subscriptionId?: string;
   private subscriptionController?: AbortController;
-  private watchUpdates: Promise<void> = Promise.resolve();
+  private watchUpdates?: Promise<void>;
+  private watchRequested = false;
   constructor(readonly endpoint: BackendEndpoint, readonly streamVersion?: number) {}
 
   assertSnapshotStreaming(): void {
@@ -71,22 +72,33 @@ export class BackendClient {
   watchSessions(ids: string[]): Promise<void> {
     if (ids.length > 8 || ids.some(id => typeof id !== 'string' || !id || id.length > 200)) return Promise.reject(new Error('会话订阅格式无效。'));
     this.sessions = [...new Set(ids)];
-    this.watchUpdates = this.watchUpdates.catch(() => {}).then(async () => {
-      const subscriptionId = this.subscriptionId;
-      if (!subscriptionId) return;
-      const controller = this.subscriptionController;
-      try {
-        const response = await fetch(`${this.endpoint.url}/watch`, { method: 'POST', headers: {
-          Authorization: `Bearer ${this.endpoint.token}`, 'Content-Type': 'application/json',
-        }, body: JSON.stringify({ subscriptionId, sessionIds: this.sessions }), signal: AbortSignal.timeout(5000) });
-        if (!response.ok) throw new Error('后台会话订阅已失效。');
-      } catch (error) {
-        if (this.subscriptionId !== subscriptionId || this.subscriptionController !== controller) return;
-        controller?.abort(error);
-        throw error;
+    this.watchRequested = true;
+    return this.watchUpdates ??= Promise.resolve().then(() => this.updateWatch());
+  }
+
+  private async updateWatch(): Promise<void> {
+    let applied: string | undefined;
+    try {
+      while (this.watchRequested) {
+        this.watchRequested = false;
+        const subscriptionId = this.subscriptionId;
+        if (!subscriptionId) continue;
+        const controller = this.subscriptionController;
+        const body = JSON.stringify({ subscriptionId, sessionIds: this.sessions });
+        if (body === applied) continue;
+        try {
+          const response = await fetch(`${this.endpoint.url}/watch`, { method: 'POST', headers: {
+            Authorization: `Bearer ${this.endpoint.token}`, 'Content-Type': 'application/json',
+          }, body, signal: AbortSignal.timeout(5000) });
+          if (!response.ok) throw new Error('后台会话订阅已失效。');
+          applied = body;
+        } catch (error) {
+          if (this.subscriptionId !== subscriptionId || this.subscriptionController !== controller) continue;
+          controller?.abort(error);
+          throw error;
+        }
       }
-    });
-    return this.watchUpdates;
+    } finally { this.watchUpdates = undefined; }
   }
 
   snapshot(): Promise<Snapshot> {
