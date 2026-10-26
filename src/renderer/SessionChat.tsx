@@ -6,10 +6,11 @@ import { ATTACHMENT_LIMITS, attachmentLimitIssue } from '../shared/prompt-attach
 import { memo, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode, type Ref } from 'react';
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
+import * as Select from '@radix-ui/react-select';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
-  Activity, Archive, ArrowDown, ArrowUp, ArrowUpLeft, Brain, Check, ChevronDown,
+  Activity, Archive, ArrowDown, ArrowUp, ArrowUpLeft, Brain, Check, ChevronDown, ChevronUp,
   CircleAlert, CircleStop, Clock3, Copy, CornerDownLeft, FileText, FolderOpen,
   GitFork, Image, ListChecks, LoaderCircle, MessageCircle, PanelsTopLeft,
   Paperclip, Pause, Play, Search, Settings2, ShieldCheck, TerminalSquare, Users, X,
@@ -195,7 +196,7 @@ function SessionSettings({ session, workspaceId, active, visible, perform, openS
 }
 
 
-function ComposerSelect({ label, icon, value, display, disabled, hint, onChange, children, className = '' }: {
+function ComposerSelect({ label, icon, value, display, disabled, hint, onChange, options, className = '' }: {
   label: string;
   icon: ReactNode;
   value: string;
@@ -203,13 +204,38 @@ function ComposerSelect({ label, icon, value, display, disabled, hint, onChange,
   disabled: boolean;
   hint: string;
   onChange: (value: string) => void;
-  children: ReactNode;
+  options: { value: string; label: string; description?: string; disabled?: boolean }[];
   className?: string;
 }) {
-  return <label className={`composer-select ${className}`} title={disabled ? hint : `${label}: ${display}`}>
-    {icon}<span className="composer-select-value" aria-hidden="true">{display}</span><ChevronDown size={11} aria-hidden="true" />
-    <select aria-label={label} value={value} disabled={disabled} onChange={event => onChange(event.target.value)}>{children}</select>
-  </label>;
+  const [open, setOpen] = useState(false);
+  const descriptionId = useId();
+  useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
+  return <Select.Root value={`choice:${value}`} disabled={disabled} open={open && !disabled} onOpenChange={setOpen}
+    onValueChange={next => { if (!disabled) onChange(next.slice('choice:'.length)); }}>
+    <Select.Trigger className={`composer-select ${className}`} aria-label={label} title={disabled ? hint : `${label}: ${display}`}>
+      {icon}<span className="composer-select-value"><Select.Value>{display}</Select.Value></span>
+      <Select.Icon asChild><ChevronDown size={11} aria-hidden="true" /></Select.Icon>
+    </Select.Trigger>
+    <Select.Portal>
+      <Select.Content className="composer-select-menu" position="popper" side="top" align="start" sideOffset={6} collisionPadding={10}
+        aria-label={label}>
+        <Select.ScrollUpButton className="composer-select-scroll"><ChevronUp size={12} /></Select.ScrollUpButton>
+        <Select.Viewport className="composer-select-viewport">
+          <Select.Group>
+            <Select.Label className="composer-select-heading">{label}</Select.Label>
+            {options.map((option, index) => <Select.Item key={option.value} value={`choice:${option.value}`} data-value={option.value}
+              aria-describedby={option.description ? `${descriptionId}-${index}` : undefined}
+              className="composer-select-option" disabled={option.disabled} textValue={option.label}>
+              <span className="composer-select-option-copy"><Select.ItemText>{option.label}</Select.ItemText>
+                {option.description && <small id={`${descriptionId}-${index}`}>{option.description}</small>}</span>
+              <Select.ItemIndicator className="composer-select-check"><Check size={13} /></Select.ItemIndicator>
+            </Select.Item>)}
+          </Select.Group>
+        </Select.Viewport>
+        <Select.ScrollDownButton className="composer-select-scroll"><ChevronDown size={12} /></Select.ScrollDownButton>
+      </Select.Content>
+    </Select.Portal>
+  </Select.Root>;
 }
 
 function ComposerSettings({ session, provider, disabled, saving, perform }: {
@@ -229,26 +255,22 @@ function ComposerSettings({ session, provider, disabled, saving, perform }: {
   return <>
     <ComposerSelect className="composer-select-model" label={t('chat.model')} icon={<AgentIcon providerId={session.providerId} size={14} />}
       value={session.modelId ?? ''} display={modelLabel} disabled={disabled || !provider?.models?.length}
-      hint={disabled ? hint : t('chat.cliDefault')} onChange={value => change({ modelId: value || null })}>
-      <option value="">{provider?.defaultModelId ? t('chat.defaultModelName', { model: modelName(provider, provider.defaultModelId) }) : t('chat.cliDefault')}</option>
-      {session.modelId && !provider?.models?.some(model => model.id === session.modelId)
-        && <option value={session.modelId} disabled>{session.modelId}{t('chat.modelUnavailable')}</option>}
-      {provider?.models?.map(model => <option key={model.id} value={model.id}>
-        {model.name}{model.free ? t('chat.modelFree') : session.providerId === 'codex' ? t('chat.modelAccount') : t('chat.modelMetered')}
-      </option>)}
-    </ComposerSelect>
+      hint={disabled ? hint : t('chat.cliDefault')} onChange={value => change({ modelId: value || null })}
+      options={[
+        { value: '', label: provider?.defaultModelId ? t('chat.defaultModelName', { model: modelName(provider, provider.defaultModelId) }) : t('chat.cliDefault') },
+        ...(session.modelId && !provider?.models?.some(model => model.id === session.modelId)
+          ? [{ value: session.modelId, label: session.modelId, description: t('chat.modelUnavailable'), disabled: true }] : []),
+        ...(provider?.models?.map(model => ({ value: model.id, label: model.name,
+          description: model.free ? t('chat.modelFree') : session.providerId === 'codex' ? t('chat.modelAccount') : t('chat.modelMetered') })) ?? []),
+      ]} />
     {provider?.capabilities.effort && efforts.length > 0 && <ComposerSelect label={t('chat.effort')} icon={<Brain size={13} />}
       value={session.settings?.effort ?? ''} display={session.settings?.effort ? effortLabel(session.settings.effort) : t('chat.defaultEffort')}
-      disabled={disabled} hint={hint} onChange={value => change({ settings: { effort: value || null } })}>
-      <option value="">{t('chat.runtimeDefault')}</option>
-      {efforts.map(effort => <option key={effort} value={effort}>{effortLabel(effort)}</option>)}
-    </ComposerSelect>}
+      disabled={disabled} hint={hint} onChange={value => change({ settings: { effort: value || null } })}
+      options={[{ value: '', label: t('chat.runtimeDefault') }, ...efforts.map(effort => ({ value: effort, label: effortLabel(effort) }))]} />}
     {provider?.capabilities.permissions && <ComposerSelect label={t('chat.permissions')} icon={<ShieldCheck size={13} />}
       value={session.settings?.permission ?? 'review'} display={session.settings?.permission === 'read-only' ? t('common.readOnly') : t('chat.reviewPermissionShort')}
-      disabled={disabled} hint={hint} onChange={value => change({ settings: { permission: value as 'review' | 'read-only' } })}>
-      <option value="review">{t('chat.reviewPermission')}</option>
-      <option value="read-only">{t('common.readOnly')}</option>
-    </ComposerSelect>}
+      disabled={disabled} hint={hint} onChange={value => change({ settings: { permission: value as 'review' | 'read-only' } })}
+      options={[{ value: 'review', label: t('chat.reviewPermission') }, { value: 'read-only', label: t('common.readOnly') }]} />}
     {saving && <span className="composer-settings-saving" role="status" aria-label={t('chat.savingSettings')}><LoaderCircle size={13} className="spin" /></span>}
   </>;
 }

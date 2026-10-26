@@ -323,9 +323,30 @@ const cases: Record<string, () => Promise<void>> = {
     const configuredSession: Session = { ...session, modelId: 'model-a' };
     const draft = { text: 'Keep this unfinished task', attachments: [{ id: 'attachment', name: 'note.txt', kind: 'text' as const, ownedPath: '/note.txt', mimeType: 'text/plain', size: 4, sha256: 'a'.repeat(64) }] };
     const show = (overrides: Partial<Parameters<typeof SessionChat>[0]> = {}) => render(chat({ session: configuredSession, provider: configuredProvider, draft, onDraftChange: () => { draftChanges++; }, ...overrides }));
-    const selector = (key: string) => `.composer-controls select[aria-label="${translate(`workspace:chat.${key}`)}"]`;
-    const control = (key: string) => input(selector(key)) as HTMLSelectElement;
+    const selector = (key: string) => `.composer-controls button[role=combobox][aria-label="${translate(`workspace:chat.${key}`)}"]`;
+    const control = (key: string) => {
+      const element = document.querySelector<HTMLButtonElement>(selector(key));
+      assert(element, `Missing session control ${key}`);
+      return element;
+    };
     const controls = () => ['model', 'effort', 'permissions'].map(control);
+    const menu = () => document.querySelector<HTMLElement>('.composer-select-menu[role=listbox]');
+    const open = async (key: string) => {
+      await act(async () => {
+        control(key).focus();
+        control(key).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        await tick();
+      });
+      await waitFor(() => Boolean(menu()), `Session control ${key} did not open its application menu`);
+      return menu()!;
+    };
+    const choose = async (key: string, value: string) => {
+      const list = await open(key);
+      const option = [...list.querySelectorAll<HTMLElement>('[role=option]')].find(item => item.dataset.value === value);
+      assert(option && !option.hasAttribute('data-disabled'), `Missing selectable session option ${key}: ${value}`);
+      await act(async () => { option.click(); await tick(); });
+      await waitFor(() => !menu(), `Session control ${key} did not close after selection`);
+    };
     window.workbench = {
       listSkills: async () => [{ id: 'skill', name: 'Skill', path: '/skill', description: '', scope: 'project', editable: true }],
       updateSession: async (_id: string, patch: Record<string, unknown>) => { writes.push(structuredClone(patch)); },
@@ -334,17 +355,29 @@ const cases: Record<string, () => Promise<void>> = {
     const textarea = input('textarea');
     const assertDraft = () => assert(input('textarea') === textarea && textarea.value === draft.text && document.querySelector('.attachments-strip')?.textContent?.includes('note.txt') && draftChanges === 0, 'Session controls replaced or erased the unfinished draft');
     assert(button('workspace:chat.settings').getAttribute('aria-expanded') === 'false' && controls().every(item => !item.disabled), 'Session controls require opening settings or are unavailable while idle');
-    await change(control('permissions'), 'read-only');
-    await change(control('effort'), 'high');
-    await change(control('model'), 'model-b');
+    const modelTrigger = control('model');
+    const list = await open('model');
+    const selectedModel = list.querySelector<HTMLElement>('[role=option][data-value="model-a"]');
+    assert(selectedModel?.getAttribute('aria-selected') === 'true' || selectedModel?.dataset.state === 'checked', 'The model menu does not identify its current selection');
+    await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await tick(); });
+    await waitFor(() => !menu() && document.activeElement === modelTrigger, 'Escape did not close the session menu and restore trigger focus');
+    assert(writes.length === 0, 'Canceling the session menu changed a setting');
+    await choose('model', 'model-a');
+    assert(writes.length === 0, 'Selecting the current model wrote an unchanged setting');
+    await choose('permissions', 'read-only');
+    await choose('effort', 'high');
+    await choose('model', 'model-b');
     await click('workspace:chat.settings');
-    assert(!document.querySelector('.session-settings select'), 'Advanced settings duplicate the inline session controls');
+    assert(!document.querySelector('.session-settings select, .session-settings [role=combobox]'), 'Advanced settings duplicate the inline session controls');
     await change(input('.session-skills input'), true);
-    await change(control('effort'), '');
-    await change(control('model'), '');
+    await choose('effort', '');
+    await choose('model', '');
     assert(JSON.stringify(writes) === JSON.stringify([{ settings: { permission: 'read-only' } }, { settings: { effort: 'high' } }, { modelId: 'model-b' }, { settings: { skillIds: ['skill'] } }, { settings: { effort: null } }, { modelId: null }]), `A stale setting was sent: ${JSON.stringify(writes)}`);
     assertDraft();
     await click('workspace:chat.settings');
+    await open('effort');
+    await show({ session: { ...configuredSession, status: 'running' } });
+    await waitFor(() => !menu(), 'An open session menu remained available after its session started running');
     for (const status of ['running', 'waiting_approval', 'waiting_children', 'queued'] as const) {
       await show({ session: { ...configuredSession, status } });
       assert(controls().every(item => item.disabled), `Session controls remain editable during ${status}`);
@@ -360,9 +393,9 @@ const cases: Record<string, () => Promise<void>> = {
     await show({ provider: { ...configuredProvider, efforts: [] } });
     assert(!document.querySelector(selector('effort')), 'Empty reasoning options still expose a reasoning control');
     await show({ provider: { ...configuredProvider, models: [] } });
-    assert(control('model').disabled && control('model').value === configuredSession.modelId, 'Missing model catalog hides or enables changing the current model');
+    assert(control('model').disabled && control('model').textContent?.includes(configuredSession.modelId!), 'Missing model catalog hides or enables changing the current model');
     await show({ session, provider: { ...configuredProvider, models: [] } });
-    assert(control('model').disabled && control('model').value === '', 'Missing model catalog does not preserve the runtime default');
+    assert(control('model').disabled && control('model').textContent?.includes(translate('workspace:chat.modelDefault', { provider: configuredProvider.name })), 'Missing model catalog does not preserve the runtime default');
     assertDraft();
     assert(errors.length === 0, errors.join('\n'));
   },
