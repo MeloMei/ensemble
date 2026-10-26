@@ -708,6 +708,37 @@ const cases: Record<string, () => Promise<void>> = {
     await waitFor(() => creations.length === 3, 'The next creation did not start');
     assert(creations[2].mode === 'directory' && creations[2].commandId !== creations[1].commandId, 'An independent creation reused the completed intent');
   },
+  'UX2-FILES-TERMINAL: replacement tails and gap recovery stay ordered behind pending terminal writes': async () => {
+    const originalOpen = Terminal.prototype.open;
+    let terminal: Terminal | undefined, listener!: Parameters<Window['workbench']['onTerminalOutput']>[1];
+    Terminal.prototype.open = function(element) { terminal = this; originalOpen.call(this, element); };
+    try {
+      window.workbench = {
+        onTerminalOutput: (_id: string, value: typeof listener) => { listener = value; return () => {}; },
+        resizeTerminal: async () => {}, writeTerminal: async () => {},
+      } as unknown as Window['workbench'];
+      const info = { id: 'pending-terminal', workspaceId: workspace.id, title: 'Terminal', status: 'running' as const, exitCode: null, output: '', outputOffset: 0 };
+      await render(<TerminalPane info={info} cwd={workspace.cwd} perform={perform} />);
+      const contents = () => Array.from({ length: terminal?.buffer.active.length ?? 0 }, (_, index) => terminal?.buffer.active.getLine(index)?.translateToString(true) ?? '').join('\n').trimEnd();
+      await act(async () => {
+        listener({ type: 'tail', terminalId: info.id, outputOffset: 0, output: 'old tail\r\n' });
+        listener({ type: 'append', terminalId: info.id, offset: 10, data: 'pending old append\r\n' });
+        listener({ type: 'tail', terminalId: info.id, outputOffset: 100, output: 'reconnected\r\n' });
+        listener({ type: 'append', terminalId: info.id, offset: 113, data: 'after reconnect\r\n' });
+        await tick();
+      });
+      await waitFor(() => contents().includes('after reconnect'), 'The append after reconnection was not rendered');
+      assert(contents() === 'reconnected\nafter reconnect', `A reconnect tail retained queued stale output: ${contents()}`);
+      await act(async () => {
+        listener({ type: 'append', terminalId: info.id, offset: 130, data: 'pending before gap\r\n' });
+        listener({ type: 'append', terminalId: info.id, offset: 500, data: 'gap recovery\r\n' });
+        listener({ type: 'append', terminalId: info.id, offset: 514, data: 'after gap\r\n' });
+        await tick();
+      });
+      await waitFor(() => contents().includes('after gap'), 'The append after gap recovery was not rendered');
+      assert(contents() === 'gap recovery\nafter gap', `Gap recovery retained queued stale output: ${contents()}`);
+    } finally { Terminal.prototype.open = originalOpen; }
+  },
   'UI-11: terminal subscriptions consume bounded tails and overlapping appends exactly once': async () => {
     const originalOpen = Terminal.prototype.open;
     let terminal: Terminal | undefined, listener!: Parameters<Window['workbench']['onTerminalOutput']>[1], unsubscribed = 0;

@@ -51,8 +51,8 @@ export function TerminalPane({ info, cwd, perform }: { info: TerminalInfo; cwd: 
       const end = offset + output.length;
       const previousEnd = consumedEnd.current;
       if (event.type === 'tail' || previousEnd === null || offset > previousEnd) {
-        terminal.reset();
-        terminal.write(output);
+        // Queue the reset so pending writes cannot reappear after a replacement tail.
+        terminal.write(`\x1bc${output}`);
         consumedEnd.current = end;
       } else if (end > previousEnd) {
         terminal.write(output.slice(previousEnd - offset));
