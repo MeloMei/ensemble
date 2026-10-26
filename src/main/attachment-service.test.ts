@@ -3,7 +3,8 @@ import { mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { AttachmentService, ATTACHMENT_LIMITS } from './attachment-service';
+import { AttachmentService } from './attachment-service';
+import { ATTACHMENT_LIMITS } from '../shared/prompt-attachments';
 
 test('attachment store owns bounded real bytes and refuses changed metadata, links and unsupported content', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'workbench-attachment-'));
@@ -25,7 +26,18 @@ test('attachment store owns bounded real bytes and refuses changed metadata, lin
     const link = join(directory, 'link.txt'); await symlink(text, link);
     await assert.rejects(store.importFiles([link]));
     const unknown = join(directory, 'report.pdf'); await writeFile(unknown, 'not parsed as a document');
+    await assert.rejects(store.importFiles(Array(ATTACHMENT_LIMITS.count + 1).fill(text)), /1 到 4/);
+    await assert.rejects(store.load(Array(ATTACHMENT_LIMITS.count + 1).fill(metadata[0])), /最多 4/);
+    const boundary = await store.importFiles(Array(ATTACHMENT_LIMITS.count).fill(text));
+    assert.equal((await store.load(boundary)).length, ATTACHMENT_LIMITS.count);
+    const fullImage = join(directory, 'full.png');
+    const fullBytes = Buffer.alloc(ATTACHMENT_LIMITS.imageBytes); png.copy(fullBytes);
+    await writeFile(fullImage, fullBytes);
+    const byteBoundary = await store.importFiles([fullImage, fullImage]);
+    assert.equal((await store.load(byteBoundary)).reduce((total, item) => total + item.data.length, 0), ATTACHMENT_LIMITS.totalBytes);
+    await assert.rejects(store.load([...byteBoundary, metadata[1]]), /8 MiB/);
     const before = await readdir(root);
+    await assert.rejects(store.importFiles([fullImage, fullImage, image]), /8 MiB/);
     await assert.rejects(store.importFiles([text, unknown]), /只支持/);
     assert.deepEqual(await readdir(root), before);
     const large = join(directory, 'large.txt'); await writeFile(large, Buffer.alloc(ATTACHMENT_LIMITS.textBytes + 1, 65));

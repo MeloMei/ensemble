@@ -25,6 +25,7 @@ import { ProviderHealthRegistry } from './provider-health';
 import { DiagnosticJournal, withProviderDiagnostics } from './diagnostics';
 import { sessionHistory, searchMessages } from './session-history';
 import { searchableMessageText } from '../shared/message-text';
+import { ATTACHMENT_LIMITS, attachmentLimitIssue } from '../shared/prompt-attachments';
 
 const idSchema = z.string().min(1).max(200);
 const cwdSchema = z.string().min(1).max(4096);
@@ -32,7 +33,11 @@ const promptSchema = z.string().trim().min(1).max(200_000);
 const modelIdSchema = z.string().min(1).max(1000).optional();
 const settingsSchema = z.object({ effort: z.string().min(1).max(100).nullable().optional(), permission: z.enum(['review', 'read-only']).nullable().optional(), skillIds: z.array(idSchema).max(8).nullable().optional() }).strict();
 const attachmentSchema = z.object({ id: idSchema, name: z.string().min(1).max(300), kind: z.enum(['image', 'text']), mimeType: z.string().min(1).max(100), size: z.number().int().min(0).max(20_000_000), sha256: z.string().regex(/^[a-f0-9]{64}$/), ownedPath: cwdSchema }).strict();
-const promptInputSchema = z.object({ text: z.string().max(200_000), attachments: z.array(attachmentSchema).max(8).optional() }).strict();
+// Older oversized drafts stay editable until the user removes the excess files.
+const draftInputSchema = z.object({ text: z.string().max(200_000), attachments: z.array(attachmentSchema).max(8).optional() }).strict();
+const promptInputSchema = draftInputSchema.refine(input => !attachmentLimitIssue(input.attachments ?? []), {
+  path: ['attachments'], message: `每轮最多 ${ATTACHMENT_LIMITS.count} 个附件，总大小最多 ${ATTACHMENT_LIMITS.totalBytes / 1024 / 1024} MiB。`,
+});
 const commandIdSchema = z.string().min(1).max(200).optional();
 const pageLimitSchema = z.number().int().min(1).max(200).optional();
 const messageCursorSchema = z.string().min(1).max(4096);
@@ -244,7 +249,7 @@ export async function createWorkbenchService(options: {
     handle('workbench:git-state', (_event, workspaceId: unknown) => workspaceFiles.gitState(engine.workspace(idSchema.parse(workspaceId)).cwd));
     handle('workbench:file-diff', (_event, workspaceId: unknown, path: unknown) => workspaceFiles.diff(engine.workspace(idSchema.parse(workspaceId)).cwd, z.string().min(1).max(4096).parse(path)));
     handle('workbench:send-prompt', (_event, id, input, commandId) => engine.sendPrompt(idSchema.parse(id), promptInputSchema.parse(input), commandIdSchema.parse(commandId)));
-    handle('workbench:save-session-draft', (_event, id, input) => engine.saveSessionDraft(idSchema.parse(id), promptInputSchema.parse(input)));
+    handle('workbench:save-session-draft', (_event, id, input) => engine.saveSessionDraft(idSchema.parse(id), draftInputSchema.parse(input)));
     handle('workbench:update-session', (_event, id, input) => engine.updateSession(idSchema.parse(id), z.object({ title: z.string().trim().min(1).max(200).optional(), archived: z.boolean().optional(), modelId: modelIdSchema.nullable(), settings: settingsSchema.optional() }).strict().parse(input)));
     handle('workbench:fork-session', (_event, id, before) => engine.forkSession(idSchema.parse(id), idSchema.optional().parse(before)));
     handle('workbench:rewind-session', (_event, id, messageId) => engine.rewindSession(idSchema.parse(id), idSchema.parse(messageId)));
@@ -274,7 +279,7 @@ export async function createWorkbenchService(options: {
     handle('workbench:test-mcp-server', (_event, id, name) => runtimeSettings.testServer(workspaceCwd(id), idSchema.parse(name)));
     handle('workbench:deepseek-balance', () => readDeepSeekBalance());
 
-    handle('workbench:import-attachments', (_event, paths) => attachments.importFiles(z.array(cwdSchema).max(8).parse(paths)));
+    handle('workbench:import-attachments', (_event, paths) => attachments.importFiles(z.array(cwdSchema).max(ATTACHMENT_LIMITS.count).parse(paths)));
 
     if (options.providers) engine.setProviders(options.providers.map(instrument), [], []);
     else await refreshProviders();

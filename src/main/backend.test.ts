@@ -71,6 +71,12 @@ test('session drafts restore text and attachments, survive a rejected send and c
     const attachments = await service.attachments.importFiles([file]);
     const id = await service.call('workbench:create-session', [{ title: 'draft', providerId: 'controlled', cwd: dataPath }]) as string;
     const input = { text: '  unfinished task\n', attachments };
+    const legacy = { ...input, attachments: [...attachments, ...await service.attachments.importFiles([file, file, file, file])] };
+    await service.call('workbench:save-session-draft', [id, legacy]);
+    assert.deepEqual(service.engine.getSession(id).draft, legacy);
+    await assert.rejects(service.call('workbench:send-prompt', [id, legacy]), /每轮最多 4/);
+    await assert.rejects(service.call('workbench:update-queued-prompt', [id, 'oversized', legacy]), /每轮最多 4/);
+    assert.deepEqual(service.engine.getSession(id).draft, legacy);
     await service.call('workbench:save-session-draft', [id, input]);
     await assert.rejects(service.call('workbench:save-session-draft', [id, { text: 'x'.repeat(200_001) }]));
     await service.shutdown();

@@ -6,8 +6,8 @@ import { TextDecoder } from 'node:util';
 import type { PromptAttachment } from '../shared/types';
 import type { LoadedPromptAttachment } from './providers/types';
 import { sanitizeAttachmentName } from './vendor/orca/attachment-name';
+import { ATTACHMENT_LIMITS } from '../shared/prompt-attachments';
 
-export const ATTACHMENT_LIMITS = { count: 4, imageBytes: 4 * 1024 * 1024, textBytes: 1024 * 1024, totalBytes: 8 * 1024 * 1024 } as const;
 const TEXT_EXTENSIONS = new Set(['', '.txt', '.md', '.mdx', '.json', '.jsonl', '.yaml', '.yml', '.toml', '.xml', '.html', '.htm', '.css', '.scss', '.less', '.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.py', '.rs', '.go', '.java', '.kt', '.swift', '.c', '.h', '.cpp', '.hpp', '.sh', '.bash', '.zsh', '.sql', '.csv', '.log', '.ini', '.conf', '.env', '.gitignore', '.dockerignore']);
 const IMAGE_EXTENSIONS = new Map([['.png', 'image/png'], ['.jpg', 'image/jpeg'], ['.jpeg', 'image/jpeg'], ['.gif', 'image/gif'], ['.webp', 'image/webp']]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -44,11 +44,11 @@ function classify(name: string, data: Buffer): Pick<LoadedPromptAttachment, 'kin
   const mimeType = imageMime(data);
   if (IMAGE_EXTENSIONS.has(extension) || mimeType) {
     if (!mimeType || (IMAGE_EXTENSIONS.has(extension) && IMAGE_EXTENSIONS.get(extension) !== mimeType)) throw new Error('图片格式与内容不一致。');
-    if (data.length > ATTACHMENT_LIMITS.imageBytes) throw new Error('图片超过 4 MiB 限制。');
+    if (data.length > ATTACHMENT_LIMITS.imageBytes) throw new Error(`图片超过 ${ATTACHMENT_LIMITS.imageBytes / 1024 / 1024} MiB 限制。`);
     return { kind: 'image', mimeType };
   }
   if (!TEXT_EXTENSIONS.has(extension)) throw new Error('当前附件只支持 PNG、JPEG、GIF、WebP 图片和 UTF-8 文本/代码文件。');
-  if (data.length > ATTACHMENT_LIMITS.textBytes) throw new Error('文本附件超过 1 MiB 限制。');
+  if (data.length > ATTACHMENT_LIMITS.textBytes) throw new Error(`文本附件超过 ${ATTACHMENT_LIMITS.textBytes / 1024 / 1024} MiB 限制。`);
   if (data.some(byte => byte === 0 || (byte < 32 && ![9, 10, 12, 13].includes(byte)))) throw new Error('二进制文件不能作为文本附件。');
   try { return { kind: 'text', mimeType: 'text/plain', text: new TextDecoder('utf-8', { fatal: true }).decode(data) }; }
   catch { throw new Error('文本附件必须是有效的 UTF-8 文件。'); }
@@ -65,7 +65,7 @@ export class AttachmentService {
   }
 
   async importFiles(files: string[]): Promise<PromptAttachment[]> {
-    if (!files.length || files.length > ATTACHMENT_LIMITS.count) throw new Error('每次请选择 1 到 4 个附件。');
+    if (!files.length || files.length > ATTACHMENT_LIMITS.count) throw new Error(`每次请选择 1 到 ${ATTACHMENT_LIMITS.count} 个附件。`);
     await this.initialize();
     const imported: PromptAttachment[] = [];
     const created: string[] = [];
@@ -77,7 +77,7 @@ export class AttachmentService {
         const name = sanitizeAttachmentName(path.basename(file));
         const { kind, mimeType } = classify(name, data);
         total += data.length;
-        if (total > ATTACHMENT_LIMITS.totalBytes) throw new Error('附件总大小超过 8 MiB 限制。');
+        if (total > ATTACHMENT_LIMITS.totalBytes) throw new Error(`附件总大小超过 ${ATTACHMENT_LIMITS.totalBytes / 1024 / 1024} MiB 限制。`);
         const id = randomUUID();
         const directory = path.join(this.root, id);
         await mkdir(directory, { mode: 0o700 });
@@ -94,7 +94,7 @@ export class AttachmentService {
   }
 
   async load(metadata: PromptAttachment[] = []): Promise<LoadedPromptAttachment[]> {
-    if (metadata.length > ATTACHMENT_LIMITS.count) throw new Error('每轮最多 4 个附件。');
+    if (metadata.length > ATTACHMENT_LIMITS.count) throw new Error(`每轮最多 ${ATTACHMENT_LIMITS.count} 个附件。`);
     if (!metadata.length) return [];
     await this.initialize();
     const result: LoadedPromptAttachment[] = [];
@@ -108,7 +108,7 @@ export class AttachmentService {
       const data = await readRegularFile(expected, ATTACHMENT_LIMITS.imageBytes);
       const actual = classify(attachment.name, data);
       total += data.length;
-      if (total > ATTACHMENT_LIMITS.totalBytes) throw new Error('附件总大小超过 8 MiB 限制。');
+      if (total > ATTACHMENT_LIMITS.totalBytes) throw new Error(`附件总大小超过 ${ATTACHMENT_LIMITS.totalBytes / 1024 / 1024} MiB 限制。`);
       if (attachment.size !== data.length || attachment.sha256 !== hash(data) || attachment.kind !== actual.kind || attachment.mimeType !== actual.mimeType) throw new Error('附件内容已变化，请重新选择。');
       result.push({ ...attachment, ...actual, data });
     }

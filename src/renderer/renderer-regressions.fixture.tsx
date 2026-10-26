@@ -5,7 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { I18nextProvider } from 'react-i18next';
 import { MotionConfig } from 'framer-motion';
 import { i18n, translate } from '../shared/i18n';
-import type { DiagnosticEntry, FileContent, McpSettingsView, Message, ProviderInfo, Session, Snapshot, UnsavedFileSummary, Workflow, Workspace } from '../shared/types';
+import type { DiagnosticEntry, FileContent, McpSettingsView, Message, PromptInput, ProviderInfo, Session, Snapshot, UnsavedFileSummary, Workflow, Workspace } from '../shared/types';
 import type { BackendConnectionState, SessionHistoryWindow } from '../shared/backend';
 import { WorkspaceTools } from './WorkspaceTools';
 import { ProvidersView, WorkflowView } from './WorkflowViews';
@@ -341,6 +341,54 @@ const cases: Record<string, () => Promise<void>> = {
     assert(control('model').disabled && control('model').value === '', 'Missing model catalog does not preserve the runtime default');
     assertDraft();
     assert(errors.length === 0, errors.join('\n'));
+  },
+  'UX2-CHAT1: attachment selections keep oversized drafts editable and block invalid sends': async () => {
+    const attachment = (index: number, size = 4) => ({ id: `limit-${index}`, name: `file-${index}.txt`, kind: 'text' as const, ownedPath: `/file-${index}.txt`, mimeType: 'text/plain', size, sha256: 'a'.repeat(64) });
+    const sends: unknown[] = [];
+    let selected: NonNullable<PromptInput['attachments']> = [attachment(3), attachment(4)];
+    window.workbench = {
+      chooseAttachments: async () => selected,
+      sendPrompt: async (_id: string, value: unknown) => { sends.push(value); },
+    } as unknown as Window['workbench'];
+    const firstDraft = { text: 'Use these files', attachments: [attachment(0), attachment(1), attachment(2)] };
+    function EditableChat({ initial = firstDraft }: { initial?: PromptInput }) {
+      const [draft, setDraft] = React.useState(initial);
+      return chat({ draft, onDraftChange: setDraft });
+    }
+    await render(<EditableChat />);
+    await click('workspace:chat.attach'); await settle();
+    assert(document.querySelectorAll('.composer .attachment-chip').length === 5, 'Adding files silently discarded a selected attachment');
+    assert(button('workspace:chat.sendTask').disabled, 'Five attached files can still be sent although the runtime accepts only four');
+    assert(document.querySelector('.composer-note[role=alert]')?.textContent?.includes('4'), 'The attachment count limit is not explained');
+    await act(async () => { input('.composer textarea').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await tick(); });
+    assert(sends.length === 0, 'Enter bypassed the attachment count limit');
+    await act(async () => { document.querySelector<HTMLButtonElement>('.composer .attachment-chip button')!.click(); await tick(); });
+    assert(!button('workspace:chat.sendTask').disabled && button('workspace:chat.attach').disabled, 'Exactly four attachments do not share the runtime boundary');
+    await click('workspace:chat.sendTask'); await settle();
+    assert((sends[0] as { attachments: unknown[] }).attachments.length === 4, 'A valid four-file draft changed before sending');
+    await render(<div />);
+    const image = (index: number) => ({ ...attachment(index, 3 * 1024 * 1024), name: `image-${index}.png`, kind: 'image' as const, mimeType: 'image/png' });
+    selected = [image(7)];
+    await render(<EditableChat initial={{ text: 'Use larger files', attachments: [image(5), image(6)] }} />);
+    await click('workspace:chat.attach'); await settle();
+    assert(button('workspace:chat.sendTask').disabled && document.querySelectorAll('.composer .attachment-chip').length === 3, 'Combined attachment bytes are allowed to exceed the runtime limit');
+    assert(document.querySelector('.composer-note[role=alert]')?.textContent?.includes('8 MiB'), 'The total byte limit is not explained');
+    await act(async () => { document.querySelector<HTMLButtonElement>('.composer .attachment-chip button')!.click(); await tick(); });
+    assert(!button('workspace:chat.sendTask').disabled, 'Removing an oversized attachment did not restore sending');
+    assert(errors.length === 0, errors.join('\n'));
+  },
+  'UX2-CHAT2: editing an oversized queued draft requires removing excess files before saving': async () => {
+    const attachments = Array.from({ length: 5 }, (_, index) => ({ id: `queued-limit-${index}`, name: `file-${index}.txt`, kind: 'text' as const, ownedPath: `/file-${index}.txt`, mimeType: 'text/plain', size: 4, sha256: 'a'.repeat(64) }));
+    const writes: unknown[] = [];
+    window.workbench = { updateQueuedPrompt: async (_id: string, _itemId: string, value: unknown) => { writes.push(value); } } as unknown as Window['workbench'];
+    await render(chat({ session: { ...session, queue: [{ id: 'oversized-queued', commandId: 'queued', input: { text: 'Queued files', attachments }, createdAt: session.createdAt, updatedAt: session.updatedAt }] } }));
+    await click('workspace:chat.editQueued');
+    assert(button('workspace:chat.saveQueued').disabled, 'Queue edits still submit more attachments than the runtime accepts');
+    assert(document.querySelector('.prompt-queue [role=alert]')?.textContent?.includes('4'), 'Queue attachment limit is not explained');
+    await act(async () => { document.querySelector<HTMLButtonElement>('.prompt-queue .attachment-chip button')!.click(); await tick(); });
+    assert(!button('workspace:chat.saveQueued').disabled, 'A corrected queue draft is still blocked');
+    await click('workspace:chat.saveQueued'); await settle();
+    assert((writes[0] as { attachments: unknown[] }).attachments.length === 4, 'Saving the corrected queue draft lost an attachment');
   },
   'CHAT-01: latest output leaves a search history window and resumes the live tail': async () => {
     const match = { ...messageRange(300, 301)[0], text: 'Needle in historical output' };
