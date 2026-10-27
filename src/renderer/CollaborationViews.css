@@ -199,7 +199,7 @@
 .modal .collaboration-checkbox { display: flex; flex-direction: row; align-items: center; gap: 8px; margin: 14px 0; font-size: 12px; }
 .relationship-editor { display: grid; grid-template-columns: minmax(90px,1fr) 14px minmax(90px,1fr) minmax(140px,1.3fr) 28px; align-items: center; gap: 10px; margin-bottom: 12px; }
 .relationship-editor input,
-.relationship-editor select { font-size: 12px; }
+.relationship-editor .app-select { font-size: 12px; }
 .collaboration-editor .optional { position: static; color: var(--dim); font-size: 11px; font-weight: 400; }
 .collaboration-editor-body > .editor-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 26px; padding-top: 22px; border-top: 1px solid var(--border); }
 

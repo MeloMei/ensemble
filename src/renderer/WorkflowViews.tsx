@@ -1,11 +1,12 @@
 import { AgentIcon } from './AgentIcon';
+import { AppSelect } from './AppSelect';
 import { useTranslation } from 'react-i18next';
 import { translate as t, formatDate, renderDisplayText } from '../shared/i18n';
 import { useEffect, useState, type FormEvent } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
 import { ArrowUpRight, Check, Copy, CircleAlert, CircleStop, Folder, FolderOpen, GitBranch, LoaderCircle, MessageSquare, Plug, Plus, RefreshCw, ShieldCheck, Trash2, X } from 'lucide-react';
 import type { ProviderInfo, Session, Snapshot, Workflow, WorkflowInput, WorkflowStep, WorkflowStepInput } from '../shared/types';
-import { DirectoryField, IconButton, Modal, ModelField, ProviderSelect, Status, defaultModelId, statusLabel, modelName, modelPolicy, validModelSelection, usesCliModelDefault, type Perform } from './ui';
+import { DirectoryField, IconButton, ModelField, ProviderSelect, Status, defaultModelId, statusLabel, modelName, modelPolicy, validModelSelection, usesCliModelDefault, type Perform } from './ui';
 import { motionMessageFadeUp } from './vendor/open-claude-ui/ClaudeMotionPresets';
 import { RuntimeHealth, useRuntimeHealth } from './RuntimeHealth';
 import './WorkflowViews.css';
@@ -171,7 +172,7 @@ function ProviderGuides({ provider }: { provider: ProviderInfo }) {
   </nav></div>;
 }
 
-function ProvidersContent({ snapshot, perform, pending }: ProvidersProps) {
+export function ProvidersContent({ snapshot, perform, pending }: ProvidersProps) {
   const { t } = useTranslation('shell');
   const { t: runtimeText } = useTranslation('runtime');
   const reducedMotion = useReducedMotion();
@@ -181,9 +182,8 @@ function ProvidersContent({ snapshot, perform, pending }: ProvidersProps) {
   const available = health.providers.filter(provider => provider.available).length;
   const directories = snapshot.workspaces.filter((workspace, index, values) => values.findIndex(item => item.cwd === workspace.cwd) === index);
   return <div className="providers-content">
-    <div className="runtime-directory"><label>{runtimeText('health.directory')}<select value={cwd} onChange={event => setDirectory(event.target.value)}>
-      <option value="">{runtimeText('health.global')}</option>{directories.map(workspace => <option key={workspace.id} value={workspace.cwd}>{workspace.name} · {workspace.cwd}</option>)}
-    </select></label>{cwd && <code>{cwd}</code>}<p>{runtimeText(cwd ? 'health.directoryNote' : 'health.globalNote')}</p></div>
+    <div className="runtime-directory"><label>{runtimeText('health.directory')}<AppSelect label={runtimeText('health.directory')} value={cwd} onChange={setDirectory}
+      options={[{ value: '', label: runtimeText('health.global') }, ...directories.map(workspace => ({ value: workspace.cwd, label: workspace.name, description: workspace.cwd }))]} /></label>{cwd && <code>{cwd}</code>}<p>{runtimeText(cwd ? 'health.directoryNote' : 'health.globalNote')}</p></div>
     <div className="provider-detection">
       <div><span className={`connections-status ${available ? 'ready' : ''}`}><span />{t('provider.detectedCount', { count: available })}</span><p>{t('provider.detectionNote')}</p></div>
       <button className="button" disabled={pending.has('refresh-providers') || health.loading} onClick={() => void perform('refresh-providers', health.refresh)}><RefreshCw className={pending.has('refresh-providers') ? 'spin' : ''} size={14} />{t('provider.refresh')}</button>
@@ -202,19 +202,4 @@ function ProvidersContent({ snapshot, perform, pending }: ProvidersProps) {
       {snapshot.pluginErrors.length > 0 && <div className="plugin-errors"><h3><CircleAlert size={15} />{t('provider.pluginErrors')}</h3>{snapshot.pluginErrors.map((error, index) => <p key={index}>{error}</p>)}</div>}
     </div>
   </div>;
-}
-
-export function ProvidersView(props: ProvidersProps) {
-  const { t } = useTranslation('shell');
-  return <section className="providers-page scroll-content">
-    <div className="page-intro"><div><span className="eyebrow">{t('provider.localEnvironment')}</span><h1>{t('provider.integrations')}</h1><p>{t('provider.refreshAfterSetup')}</p></div></div>
-    <ProvidersContent {...props} />
-  </section>;
-}
-
-export function ProvidersDialog({ onClose, ...props }: ProvidersProps & { onClose: () => void }) {
-  const { t } = useTranslation('shell');
-  return <Modal title={t('provider.setupHelp')} subtitle={t('provider.setupHelpNote')} size="wide" onClose={onClose}>
-    <ProvidersContent {...props} />
-  </Modal>;
 }

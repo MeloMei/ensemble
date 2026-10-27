@@ -25,7 +25,7 @@
 .add-step { display: flex; align-items: center; justify-content: center; gap: 7px; width: 100%; margin-top: 14px; padding: 11px; border: 1px dashed var(--border-strong); border-radius: var(--radius-control); color: var(--muted); font-size: 12px; transition: background var(--duration-fast) var(--ease-out); }
 .add-step:hover { background: var(--selected); color: var(--text); }
 .workflow-detail .editor-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 28px; padding-top: 24px; border-top: 1px solid var(--border); }
-.workflow-detail .eyebrow, .providers-page .eyebrow { display: block; margin-bottom: 7px; color: var(--muted); font-size: 11px; font-weight: 500; }
+.workflow-detail .eyebrow { display: block; margin-bottom: 7px; color: var(--muted); font-size: 11px; font-weight: 500; }
 .run-overview { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-bottom: 22px; padding: 0 0 18px; border-bottom: 1px solid var(--border); }
 .run-overview p { display: flex; align-items: baseline; gap: 10px; }
 .run-overview p strong { color: var(--text); font-size: 24px; font-weight: 500; letter-spacing: -.5px; }
@@ -68,11 +68,6 @@
 .attempt-row .session-link { margin: 0 0 0 auto; font-size: 11px; }
 .attempt-row > .inline-error { width: 100%; margin: 0; }
 
-.providers-page { flex: 1; padding: clamp(22px, 2.5vw, 32px); background: var(--bg); }
-.providers-page > * { max-width: 1120px; margin-right: auto; margin-left: auto; }
-.providers-page .page-intro { display: flex; align-items: center; justify-content: space-between; gap: 22px; margin-bottom: 26px; }
-.providers-page .page-intro h1 { color: var(--text); font-size: 23px; font-weight: 550; letter-spacing: -.4px; }
-.providers-page .page-intro p { max-width: 540px; margin-top: 12px; color: var(--muted); font-size: 13px; line-height: 1.8; }
 .provider-detection { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px; margin-bottom: 18px; }
 .provider-detection p { margin-top: 8px; color: var(--muted); font-size: 12px; line-height: 1.75; }
 .connections-status { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; white-space: nowrap; }
@@ -139,13 +134,11 @@
   .step-fields { grid-template-columns: 1fr; gap: 0; }
   .run-overview { flex-wrap: wrap; gap: 18px; }
   .run-progress { min-width: 180px; }
-  .providers-page .page-intro { align-items: flex-start; }
   .provider-capabilities { gap: 10px; }
 }
 @media (max-width: 880px) {
   .provider-cards { grid-template-columns: 1fr; }
   .plugin-section-heading { flex-wrap: wrap; }
-  .providers-page .page-intro { flex-wrap: wrap; }
 }
 @media (max-width: 700px) {
   .workflow-detail > .detail-heading { flex-wrap: wrap; }
@@ -155,5 +148,5 @@
   .attempt-row .session-link { margin-left: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .workflow-detail *, .providers-page *, .providers-content * { transition: none; }
+  .workflow-detail *, .providers-content * { transition: none; }
 }

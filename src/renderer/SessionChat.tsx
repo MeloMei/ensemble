@@ -6,14 +6,14 @@ import { ATTACHMENT_LIMITS, attachmentLimitIssue } from '../shared/prompt-attach
 import { memo, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode, type Ref } from 'react';
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import * as Select from '@radix-ui/react-select';
+import { AppSelect } from './AppSelect';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
-  Activity, Archive, ArrowDown, ArrowUp, ArrowUpLeft, Brain, Check, ChevronDown, ChevronUp,
+  Activity, Archive, ArrowDown, ArrowUp, ArrowUpLeft, Brain, Check, ChevronDown,
   CircleAlert, CircleStop, Clock3, Copy, CornerDownLeft, FileText, FolderOpen,
   GitFork, Image, ListChecks, LoaderCircle, MessageCircle, PanelsTopLeft,
-  Paperclip, Pause, Play, Search, Settings2, ShieldCheck, TerminalSquare, Users, X,
+  Paperclip, Pause, Play, Search, ShieldCheck, TerminalSquare, Users, X,
 } from 'lucide-react';
 import type {
   Approval, Message, ProcessEvent, PromptAttachment, PromptInput, ProviderInfo, Session, SkillInfo, UsageRecord,
@@ -24,6 +24,7 @@ import { useClaudeScrollPinning } from './vendor/open-claude-ui/useClaudeScrollP
 import { useSessionHistory, type IndexedMessages } from './useSessionHistory';
 import { promptCommandInput, runSessionCommand, runSessionStopCommand } from './session-command';
 import { sessionIsUnread } from './session-attention';
+import { Tooltip } from './Tooltip';
 import './SessionChat.css';
 
 interface SessionChatProps {
@@ -34,7 +35,6 @@ interface SessionChatProps {
   draft: PromptInput;
   draftError?: string;
   onDraftChange: (value: PromptInput, expected?: PromptInput) => void;
-  workspaceId?: string;
   readOnly?: boolean;
   sessions?: Session[];
   openSession: (id: string) => void;
@@ -145,16 +145,15 @@ function CollapsibleRegion({ expanded, id, className = '', regionRef, onClose, c
   </div>;
 }
 
-function SessionSettings({ session, workspaceId, active, visible, perform, openSession, onClose }: {
+export function SessionSettingsPanel({ session, workspaceId, visible, perform, openSession }: {
   session: Session;
   workspaceId: string;
-  active: boolean;
   visible: boolean;
   perform: Perform;
   openSession: (id: string) => void;
-  onClose: () => void;
 }) {
   const { t } = useTranslation('workspace');
+  const active = activeStatuses.has(session.status);
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const availableSkills = skills.filter(skill => !skill.issue);
   useEffect(() => {
@@ -162,10 +161,6 @@ function SessionSettings({ session, workspaceId, active, visible, perform, openS
   }, [workspaceId, visible, perform]);
 
   return <div className="session-settings">
-    <div className="session-settings-heading">
-      <span><Settings2 size={14} />{t('chat.settings')}</span>
-      <IconButton label={t('chat.closeSettings')} onClick={onClose}><X size={14} /></IconButton>
-    </div>
     {availableSkills.length > 0 && <div className="session-skills">
       <span>{t('chat.skills')}</span>
       <div className="skills-select">
@@ -196,48 +191,6 @@ function SessionSettings({ session, workspaceId, active, visible, perform, openS
 }
 
 
-function ComposerSelect({ label, icon, value, display, disabled, hint, onChange, options, className = '' }: {
-  label: string;
-  icon: ReactNode;
-  value: string;
-  display: string;
-  disabled: boolean;
-  hint: string;
-  onChange: (value: string) => void;
-  options: { value: string; label: string; description?: string; disabled?: boolean }[];
-  className?: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const descriptionId = useId();
-  useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
-  return <Select.Root value={`choice:${value}`} disabled={disabled} open={open && !disabled} onOpenChange={setOpen}
-    onValueChange={next => { if (!disabled) onChange(next.slice('choice:'.length)); }}>
-    <Select.Trigger className={`composer-select ${className}`} aria-label={label} title={disabled ? hint : `${label}: ${display}`}>
-      {icon}<span className="composer-select-value"><Select.Value>{display}</Select.Value></span>
-      <Select.Icon asChild><ChevronDown size={11} aria-hidden="true" /></Select.Icon>
-    </Select.Trigger>
-    <Select.Portal>
-      <Select.Content className="composer-select-menu" position="popper" side="top" align="start" sideOffset={6} collisionPadding={10}
-        aria-label={label}>
-        <Select.ScrollUpButton className="composer-select-scroll"><ChevronUp size={12} /></Select.ScrollUpButton>
-        <Select.Viewport className="composer-select-viewport">
-          <Select.Group>
-            <Select.Label className="composer-select-heading">{label}</Select.Label>
-            {options.map((option, index) => <Select.Item key={option.value} value={`choice:${option.value}`} data-value={option.value}
-              aria-describedby={option.description ? `${descriptionId}-${index}` : undefined}
-              className="composer-select-option" disabled={option.disabled} textValue={option.label}>
-              <span className="composer-select-option-copy"><Select.ItemText>{option.label}</Select.ItemText>
-                {option.description && <small id={`${descriptionId}-${index}`}>{option.description}</small>}</span>
-              <Select.ItemIndicator className="composer-select-check"><Check size={13} /></Select.ItemIndicator>
-            </Select.Item>)}
-          </Select.Group>
-        </Select.Viewport>
-        <Select.ScrollDownButton className="composer-select-scroll"><ChevronDown size={12} /></Select.ScrollDownButton>
-      </Select.Content>
-    </Select.Portal>
-  </Select.Root>;
-}
-
 function ComposerSettings({ session, provider, disabled, saving, perform }: {
   session: Session;
   provider?: ProviderInfo;
@@ -253,7 +206,7 @@ function ComposerSettings({ session, provider, disabled, saving, perform }: {
   const modelLabel = session.modelId ? modelName(provider, session.modelId) : t('chat.modelDefault', { provider: provider?.name ?? session.providerId });
   const effortLabel = (effort: string) => t(`chat.effort.${effort}`, { defaultValue: effort });
   return <>
-    <ComposerSelect className="composer-select-model" label={t('chat.model')} icon={<AgentIcon providerId={session.providerId} size={14} />}
+    <AppSelect compact side="top" menuClassName="composer-select-menu" className="composer-select-model" label={t('chat.model')} icon={<AgentIcon providerId={session.providerId} size={14} />}
       value={session.modelId ?? ''} display={modelLabel} disabled={disabled || !provider?.models?.length}
       hint={disabled ? hint : t('chat.cliDefault')} onChange={value => change({ modelId: value || null })}
       options={[
@@ -263,11 +216,11 @@ function ComposerSettings({ session, provider, disabled, saving, perform }: {
         ...(provider?.models?.map(model => ({ value: model.id, label: model.name,
           description: model.free ? t('chat.modelFree') : session.providerId === 'codex' ? t('chat.modelAccount') : t('chat.modelMetered') })) ?? []),
       ]} />
-    {provider?.capabilities.effort && efforts.length > 0 && <ComposerSelect label={t('chat.effort')} icon={<Brain size={13} />}
+    {provider?.capabilities.effort && efforts.length > 0 && <AppSelect compact side="top" menuClassName="composer-select-menu" label={t('chat.effort')} icon={<Brain size={13} />}
       value={session.settings?.effort ?? ''} display={session.settings?.effort ? effortLabel(session.settings.effort) : t('chat.defaultEffort')}
       disabled={disabled} hint={hint} onChange={value => change({ settings: { effort: value || null } })}
       options={[{ value: '', label: t('chat.runtimeDefault') }, ...efforts.map(effort => ({ value: effort, label: effortLabel(effort) }))]} />}
-    {provider?.capabilities.permissions && <ComposerSelect label={t('chat.permissions')} icon={<ShieldCheck size={13} />}
+    {provider?.capabilities.permissions && <AppSelect compact side="top" menuClassName="composer-select-menu" label={t('chat.permissions')} icon={<ShieldCheck size={13} />}
       value={session.settings?.permission ?? 'review'} display={session.settings?.permission === 'read-only' ? t('common.readOnly') : t('chat.reviewPermissionShort')}
       disabled={disabled} hint={hint} onChange={value => change({ settings: { permission: value as 'review' | 'read-only' } })}
       options={[{ value: 'review', label: t('chat.reviewPermission') }, { value: 'read-only', label: t('common.readOnly') }]} />}
@@ -286,7 +239,7 @@ function AttachmentChips({ attachments, onRemove }: {
       {item.kind === 'image' ? <Image size={14} /> : <FileText size={14} />}
       <span>{item.name}</span>
       <small>{Math.ceil(item.size / 1024)} KB</small>
-      {onRemove && <button type="button" aria-label={t('chat.removeAttachment', { name: item.name })} onClick={() => onRemove(item.id)}><X size={12} /></button>}
+      {onRemove && <Tooltip label={t('chat.removeAttachment', { name: item.name })}><button type="button" aria-label={t('chat.removeAttachment', { name: item.name })} onClick={() => onRemove(item.id)}><X size={12} /></button></Tooltip>}
     </span>)}
   </div>;
 }
@@ -445,11 +398,10 @@ function ActivityEntries({ messages }: { messages: IndexedMessages }) {
 }
 
 export function SessionChat({
-  session, provider, perform, pending, draft, draftError, onDraftChange, workspaceId, sessions = [], openSession, connected = true, readOnly = false,
+  session, provider, perform, pending, draft, draftError, onDraftChange, sessions = [], openSession, connected = true, readOnly = false,
 }: SessionChatProps) {
   const { t } = useTranslation('workspace');
   const [showActivity, setShowActivity] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
   const [find, setFind] = useState<string | null>(null);
   const [matchIndex, setMatchIndex] = useState(0);
   const [searchResult, setSearchResult] = useState<{ sessionId: string; query: string; messages: Message[]; truncated: boolean }>();
@@ -471,9 +423,7 @@ export function SessionChat({
   const sendLock = useRef(false);
   const currentDraft = useRef(draft);
   const reducedMotion = useReducedMotion();
-  const settingsId = useId();
   const activityId = useId();
-  const settingsRegion = useRef<HTMLDivElement>(null);
   const activityRegion = useRef<HTMLDivElement>(null);
   const nativeScrollPositions = useRef(new Map<string, Map<string, { top: number; left: number }>>());
   const nativeDetails = useRef<HTMLDivElement>(null);
@@ -607,16 +557,15 @@ export function SessionChat({
   }, [session.attention?.revision, session.attention?.seenRevision, connected, isPinned, history.showingHistory, history.waitingForTail, visibilityRevision, messages, virtualizer.getTotalSize()]);
 
   useEffect(() => {
-    if (!showSettings && !showActivity) return;
+    if (!showActivity) return;
     const dismiss = (event: PointerEvent) => {
       if (!(event.target instanceof Element)) return;
       const control = event.target.closest('button')?.getAttribute('aria-controls');
-      if (showSettings && control !== settingsId && !settingsRegion.current?.contains(event.target)) setShowSettings(false);
       if (showActivity && control !== activityId && !activityRegion.current?.contains(event.target)) setShowActivity(false);
     };
     document.addEventListener('pointerdown', dismiss);
     return () => document.removeEventListener('pointerdown', dismiss);
-  }, [showSettings, showActivity, settingsId, activityId]);
+  }, [showActivity, activityId]);
 
   const send = () => {
     const prompt = draft.text.trim();
@@ -650,12 +599,10 @@ export function SessionChat({
       <div className="chat-toolbar-actions">
         <IconButton label={find === null ? t('chat.find') : t('chat.closeFind')} aria-pressed={find !== null}
           onClick={() => find === null ? setFind('') : closeFind()}><Search size={15} /></IconButton>
-        {!readOnly && <IconButton label={t('chat.settings')} aria-expanded={showSettings} aria-controls={settingsId}
-          onClick={() => setShowSettings(value => !value)}><Settings2 size={15} /></IconButton>}
-        <button className={`text-button chat-activity-button ${showActivity ? 'selected' : ''}`}
+        <Tooltip label={t('chat.activity')}><button className={`text-button chat-activity-button ${showActivity ? 'selected' : ''}`} aria-label={t('chat.activity')}
           aria-expanded={showActivity} aria-controls={activityId} onClick={() => setShowActivity(value => !value)}>
           <Activity size={14} /><span className="chat-activity-label">{t('chat.activity')}</span>{activity.length > 0 && <span className="chat-count">{activity.length}</span>}
-        </button>
+        </button></Tooltip>
         {!readOnly && active && <button className="text-button stop-action" disabled={!connected || pending.has(`cancel-${session.id}`)}
           onClick={() => void perform(`cancel-${session.id}`, () => runSessionStopCommand(session,
             (commandId, expectedAttemptId) => window.workbench.cancelSession(session.id, commandId, expectedAttemptId)))}>
@@ -686,11 +633,6 @@ export function SessionChat({
         {searchError && <p className="chat-history-error" role="alert">{searchError}</p>}
       </motion.div>}
     </AnimatePresence>
-    {!readOnly && workspaceId && <CollapsibleRegion expanded={showSettings} id={settingsId} className="chat-settings-region"
-      regionRef={settingsRegion} onClose={() => setShowSettings(false)}>
-      <SessionSettings session={session} workspaceId={workspaceId} active={active} visible={showSettings}
-        perform={perform} openSession={openSession} onClose={() => setShowSettings(false)} />
-    </CollapsibleRegion>}
 
     {(parent || children.length > 0) && <nav className="session-children" aria-label={t('chat.relatedSessions')}>
       {parent && <button onClick={() => openSession(parent.id)}><ArrowUpLeft size={13} />{t('chat.coordinator', { title: parent.title })}</button>}
@@ -823,12 +765,12 @@ export function SessionChat({
               <ComposerSettings session={session} provider={provider} disabled={!historyReady || !connected || active || busy || settingsBusy}
                 saving={settingsBusy} perform={perform} />
             </div>
-            <motion.button className="send-button" aria-label={t('chat.sendTask')}
+            <Tooltip label={active || session.queuePaused ? t('chat.queueNextTurn') : t('chat.sendTask')}><motion.button className="send-button" aria-label={t('chat.sendTask')}
               title={active || session.queuePaused ? t('chat.queueNextTurn') : t('chat.sendTask')}
               disabled={(!draft.text.trim() && !attachments.length) || unsupportedAttachments || Boolean(attachmentIssue) || !historyReady || !connected || busy || settingsBusy || !provider?.available}
               whileTap={reducedMotion ? undefined : { scale: 0.98 }} transition={transition} onClick={send}>
               {busy ? <LoaderCircle className="spin" size={17} /> : <ArrowUp size={18} />}
-            </motion.button>
+            </motion.button></Tooltip>
           </div>
         </div>
         <div className="composer-caption">

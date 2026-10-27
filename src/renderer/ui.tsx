@@ -1,28 +1,19 @@
 import { useTranslation } from 'react-i18next';
 import { translate as t, i18n } from '../shared/i18n';
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react';
+import { useContext, useEffect, useRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, Circle, CircleAlert, CircleDot, Clock3, Folder, GitBranch, LoaderCircle, Pause, ShieldQuestion, Square, X } from 'lucide-react';
 import { motion, useReducedMotion } from 'framer-motion';
 import type { ProviderInfo } from '../shared/types';
 import { CdsButton } from './vendor/open-claude-ui/CdsButton';
 import { SPRING_SNAPPY } from './vendor/open-claude-ui/ClaudeMotionPresets';
+import { OverlayContext } from './overlays';
+import { AppSelect } from './AppSelect';
+import { Tooltip } from './Tooltip';
+
+export { OverlayProvider } from './overlays';
 
 export type Perform = (key: string, action: () => Promise<unknown>) => Promise<void>;
-const OverlayContext = createContext<{
-  top: HTMLDialogElement | null;
-  register: (element: HTMLDialogElement) => () => void;
-}>({ top: null, register: () => () => {} });
-
-export function OverlayProvider({ children }: { children: ReactNode }) {
-  const [dialogs, setDialogs] = useState<HTMLDialogElement[]>([]);
-  const register = useCallback((element: HTMLDialogElement) => {
-    setDialogs(current => current.includes(element) ? current : [...current, element]);
-    return () => setDialogs(current => current.filter(item => item !== element));
-  }, []);
-  const value = useMemo(() => ({ top: dialogs.at(-1) ?? null, register }), [dialogs, register]);
-  return <OverlayContext.Provider value={value}>{children}</OverlayContext.Provider>;
-}
 
 export function ErrorToast({ message, onDismiss }: { message: string; onDismiss: () => void }) {
   const { t } = useTranslation('shell');
@@ -45,7 +36,7 @@ export function Status({ value }: { value: string }) {
 }
 
 export function IconButton({ label, children, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { label: string; children: ReactNode }) {
-  return <CdsButton variant="ghost" size="icon" className="icon-button" title={label} aria-label={label} {...props}>{children}</CdsButton>;
+  return <Tooltip label={props.title ?? label}><CdsButton variant="ghost" size="icon" className="icon-button" aria-label={label} {...props}>{children}</CdsButton></Tooltip>;
 }
 
 export function EmptyState({ icon, title, children, action }: { icon: ReactNode; title: string; children: ReactNode; action?: ReactNode }) {
@@ -55,12 +46,10 @@ export function EmptyState({ icon, title, children, action }: { icon: ReactNode;
 
 export function ProviderSelect({ providers, value, onChange }: { providers: ProviderInfo[]; value: string; onChange: (value: string) => void }) {
   const { t } = useTranslation('shell');
-  return <select value={value} onChange={event => onChange(event.target.value)} required>
-    <option value="" disabled>{t('provider.choose')}</option>
-    {providers.map(provider => <option key={provider.id} value={provider.id} disabled={!provider.available}>
-      {provider.name}{provider.available ? '' : t('provider.notReadySuffix')}
-    </option>)}
-  </select>;
+  return <AppSelect label={t('common.agent')} value={value} onChange={onChange} required options={[
+    { value: '', label: t('provider.choose'), disabled: true },
+    ...providers.map(provider => ({ value: provider.id, label: `${provider.name}${provider.available ? '' : t('provider.notReadySuffix')}`, disabled: !provider.available })),
+  ]} />;
 }
 
 export function defaultModelId(provider?: ProviderInfo): string | undefined {
@@ -87,11 +76,12 @@ export function ModelField({ provider, value, onChange, disabled }: { provider?:
   const { t } = useTranslation('shell');
   if (!provider?.models) return null;
   const policy = modelPolicy(provider);
-  return <div className="model-field"><label>{t('provider.model')}<select value={value ?? ''} disabled={disabled || !provider.models.length} onChange={event => onChange(event.target.value)} required={!usesCliModelDefault(provider)}>
-    <option value="" disabled={!usesCliModelDefault(provider)}>{usesCliModelDefault(provider) ? t('provider.cliConfiguration') : provider.models.length ? t('provider.chooseModel') : t('provider.noModels')}</option>
-    {value && !provider.models.some(model => model.id === value) && <option value={value} disabled>{value} {t('provider.modelUnavailableSuffix')}</option>}
-    {provider.models.map(model => <option key={model.id} value={model.id}>{model.name}{model.free ? t('provider.freeSuffix') : provider.id === 'codex' ? t('provider.accountQuotaSuffix') : t('provider.meteredSuffix')}</option>)}
-  </select></label>{policy && <p className="model-policy">{policy}</p>}</div>;
+  return <div className="model-field"><label>{t('provider.model')}<AppSelect label={t('provider.model')} value={value ?? ''}
+    disabled={disabled || !provider.models.length} onChange={onChange} required={!usesCliModelDefault(provider)} options={[
+      { value: '', disabled: !usesCliModelDefault(provider), label: usesCliModelDefault(provider) ? t('provider.cliConfiguration') : provider.models.length ? t('provider.chooseModel') : t('provider.noModels') },
+      ...(value && !provider.models.some(model => model.id === value) ? [{ value, label: `${value} ${t('provider.modelUnavailableSuffix')}`, disabled: true }] : []),
+      ...provider.models.map(model => ({ value: model.id, label: `${model.name}${model.free ? t('provider.freeSuffix') : provider.id === 'codex' ? t('provider.accountQuotaSuffix') : t('provider.meteredSuffix')}` })),
+    ]} /></label>{policy && <p className="model-policy">{policy}</p>}</div>;
 }
 
 export function DirectoryField({ value, onChange, perform }: { value: string; onChange: (value: string) => void; perform: Perform }) {
@@ -117,12 +107,12 @@ export function Modal({ title, subtitle, busy, size = 'default', onClose, childr
     const unregister = register(element);
     return () => { unregister(); element.close(); if (previous?.isConnected) previous.focus({ preventScroll: true }); };
   }, [register]);
-  return <dialog ref={dialog} className="modal-backdrop" aria-label={title} onCancel={event => { event.preventDefault(); if (!busy) onClose(); }} onMouseDown={event => { if (event.target === event.currentTarget && !busy) onClose(); }}>
+  return createPortal(<dialog ref={dialog} className="modal-backdrop" aria-label={title} onCancel={event => { event.preventDefault(); event.stopPropagation(); if (!busy) onClose(); }} onMouseDown={event => { if (event.target === event.currentTarget && !busy) onClose(); }}>
     <motion.section className={`modal${size === 'wide' ? ' modal-wide' : ''}`} initial={reduced ? false : { opacity: 0, scale: .99, y: 4 }} animate={{ opacity: 1, scale: 1, y: 0 }} transition={SPRING_SNAPPY}>
       <div className="modal-heading"><div><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div><IconButton label={t('common.close')} disabled={busy} onClick={onClose}><X size={18} /></IconButton></div>
       {children}
     </motion.section>
-  </dialog>;
+  </dialog>, document.body);
 }
 
 export function BusyIcon({ busy, children }: { busy: boolean; children: ReactNode }) {

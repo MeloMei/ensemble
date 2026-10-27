@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { I18nextProvider, useTranslation } from 'react-i18next';
 import { i18n, setLanguage, type LanguagePreference, type LanguageState } from '../shared/i18n';
+import { AppSelect } from './AppSelect';
 
 const LanguageContext = createContext<{
   state: LanguageState;
@@ -37,8 +38,8 @@ export function LanguageOptions() {
   const context = useContext(LanguageContext);
   if (!context) throw new Error('LanguageProvider is required.');
   return <section className="language-settings"><label htmlFor="interface-language">{t('preferences.language')}</label>
-    <select id="interface-language" value={context.state.preference} disabled={context.saving} onChange={event => { void context.select(event.target.value as LanguagePreference); }}>
-      <option value="system">{t('preferences.system')}</option><option value="zh-CN">简体中文</option><option value="en">English</option>
-    </select><p>{t('preferences.languageNote')}</p>{context.error && <p className="field-error" role="alert">{context.error}</p>}
+    <AppSelect id="interface-language" label={t('preferences.language')} value={context.state.preference} disabled={context.saving}
+      onChange={value => { void context.select(value as LanguagePreference); }}
+      options={[{ value: 'system', label: t('preferences.system') }, { value: 'zh-CN', label: '简体中文' }, { value: 'en', label: 'English' }]} /><p>{t('preferences.languageNote')}</p>{context.error && <p className="field-error" role="alert">{context.error}</p>}
   </section>;
 }
