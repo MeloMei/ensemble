@@ -250,6 +250,48 @@ const cases: Record<string, () => Promise<void>> = {
     await render(<div />);
     assert(unsubscribed === 1, 'Update notifications remain subscribed after unmount');
   },
+  'UPDATES-UI-RETRY: service limits explain retry times without blocking manual or prepared updates': async () => {
+    const release: NonNullable<AppUpdateState['release']> = { version: '0.8.2', title: 'Ensemble 0.8.2', notes: '',
+      publishedAt: '2026-10-26T03:00:00Z', url: 'https://github.com/MeloMei/ensemble/releases/tag/v0.8.2',
+      downloadUrl: 'https://github.com/MeloMei/ensemble/releases/download/v0.8.2/Ensemble-0.8.2-macOS-arm64.zip', sha256: 'a'.repeat(64), size: 1024 };
+    let checks = 0;
+    window.workbench = { checkApplicationUpdate: async () => { checks++; return installedUpdateState; } } as unknown as Window['workbench'];
+    const show = (state: AppUpdateState | null) => render(<ApplicationUpdateSettings state={state} error="" pending={false} run={async operation => { await operation(); }} />);
+    const manual = () => document.querySelector<HTMLAnchorElement>('.application-update-manual a');
+    const assertManual = () => assert(manual()?.getAttribute('href') === 'https://github.com/MeloMei/ensemble/releases/latest'
+      && manual()?.target === '_blank', 'The official manual download entry is missing or uses an untrusted destination');
+    const originalLanguage = i18n.language;
+    try {
+      await show(null);
+      assertManual();
+      const retryAt = new Date(Date.now() + 250).toISOString();
+      await show({ ...installedUpdateState, phase: 'error', error: 'HTTP 429 raw response', errorCode: 'rate-limited', retryAt, checkAfter: retryAt });
+      assertManual();
+      assert(button('shell:updates.check').disabled && document.querySelector('[role=alert]')?.textContent?.includes('temporarily limited')
+        && !document.querySelector('[role=alert]')?.textContent?.includes('HTTP 429')
+        && document.querySelector<HTMLTimeElement>('[role=alert] time')?.dateTime === retryAt,
+      'A rate limit omits the localized reason or retry time, or leaves checks enabled');
+      await click('shell:updates.check');
+      assert(checks === 0, 'A disabled update check reached the backend');
+      await waitFor(() => !button('shell:updates.check').disabled, 'The update check stayed disabled after its cooldown elapsed', 150);
+      await click('shell:updates.check');
+      assert(Number(checks) === 1, 'The check action did not become usable without reopening settings');
+      const checkAfter = new Date(Date.now() + 300_000).toISOString();
+      await show({ ...installedUpdateState, phase: 'error', error: 'HTTP 429', errorCode: 'rate-limited', checkAfter, retryAt: checkAfter, release });
+      assert(button('shell:updates.check').disabled && !document.querySelector<HTMLButtonElement>('.application-update-actions button')?.disabled,
+        'An update-check cooldown blocks downloading an already discovered release');
+      await act(async () => { await i18n.changeLanguage('zh-CN'); await tick(); });
+      await show({ ...installedUpdateState, phase: 'ready', error: 'HTTP 403 raw response', errorCode: 'forbidden', checkAfter, release });
+      assertManual();
+      assert(document.querySelector('[role=alert]')?.textContent?.includes('GitHub 拒绝') && !button('shell:updates.install').disabled,
+        'A forbidden check omits its localized reason or blocks installing an already prepared update');
+      await show({ ...installedUpdateState, phase: 'current', checkAfter, errorCode: 'rate-limited' });
+      assert(button('shell:updates.check').disabled && document.querySelector('.application-update-cooldown') && !document.querySelector('[role=alert]'),
+        'A cached successful check lacks its next check time or shows a cleared error');
+    } finally {
+      await act(async () => { await i18n.changeLanguage(originalLanguage); await tick(); });
+    }
+  },
   'UI-01: question approvals display the complete request disclosure': async () => {
     const detail = 'Send the address to https://shop.example for a paid purchase.\nConfirm the recipient and purpose first.';
     await render(chat({ session: { ...session, approvals: [{ id: 'approval', sessionId: session.id, title: 'Shipping request', detail, choices: [], questions: [{ id: 'address', question: 'Address', header: 'Address', options: [], multiSelect: false, allowCustomAnswer: true }] }] } }));

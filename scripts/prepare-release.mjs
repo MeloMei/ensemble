@@ -10,7 +10,12 @@ const stableVersion = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const sourceMarker = source => `<!-- ensemble-release-source: ${source} -->`;
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 const sourceSha = value => /^[a-f0-9]{40}$/.test(value);
-const automation = 'ensemble-daily-v1';
+const automation = 'ensemble-daily-v2';
+const updateFeedName = 'ensemble-update.json';
+const automationAssets = new Map([
+  ['ensemble-daily-v1', []],
+  [automation, [updateFeedName]],
+]);
 
 function versionParts(version) {
   const match = stableVersion.exec(version);
@@ -46,11 +51,12 @@ function automationRecord(release) {
   try { record = JSON.parse(matches[0][1]); }
   catch { throw new Error('The daily automation record is invalid.'); }
   const body = release.body.slice(0, matches[0].index);
-  if (record.automation !== automation || !sourceSha(record.source) || !/^\d+\.\d+\.\d+$/.test(record.version)
+  const additions = automationAssets.get(record.automation);
+  if (!additions || !sourceSha(record.source) || !/^\d+\.\d+\.\d+$/.test(record.version)
     || record.notesSha256 !== sha256(body) || !body.includes(sourceMarker(record.source))) {
     throw new Error('The draft notes or daily automation identity do not match their recorded source.');
   }
-  const names = [...macReleaseAssets(record.version, 'arm64'), 'SHA256SUMS'];
+  const names = [...macReleaseAssets(record.version, 'arm64'), 'SHA256SUMS', ...additions];
   if (!Array.isArray(record.assets) || record.assets.length !== names.length
     || new Set(record.assets.map(asset => asset.name)).size !== names.length
     || !names.every(name => record.assets.some(asset => asset.name === name && Number.isSafeInteger(asset.size)
@@ -227,6 +233,18 @@ export async function publishRelease(client, planned, directory, { source, packa
       if (matching.length) throw new Error('A release now reserves this version or source. Rerun planning; it was not changed.');
       const names = await verifyReleaseAssets(directory, planned.version, 'arm64');
       const assets = await Promise.all(names.map(async name => ({ name, size: (await stat(join(directory, name))).size, digest: `sha256:${await fileSha256(join(directory, name))}` })));
+      const releaseUrl = `https://github.com/${client.repository}/releases/tag/${planned.tag}`;
+      const downloadUrl = `https://github.com/${client.repository}/releases/download/${planned.tag}`;
+      const packageNames = new Set(macReleaseAssets(planned.version, 'arm64'));
+      const feed = {
+        tag_name: planned.tag, name: planned.title, body: planned.body, html_url: releaseUrl,
+        published_at: new Date().toISOString(), draft: false, prerelease: false,
+        assets: assets.filter(asset => packageNames.has(asset.name)).map(asset => ({
+          ...asset, browser_download_url: `${downloadUrl}/${asset.name}`,
+        })),
+      };
+      await writeFile(join(directory, updateFeedName), `${JSON.stringify(feed, null, 2)}\n`);
+      assets.push({ name: updateFeedName, size: (await stat(join(directory, updateFeedName))).size, digest: `sha256:${await fileSha256(join(directory, updateFeedName))}` });
       planned = { ...planned, publication: { automation, source, version: planned.version, notesSha256: planned.notesSha256, assets } };
       const body = `${planned.body}\n<!-- ensemble-release-plan: ${JSON.stringify(planned.publication)} -->\n`;
       const reference = await client.request('git/refs', { method: 'POST', json: { ref: `refs/tags/${planned.tag}`, sha: source } });
@@ -286,7 +304,7 @@ async function main() {
       source: planned.source, packageVersion: pkg.version, workflowRuns: await passedWorkflowRuns(client, planned.source),
     });
     if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY, result.published
-      ? `## Release published and marked Latest\n\n${result.releaseUrl}\n\nSource: \`${result.source}\`\n\nAll ZIP, DMG, and checksum assets were verified before publication. Installed apps can discover this release.\n`
+      ? `## Release published and marked Latest\n\n${result.releaseUrl}\n\nSource: \`${result.source}\`\n\nAll recorded release assets were verified before publication. Installed apps can discover this release.\n`
       : `${result.reason}\n\n${result.releaseUrl}\n`);
   } else throw new Error('Use plan or publish.');
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

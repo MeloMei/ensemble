@@ -17,9 +17,12 @@ import { DATA_SCHEMA_VERSION } from '../shared/data-schema';
 const REPOSITORY = 'MeloMei/ensemble';
 const RELEASES = `https://github.com/${REPOSITORY}/releases`;
 const RELEASE_API = `https://api.github.com/repos/${REPOSITORY}/releases/latest`;
+const RELEASE_FEED = `${RELEASES}/latest/download/ensemble-update.json`;
 const MAX_ARCHIVE_BYTES = 1_073_741_824;
 const MAX_EXPANDED_BYTES = 3_221_225_472;
 const DAY = 24 * 60 * 60 * 1000;
+const MINUTE = 60 * 1000;
+const MANUAL_CHECK_INTERVAL = 5 * MINUTE;
 const run = promisify(execFile);
 const uuid = z.string().uuid();
 const stableVersion = z.string().regex(/^\d+\.\d+\.\d+$/).refine(value => semver.valid(value) === value);
@@ -29,7 +32,15 @@ const releaseSchema = z.object({
   size: z.number().int().positive().max(MAX_ARCHIVE_BYTES),
 });
 const pendingSchema = z.object({ token: uuid, version: stableVersion });
-const cacheSchema = z.object({ checkedAt: z.string().datetime().optional(), release: releaseSchema.optional(), stageRoot: z.string().optional() });
+const checkFailureSchema = z.object({ error: z.string(), errorCode: z.enum(['rate-limited', 'forbidden']).optional(), retryAt: z.string().datetime().optional() });
+const cacheSchema = z.object({
+  checkedAt: z.string().datetime().optional(), release: releaseSchema.optional(), stageRoot: z.string().optional(),
+  checkAfter: z.string().datetime().optional(), checkFailure: checkFailureSchema.optional(), failedChecks: z.number().int().min(0).max(20).optional(),
+});
+
+class UpdateRequestError extends Error {
+  constructor(message: string, readonly code?: 'rate-limited' | 'forbidden', readonly retryAt?: string) { super(message); }
+}
 
 function errorText(error: unknown): string { return error instanceof z.ZodError ? '发行版信息不完整或格式无效，请稍后重新检查。' : error instanceof Error ? error.message : String(error); }
 function inside(root: string, path: string): boolean { const value = relative(root, path); return value === '' || (!value.startsWith(`..${sep}`) && value !== '..' && !value.startsWith(sep)); }
@@ -64,8 +75,8 @@ async function trustedFetch(url: string, options: RequestInit, fetcher: typeof f
   throw new Error('更新下载重定向次数过多。');
 }
 
-async function limitedText(response: Response, limit: number): Promise<string> {
-  if (!response.ok || !response.body) throw new Error(`更新服务器返回 ${response.status}。`);
+async function responseText(response: Response, limit: number): Promise<string> {
+  if (!response.body) return '';
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = []; let bytes = 0;
   try {
@@ -78,8 +89,37 @@ async function limitedText(response: Response, limit: number): Promise<string> {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+async function responseError(response: Response): Promise<UpdateRequestError> {
+  const text = await responseText(response, 10_000).catch(() => '');
+  let message = '';
+  try { const body: unknown = JSON.parse(text); if (body && typeof body === 'object' && 'message' in body && typeof body.message === 'string') message = body.message; } catch {}
+  const limited = response.status === 429 || response.status === 403 && (response.headers.get('x-ratelimit-remaining') === '0'
+    || response.headers.has('retry-after') || /rate.?limit|abuse detection/i.test(message));
+  if (limited) {
+    const now = Date.now();
+    const retry = response.headers.get('retry-after');
+    const delay = retry && /^\d+$/.test(retry) ? now + Number(retry) * 1000 : retry ? Date.parse(retry) : NaN;
+    const reset = Number(response.headers.get('x-ratelimit-reset')) * 1000;
+    const deadline = Math.max(...[delay, reset].filter(value => Number.isFinite(value) && value > now));
+    return new UpdateRequestError('GitHub 暂时限制了当前网络的更新请求，请在冷却结束后重试，或手动下载新版。', 'rate-limited',
+      Number.isFinite(deadline) && deadline <= 8.64e15 - 1000 ? new Date(deadline + 1000).toISOString() : undefined);
+  }
+  if (response.status === 403) return new UpdateRequestError('更新请求被服务器拒绝（403）。请检查网络访问，或打开下载页面手动更新。', 'forbidden');
+  return new UpdateRequestError(`更新服务器返回 ${response.status}。`);
+}
+
+async function limitedText(response: Response, limit: number): Promise<string> {
+  if (!response.ok) throw await responseError(response);
+  return responseText(response, limit);
+}
+
 export async function latestApplicationRelease(arch: string, fetcher: typeof fetch = fetch, signal?: AbortSignal): Promise<AppUpdateRelease> {
-  const response = await trustedFetch(RELEASE_API, { signal, headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Ensemble-updater' } }, fetcher);
+  const headers = { Accept: 'application/json', 'User-Agent': 'Ensemble-updater' };
+  let response = await trustedFetch(RELEASE_FEED, { signal, headers }, fetcher);
+  if (response.status === 404) {
+    await response.body?.cancel();
+    response = await trustedFetch(RELEASE_API, { signal, headers: { ...headers, Accept: 'application/vnd.github+json' } }, fetcher);
+  }
   const value = z.object({
     tag_name: z.string(), name: z.string().nullable(), body: z.string().nullable(), html_url: z.string(),
     published_at: z.string().datetime(), draft: z.literal(false), prerelease: z.literal(false),
@@ -185,6 +225,8 @@ export class ApplicationUpdates {
   private operation?: Promise<AppUpdateState>;
   private controller?: AbortController;
   private timer?: ReturnType<typeof setTimeout>;
+  private checkFailure?: z.infer<typeof checkFailureSchema>;
+  private failedChecks = 0;
   private disposed = false;
   private readonly cachePath: string;
   private readonly updatePath: string;
@@ -202,6 +244,9 @@ export class ApplicationUpdates {
     const raw = await readJson(this.cachePath).catch(() => undefined);
     const cache = cacheSchema.safeParse(raw);
     if (cache.success) {
+      this.state = { ...this.state, checkedAt: cache.data.checkedAt, checkAfter: cache.data.checkAfter };
+      this.checkFailure = cache.data.checkFailure;
+      this.failedChecks = cache.data.failedChecks ?? 0;
       const release = cache.data.release;
       if (release && this.trustedRelease(release) && semver.gt(release.version, this.options.currentVersion)) {
         this.state = { ...this.state, checkedAt: cache.data.checkedAt, release, phase: 'available' };
@@ -211,7 +256,8 @@ export class ApplicationUpdates {
             this.stageRoot = cache.data.stageRoot; this.state.phase = 'ready';
           } catch { await rm(cache.data.stageRoot, { recursive: true, force: true }); }
         }
-      } else this.state.checkedAt = cache.data.checkedAt;
+      } else if (cache.data.checkedAt) this.state.phase = 'current';
+      if (this.checkFailure) this.state = { ...this.state, ...this.checkFailure, phase: this.stageRoot ? 'ready' : 'error' };
     }
     const result = z.object({ status: z.enum(['installed', 'error', 'rollback-failed']), token: uuid, version: stableVersion }).safeParse(await readJson(join(this.updatePath, 'result.json')).catch(() => undefined));
     if (result.success && result.data.status !== 'installed' && !semver.gt(this.options.currentVersion, result.data.version)) {
@@ -226,12 +272,12 @@ export class ApplicationUpdates {
   schedule(): void {
     if (this.disposed || !this.state.supported || !this.options.getAutoCheck()) return;
     if (this.timer) clearTimeout(this.timer);
+    const due = this.checkFailure ? 0 : this.state.checkedAt ? Date.parse(this.state.checkedAt) + DAY : 0;
+    const delay = Math.max(5000, due - Date.now(), Date.parse(this.state.checkAfter ?? '') - Date.now() || 0);
     this.timer = setTimeout(() => {
       this.timer = undefined;
-      void this.check(false).finally(() => {
-        if (!this.disposed && this.options.getAutoCheck()) { this.timer = setTimeout(() => { this.timer = undefined; this.schedule(); }, DAY); this.timer.unref(); }
-      });
-    }, 5000);
+      void this.check(false);
+    }, Math.min(delay, 2_147_483_647));
     this.timer.unref();
   }
 
@@ -244,15 +290,35 @@ export class ApplicationUpdates {
   }
 
   check(force = true): Promise<AppUpdateState> {
+    return this.checkRelease(force).finally(() => this.schedule());
+  }
+
+  private checkRelease(force: boolean): Promise<AppUpdateState> {
     if (this.state.phase === 'installing') return Promise.resolve(this.snapshot);
     if (this.operation) return this.operation;
     if (!this.state.supported) return Promise.resolve(this.snapshot);
-    if (!force && this.state.checkedAt && Date.now() - Date.parse(this.state.checkedAt) < DAY) return Promise.resolve(this.snapshot);
+    if (this.state.checkAfter && Date.now() < Date.parse(this.state.checkAfter)) return Promise.resolve(this.snapshot);
+    if (!force && !this.checkFailure && this.state.checkedAt && Date.now() - Date.parse(this.state.checkedAt) < DAY) return Promise.resolve(this.snapshot);
     return this.exclusive(async signal => {
-      this.state = { ...this.state, phase: 'checking', error: undefined }; this.changed();
-      const release = await latestApplicationRelease(this.options.arch, this.options.fetch, AbortSignal.any([signal, AbortSignal.timeout(20_000)]));
+      this.state = { ...this.state, phase: 'checking', error: undefined, errorCode: undefined, retryAt: undefined }; this.changed();
+      let release: AppUpdateRelease;
+      try {
+        release = await latestApplicationRelease(this.options.arch, this.options.fetch, AbortSignal.any([signal, AbortSignal.timeout(20_000)]));
+      } catch (error) {
+        if (signal.aborted) throw error;
+        this.failedChecks = Math.min(this.failedChecks + 1, 20);
+        const retryAt = error instanceof UpdateRequestError ? error.retryAt : undefined;
+        const checkAfter = retryAt ?? new Date(Date.now() + Math.min(MINUTE * 2 ** (this.failedChecks - 1), 60 * MINUTE)).toISOString();
+        this.checkFailure = { error: errorText(error), errorCode: error instanceof UpdateRequestError ? error.code : undefined,
+          retryAt: error instanceof UpdateRequestError && error.code === 'rate-limited' ? checkAfter : undefined };
+        this.state = { ...this.state, ...this.checkFailure, checkAfter };
+        await this.save();
+        throw error;
+      }
+      this.checkFailure = undefined; this.failedChecks = 0;
       if (this.stageRoot && this.state.release?.version !== release.version) await this.clearStage();
-      this.state = { ...this.state, checkedAt: new Date().toISOString(), phase: semver.gt(release.version, this.options.currentVersion) ? this.stageRoot ? 'ready' : 'available' : 'current', release: semver.gt(release.version, this.options.currentVersion) ? release : undefined };
+      this.state = { ...this.state, checkedAt: new Date().toISOString(), checkAfter: new Date(Date.now() + MANUAL_CHECK_INTERVAL).toISOString(),
+        phase: semver.gt(release.version, this.options.currentVersion) ? this.stageRoot ? 'ready' : 'available' : 'current', release: semver.gt(release.version, this.options.currentVersion) ? release : undefined };
       await this.save();
       return this.changed();
     });
@@ -274,7 +340,7 @@ export class ApplicationUpdates {
       }
       const stage = await mkdtemp(join(dirname(live), '.ensemble-update-'));
       try {
-        await saveJson(this.cachePath, { checkedAt: this.state.checkedAt, release, stageRoot: stage });
+        await this.save(stage);
         this.state = { ...this.state, phase: 'downloading', downloadedBytes: 0, totalBytes: release.size, error: undefined }; this.changed();
         const archive = join(stage, 'update.zip');
         const response = await trustedFetch(release.downloadUrl, { signal: AbortSignal.any([signal, AbortSignal.timeout(10 * 60_000)]), headers: { 'User-Agent': 'Ensemble-updater' } }, this.options.fetch ?? fetch);
@@ -371,7 +437,8 @@ export class ApplicationUpdates {
   }
   private ownedStage(path: string): boolean { return !!this.options.appPath && dirname(path) === dirname(this.options.appPath) && /^\.ensemble-update-[A-Za-z0-9]{6}$/.test(basename(path)); }
   private changed(): AppUpdateState { const state = this.snapshot; if (!this.disposed) this.options.publish(state); return state; }
-  private async save(): Promise<void> { await saveJson(this.cachePath, { checkedAt: this.state.checkedAt, release: this.state.release, stageRoot: this.stageRoot }); }
+  private async save(stageRoot = this.stageRoot): Promise<void> { await saveJson(this.cachePath, { checkedAt: this.state.checkedAt, release: this.state.release, stageRoot,
+    checkAfter: this.state.checkAfter, checkFailure: this.checkFailure, failedChecks: this.failedChecks }); }
   private async clearStage(): Promise<void> { if (this.stageRoot && this.ownedStage(this.stageRoot)) await rm(this.stageRoot, { recursive: true, force: true }); this.stageRoot = undefined; }
   private exclusive(operation: (signal: AbortSignal) => Promise<AppUpdateState>): Promise<AppUpdateState> {
     this.controller = new AbortController();
