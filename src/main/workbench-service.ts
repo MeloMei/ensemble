@@ -13,6 +13,7 @@ import { createOpenCodeDescriptor } from './providers/opencode';
 import { createDeepSeekHarnessDescriptor } from './providers/deepseek-harness';
 import { createGeminiDescriptor } from './providers/gemini';
 import { createCursorDescriptor } from './providers/cursor';
+import { createQoderDescriptor } from './providers/qoder';
 import { loadPluginProviders } from './providers/plugins';
 import { TerminalManager } from './terminal-manager';
 import { WorkspaceFiles } from './workspace-files';
@@ -138,6 +139,7 @@ export async function createWorkbenchService(options: {
     let deepSeekProvider: AcpProvider | undefined;
     let geminiProvider: AcpProvider | undefined;
     let cursorProvider: AcpProvider | undefined;
+    let qoderProvider: AcpProvider | undefined;
     async function refreshProviders(): Promise<void> {
       if (codexProvider) await codexProvider.refreshInfo();
       else codexProvider = await createCodexProvider();
@@ -148,9 +150,10 @@ export async function createWorkbenchService(options: {
         deepSeekProvider ? deepSeekProvider.refreshInfo() : createAcpProvider('deepseek-harness', 'DeepSeek Harness', () => createDeepSeekHarnessDescriptor({ dataPath })).then(provider => { deepSeekProvider = provider; }),
         geminiProvider ? geminiProvider.refreshInfo() : createAcpProvider('gemini', 'Gemini CLI', () => createGeminiDescriptor({ dataPath })).then(provider => { geminiProvider = provider; }),
         cursorProvider ? cursorProvider.refreshInfo() : createAcpProvider('cursor', 'Cursor Agent', () => createCursorDescriptor({ dataPath })).then(provider => { cursorProvider = provider; }),
+        qoderProvider ? qoderProvider.refreshInfo() : createAcpProvider('qoder', 'Qoder CLI', () => createQoderDescriptor()).then(provider => { qoderProvider = provider; }),
       ]);
       const codex = codexProvider;
-      engine.setProviders([codex, claude, pi, geminiProvider!, cursorProvider!, openCodeProvider!, deepSeekProvider!, ...plugins.adapters].map(instrument), [], plugins.errors);
+      engine.setProviders([codex, claude, pi, geminiProvider!, cursorProvider!, qoderProvider!, openCodeProvider!, deepSeekProvider!, ...plugins.adapters].map(instrument), [], plugins.errors);
     }
 
 

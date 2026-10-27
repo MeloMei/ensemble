@@ -10,7 +10,7 @@ export type SessionStatus = 'idle' | 'queued' | 'running' | 'waiting_approval' |
 export type StepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'blocked' | 'cancelled';
 export type RunStatus = 'draft' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
 
-export const BUILTIN_PROVIDER_IDS = ['codex', 'claude', 'pi', 'gemini', 'cursor', 'opencode', 'deepseek-harness'] as const;
+export const BUILTIN_PROVIDER_IDS = ['codex', 'claude', 'pi', 'gemini', 'cursor', 'qoder', 'opencode', 'deepseek-harness'] as const;
 export interface ProviderModel { id: string; name: string; free: boolean; efforts?: string[] }
 
 export interface ProviderInfo {

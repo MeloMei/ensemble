@@ -59,7 +59,7 @@ npm run dev
 
 ## 运行时支持
 
-**Codex · Claude Code · Pi · Gemini CLI · Cursor Agent · OpenCode V2 · DeepSeek Harness**
+**Codex · Claude Code · Pi · Gemini CLI · Cursor Agent · Qoder · OpenCode V2 · DeepSeek Harness**
 
 Pi 需要官方 npm CLI 1.3.0 或更新版本。OpenCode V2 使用独立配置，仅接入目录声明免费的模型。DeepSeek Harness 不能担任只读角色。运行时检测不确认登录和模型访问，需通过实际任务验证。
 
