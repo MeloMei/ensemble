@@ -1,3 +1,5 @@
+export const APPLICATION_RELEASES_URL = 'https://github.com/MeloMei/ensemble/releases/latest';
+
 export interface AppUpdateRelease {
   version: string;
   title: string;
@@ -19,4 +21,7 @@ export interface AppUpdateState {
   downloadedBytes?: number;
   totalBytes?: number;
   error?: string;
+  errorCode?: 'rate-limited' | 'forbidden';
+  retryAt?: string;
+  checkAfter?: string;
 }

@@ -5,6 +5,7 @@
 .application-update-heading, .application-update-release-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .application-update-heading h3 { margin: 0 0 5px; font-size: 14px; }
 .application-update-heading p, .application-update-note { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.application-update-cooldown { font-size: 11px; }
 .application-update-auto { display: flex; align-items: center; gap: 8px; margin-top: 16px; font-size: 12px; cursor: pointer; }
 .application-update-auto input { accent-color: var(--accent); }
 .application-update-note { margin-top: 7px; }
@@ -23,3 +24,10 @@
 .application-update-actions { display: flex; justify-content: flex-end; margin-top: 14px; }
 .application-update-progress { display: flex; align-items: center; gap: 10px; margin-top: 14px; font-size: 11px; }
 .application-update-progress progress { width: 100%; height: 6px; accent-color: var(--accent); }
+.application-update-error { display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px; margin-top: 14px; border: 1px solid var(--border); border-radius: var(--radius-control); color: var(--text); background: var(--surface); font-size: 12px; line-height: 1.7; }
+.application-update-error > svg { flex-shrink: 0; margin-top: 3px; color: var(--warning); }
+.application-update-error p { margin: 0; }
+.application-update-error small { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; }
+.application-update-manual { margin-top: 16px; }
+.application-update-manual a { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); font-size: 12px; }
+.application-update-manual p { margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }

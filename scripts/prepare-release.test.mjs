@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -92,11 +92,23 @@ test('all assets are staged and read back before publication, then the exact rel
   assert.deepEqual({ draft: created.json.draft, prerelease: created.json.prerelease, latest: created.json.make_latest }, { draft: true, prerelease: false, latest: 'false' });
   const patchIndex = f.state.calls.findIndex(call => call.method === 'PATCH');
   assert.deepEqual(f.state.calls[patchIndex].json, { draft: false, prerelease: false, make_latest: 'true' });
-  assert.equal(f.state.calls.slice(0, patchIndex).filter(call => call.path === '').length, 3);
+  assert.equal(f.state.calls.slice(0, patchIndex).filter(call => call.path === '').length, 4);
   assert.ok(f.state.calls.slice(0, patchIndex).some(call => call.path === 'releases/99' && call.method === 'GET'));
   assert.equal(result.published, true); assert.equal(result.latest, true);
-  assert.deepEqual(result.assets, [...macReleaseAssets('0.8.2', 'arm64'), 'SHA256SUMS']);
+  assert.deepEqual(result.assets, [...macReleaseAssets('0.8.2', 'arm64'), 'SHA256SUMS', 'ensemble-update.json']);
   assert.equal(f.state.latest.id, 99); assert.equal(f.state.tags['v0.8.2'], source);
+  const feed = JSON.parse(await readFile(join(f.directory, 'ensemble-update.json'), 'utf8'));
+  assert.deepEqual(feed, {
+    tag_name: f.planned.tag, name: f.planned.title, body: f.planned.body,
+    html_url: `https://github.com/${f.client.repository}/releases/tag/${f.planned.tag}`,
+    published_at: feed.published_at, draft: false, prerelease: false,
+    assets: f.state.release.assets.slice(0, 2).map(({ name, size, digest }) => ({
+      name, size, digest,
+      browser_download_url: `https://github.com/${f.client.repository}/releases/download/${f.planned.tag}/${name}`,
+    })),
+  });
+  assert.equal(new Date(feed.published_at).toISOString(), feed.published_at);
+  assert.ok(!feed.body.includes('ensemble-release-plan'));
   const before = f.state.calls.filter(call => call.method !== 'GET').length;
   assert.equal((await publishRelease(f.client, f.planned, f.directory, f.context)).skipped, true);
   assert.equal(f.state.calls.filter(call => call.method !== 'GET').length, before);
@@ -115,11 +127,12 @@ test('changed inputs, failed CI, and concurrent reservations never publish', asy
 });
 
 test('upload, readback, or actual tag failures leave the staged release unpublished', async t => {
-  for (const failure of ['upload', 'readback', 'tag']) {
+  for (const failure of ['upload', 'feed-upload', 'readback', 'tag']) {
     const f = await fixture(t);
     const client = { ...f.client, request: async (path, options = {}) => {
       const result = await f.client.request(path, options);
       if (failure === 'upload' && path === '') result.digest = 'sha256:' + '0'.repeat(64);
+      if (failure === 'feed-upload' && path === '' && result.name === 'ensemble-update.json') result.digest = 'sha256:' + '0'.repeat(64);
       if (failure === 'readback' && path === 'releases/99') result.assets.pop();
       if (failure === 'tag' && path === 'git/ref/tags/v0.8.2') result.object.sha = 'c'.repeat(40);
       return result;
@@ -136,9 +149,31 @@ test('only a complete unchanged daily draft can resume without rebuilding or ove
   await assert.rejects(publishRelease(interrupted, f.planned, f.directory, f.context), /A publish request was sent/);
   const planned = { ...releasePlan({ ...input(), releases: structuredClone(f.state.releases), tags: Object.keys(f.state.tags), tagSources: f.state.tags }), repository: f.client.repository };
   assert.equal(planned.action, 'resume'); assert.equal(planned.version, '0.8.2');
+  assert.equal(planned.publication.automation, 'ensemble-daily-v2');
+  assert.equal(planned.publication.assets.at(-1).name, 'ensemble-update.json');
   f.state.calls.length = 0;
   const result = await publishRelease(f.client, planned, join(f.directory, 'no-local-package'), { ...f.context, packageVersion: '0.8.1' });
   assert.equal(result.published, true);
+  assert.ok(f.state.calls.every(call => call.method !== 'POST'));
+  assert.equal(f.state.calls.filter(call => call.method === 'PATCH').length, 1);
+});
+
+test('legacy three-asset daily drafts resume without requiring or adding an update feed', async t => {
+  const f = await fixture(t);
+  const interrupted = { ...f.client, request: (path, options = {}) => options.method === 'PATCH' ? Promise.reject(new Error('Connection lost.')) : f.client.request(path, options) };
+  await assert.rejects(publishRelease(interrupted, f.planned, f.directory, f.context), /A publish request was sent/);
+  const record = JSON.parse(f.state.release.body.match(/<!-- ensemble-release-plan: (\{[^\n]*\}) -->/)[1]);
+  record.automation = 'ensemble-daily-v1';
+  record.assets = record.assets.filter(asset => asset.name !== 'ensemble-update.json');
+  f.state.release.assets = f.state.release.assets.filter(asset => asset.name !== 'ensemble-update.json');
+  f.state.release.body = `${f.planned.body}\n<!-- ensemble-release-plan: ${JSON.stringify(record)} -->\n`;
+  const planned = { ...releasePlan({ ...input(), releases: f.state.releases, tagSources: f.state.tags }), repository: f.client.repository };
+  assert.equal(planned.action, 'resume');
+  assert.equal(planned.publication.automation, 'ensemble-daily-v1');
+  f.state.calls.length = 0;
+  const result = await publishRelease(f.client, planned, join(f.directory, 'no-local-package'), { ...f.context, packageVersion: '0.8.1' });
+  assert.equal(result.published, true);
+  assert.deepEqual(result.assets, [...macReleaseAssets('0.8.2', 'arm64'), 'SHA256SUMS']);
   assert.ok(f.state.calls.every(call => call.method !== 'POST'));
   assert.equal(f.state.calls.filter(call => call.method === 'PATCH').length, 1);
 });
@@ -152,6 +187,7 @@ test('unknown, incomplete, edited, or moved drafts cannot be automatically publi
     { ...complete, body: 'A manually reviewed or old weekly draft.' },
     { ...complete, assets: complete.assets.slice(1) },
     { ...complete, body: complete.body.replace('用户可以', '用户现在可以') },
+    { ...complete, body: complete.body.replace('ensemble-daily-v2', 'ensemble-daily-v1') },
   ]) assert.throws(() => releasePlan({ ...input(), releases: [previousRelease, changed], tags: Object.keys(f.state.tags), tagSources: f.state.tags }), /automation|assets|notes/);
   assert.throws(() => releasePlan({ ...input(), releases: f.state.releases, tagSources: { ...f.state.tags, 'v0.8.2': 'c'.repeat(40) } }), /tag does not point/);
   const planned = { ...releasePlan({ ...input(), releases: f.state.releases, tagSources: f.state.tags }), repository: f.client.repository };
