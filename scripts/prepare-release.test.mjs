@@ -9,15 +9,58 @@ import { publishRelease, releaseNotes, releasePlan } from './prepare-release.mjs
 
 const source = 'a'.repeat(40);
 const previousSource = 'b'.repeat(40);
+const publicationTime = '2026-10-27T10:15:00.000Z';
 const successfulRun = { id: 42, head_sha: source, head_branch: 'main', event: 'push', status: 'completed', conclusion: 'success' };
-const previousRelease = { id: 1, tag_name: 'v0.8.1', draft: false, prerelease: false, target_commitish: previousSource, html_url: 'https://github.com/MeloMei/ensemble/releases/tag/v0.8.1' };
-const input = () => ({ source, previousSource, latestVersion: 'v0.8.1', releases: [previousRelease], tags: ['v0.8.1'], tagSources: { 'v0.8.1': previousSource }, packageVersion: '0.8.1', workflowRuns: [successfulRun] });
+const previousRelease = { id: 1, tag_name: 'v0.8.1', draft: false, prerelease: false, target_commitish: previousSource,
+  published_at: '2026-10-26T10:15:00Z', html_url: 'https://github.com/MeloMei/ensemble/releases/tag/v0.8.1' };
+const newerSource = 'c'.repeat(40);
+const newerRelease = { ...previousRelease, id: 2, tag_name: 'v0.8.3', target_commitish: newerSource, html_url: 'https://github.com/MeloMei/ensemble/releases/tag/v0.8.3' };
+const input = () => ({ source, previousSource, sourceComparison: { status: 'ahead', merge_base_commit: { sha: previousSource } }, latestVersion: 'v0.8.1', releases: [previousRelease], tags: ['v0.8.1'], tagSources: { 'v0.8.1': previousSource }, packageVersion: '0.8.1', workflowRuns: [successfulRun],
+  now: new Date(publicationTime), eventName: 'workflow_run' });
 
 test('new main commit SHAs prepare a release, while unchanged and published sources skip', () => {
   assert.equal(releasePlan(input()).action, 'create');
   assert.equal(releasePlan({ ...input(), previousSource: source, workflowRuns: [] }).ready, false);
   const published = { ...previousRelease, tag_name: 'v0.8.2', target_commitish: source };
   assert.equal(releasePlan({ ...input(), releases: [previousRelease, published], workflowRuns: [] }).ready, false);
+});
+
+test('late main Build events covered by Latest skip, while divergent sources are rejected', () => {
+  const outdated = { ...input(), sourceComparison: { status: 'behind', merge_base_commit: { sha: source } }, workflowRuns: [] };
+  assert.deepEqual(releasePlan(outdated), { ready: false, reason: 'A newer main source has already been published.' });
+  for (const comparison of [
+    { status: 'diverged', merge_base_commit: { sha: 'c'.repeat(40) } },
+    { status: 'ahead', merge_base_commit: { sha: source } },
+    { status: 'behind', merge_base_commit: { sha: previousSource } },
+  ]) assert.throws(() => releasePlan({ ...input(), sourceComparison: comparison }), /linear main history/);
+});
+
+test('automatic releases wait until 18:15 in Shanghai while manual publication can start earlier', () => {
+  const before = new Date('2026-10-27T10:14:59Z');
+  for (const eventName of ['workflow_run', 'schedule']) {
+    assert.match(releasePlan({ ...input(), now: before, eventName, workflowRuns: [] }).reason, /wait until 18:15/);
+    assert.equal(releasePlan({ ...input(), eventName }).ready, true);
+  }
+  assert.equal(releasePlan({ ...input(), now: before, eventName: 'workflow_dispatch' }).ready, true);
+});
+
+test('the daily limit uses all stable publications and the Shanghai calendar date', () => {
+  const publishedToday = { ...newerRelease, published_at: '2026-10-26T16:00:00Z' };
+  for (const eventName of ['workflow_run', 'schedule', 'workflow_dispatch']) {
+    const planned = releasePlan({ ...input(), releases: [previousRelease, publishedToday], eventName });
+    assert.equal(planned.ready, false); assert.equal(planned.releaseUrl, publishedToday.html_url);
+    assert.match(planned.reason, /2026-10-27 in Asia\/Shanghai/);
+  }
+  assert.equal(releasePlan({ ...input(), now: new Date('2026-10-27T16:00:00Z'), eventName: 'workflow_dispatch',
+    releases: [{ ...previousRelease, published_at: '2026-10-27T15:59:59Z' }] }).ready, true);
+  assert.equal(releasePlan({ ...input(), releases: [previousRelease,
+    { ...newerRelease, draft: true, published_at: publicationTime },
+    { ...newerRelease, prerelease: true, published_at: publicationTime },
+    { ...newerRelease, tag_name: 'v0.9.0-beta.1', published_at: publicationTime },
+  ] }).ready, true);
+  for (const published_at of [undefined, null, 'not-a-date', '2026-02-30T10:15:00Z']) {
+    assert.throws(() => releasePlan({ ...input(), releases: [{ ...previousRelease, published_at }] }), /valid GitHub published_at/);
+  }
 });
 
 test('only the latest successful main Build for the exact source authorizes publication', () => {
@@ -44,8 +87,9 @@ async function fixture(t) {
   const names = macReleaseAssets(planned.version, 'arm64');
   for (const name of names) await writeFile(join(directory, name), `${name} fixture bytes`);
   await writeFile(join(directory, 'SHA256SUMS'), await releaseChecksums(directory, names));
-  const state = { releases: [structuredClone(previousRelease)], tags: { 'v0.8.1': previousSource }, latest: structuredClone(previousRelease), calls: [], release: undefined };
-  const client = { repository: planned.repository, pages: async () => structuredClone(state.releases), request: async (path, options = {}) => {
+  const state = { releases: [structuredClone(previousRelease)], tags: { 'v0.8.1': previousSource }, latest: structuredClone(previousRelease),
+    comparisons: { [`${previousSource}...${source}`]: input().sourceComparison }, publicationTime, listCalls: 0, calls: [], release: undefined };
+  const client = { repository: planned.repository, pages: async () => { state.listCalls++; return structuredClone(state.releases); }, request: async (path, options = {}) => {
     const method = options.method ?? 'GET';
     state.calls.push({ path, method, json: structuredClone(options.json) });
     if (path.startsWith('git/ref/tags/')) {
@@ -72,16 +116,17 @@ async function fixture(t) {
     }
     if (path === 'releases/99') {
       if (method === 'PATCH') {
-        Object.assign(state.release, { draft: options.json.draft, prerelease: options.json.prerelease });
+        Object.assign(state.release, { draft: options.json.draft, prerelease: options.json.prerelease, published_at: state.publicationTime });
         if (options.json.make_latest === 'true') state.latest = state.release;
       }
       return structuredClone(state.release);
     }
     if (path === 'releases/latest') return structuredClone(state.latest);
-    assert.equal(path, `compare/${previousSource}...${source}`);
-    return { status: 'ahead', merge_base_commit: { sha: previousSource } };
+    assert.ok(path.startsWith('compare/') && state.comparisons[path.slice('compare/'.length)], `Unexpected request: ${path}`);
+    return structuredClone(state.comparisons[path.slice('compare/'.length)]);
   } };
-  const context = { source, packageVersion: planned.version, workflowRuns: [successfulRun] };
+  const context = { source, packageVersion: planned.version, workflowRuns: [successfulRun],
+    clock: () => new Date(state.publicationTime), eventName: 'workflow_run' };
   return { directory, planned, client, context, state };
 }
 
@@ -114,6 +159,62 @@ test('all assets are staged and read back before publication, then the exact rel
   assert.equal(f.state.calls.filter(call => call.method !== 'GET').length, before);
 });
 
+test('an outdated publication skips before reading packages or reserving a version', async t => {
+  const f = await fixture(t);
+  f.state.releases.push(newerRelease); f.state.latest = newerRelease; f.state.tags[newerRelease.tag_name] = newerSource;
+  f.state.comparisons[`${newerSource}...${source}`] = { status: 'behind', merge_base_commit: { sha: source } };
+  const result = await publishRelease(f.client, f.planned, join(f.directory, 'no-local-package'), f.context);
+  assert.deepEqual(result, { published: false, skipped: true, reason: 'A newer main source has already been published.', releaseUrl: newerRelease.html_url });
+  assert.ok(f.state.calls.every(call => call.method === 'GET'));
+  assert.equal(f.state.release, undefined);
+  assert.equal(f.state.tags[f.planned.tag], undefined);
+});
+
+test('a newer Latest discovered after staging is never downgraded or publicly overwritten', async t => {
+  const f = await fixture(t);
+  const client = { ...f.client, request: async (path, options = {}) => {
+    const result = await f.client.request(path, options);
+    if (path === 'releases/99') {
+      f.state.latest = newerRelease; f.state.tags[newerRelease.tag_name] = newerSource;
+      f.state.comparisons[`${newerSource}...${source}`] = { status: 'behind', merge_base_commit: { sha: source } };
+    }
+    return result;
+  } };
+  const result = await publishRelease(client, f.planned, f.directory, f.context);
+  assert.equal(result.skipped, true); assert.equal(result.releaseUrl, newerRelease.html_url);
+  assert.equal(f.state.latest.id, newerRelease.id); assert.equal(f.state.release.draft, true);
+  assert.ok(f.state.calls.every(call => call.method !== 'PATCH'));
+});
+
+test('closed automatic windows and the daily limit skip before any remote mutation', async t => {
+  for (const blocked of ['before-window', 'published-today', 'missing-date']) {
+    const f = await fixture(t);
+    if (blocked === 'before-window') f.state.publicationTime = '2026-10-27T10:14:59Z';
+    if (blocked === 'published-today') f.state.releases.push({ ...newerRelease, published_at: publicationTime });
+    if (blocked === 'missing-date') delete f.state.releases[0].published_at;
+    const context = { ...f.context, eventName: blocked === 'published-today' ? 'workflow_dispatch' : 'workflow_run' };
+    const operation = publishRelease(f.client, f.planned, join(f.directory, 'no-local-package'), context);
+    if (blocked === 'missing-date') await assert.rejects(operation, /valid GitHub published_at/);
+    else assert.equal((await operation).skipped, true);
+    assert.ok(f.state.calls.every(call => call.method === 'GET'));
+    assert.equal(f.state.release, undefined); assert.equal(f.state.tags[f.planned.tag], undefined);
+  }
+});
+
+test('the final publication guard refreshes all stable releases even when Latest is unchanged', async t => {
+  const f = await fixture(t);
+  const publishedToday = { ...newerRelease, published_at: publicationTime };
+  const client = { ...f.client, request: async (path, options = {}) => {
+    const result = await f.client.request(path, options);
+    if (path === 'releases/99') f.state.releases.push(publishedToday);
+    return result;
+  } };
+  const result = await publishRelease(client, f.planned, f.directory, f.context);
+  assert.equal(result.skipped, true); assert.equal(result.releaseUrl, publishedToday.html_url);
+  assert.equal(f.state.latest.id, previousRelease.id); assert.equal(f.state.release.draft, true);
+  assert.equal(f.state.listCalls, 2); assert.ok(f.state.calls.every(call => call.method !== 'PATCH'));
+});
+
 test('changed inputs, failed CI, and concurrent reservations never publish', async t => {
   const f = await fixture(t);
   await assert.rejects(publishRelease(f.client, { ...f.planned, body: f.planned.body + 'changed' }, f.directory, f.context), /do not match/);
@@ -124,6 +225,11 @@ test('changed inputs, failed CI, and concurrent reservations never publish', asy
   const fresh = await fixture(t); fresh.state.tags['v0.8.2'] = 'c'.repeat(40);
   await assert.rejects(publishRelease(fresh.client, fresh.planned, fresh.directory, fresh.context), /Tag already exists/);
   assert.ok(fresh.state.calls.every(call => call.method !== 'PATCH' && call.path !== 'releases'));
+  const lowerVersion = await fixture(t);
+  lowerVersion.state.latest = { ...previousRelease, tag_name: 'v0.9.0' };
+  lowerVersion.state.tags['v0.9.0'] = previousSource;
+  await assert.rejects(publishRelease(lowerVersion.client, lowerVersion.planned, lowerVersion.directory, lowerVersion.context), /A newer release now exists/);
+  assert.ok(lowerVersion.state.calls.every(call => call.method === 'GET'));
 });
 
 test('upload, readback, or actual tag failures leave the staged release unpublished', async t => {

@@ -51,11 +51,15 @@ GitHub Actions runs the type check and build when source or build configuration 
 
 Use build or packaging commands when the change affects their output. They are not required acceptance steps for every edit.
 
-## Publish a daily Release
+## Publish a Release
 
-After it is merged into `main`, `Publish Daily Release` in `.github/workflows/release.yml` checks and publishes every day at 18:15 in `Asia/Shanghai`. It also supports manual runs in GitHub Actions. It replaces the previous weekly draft workflow and does not require approval of each Release. Scheduled runs can be delayed by GitHub and do not depend on a developer's computer being awake.
+`Publish Release` in `.github/workflows/release.yml` checks after a successful `Build` on this repository's `main`, with hourly catch-up checks from 18:15 through 23:15 in `Asia/Shanghai`. Automatic publication starts at 18:15 and skips when an official version has already been published that day. All entry points in this workflow share a limit of one release per Beijing calendar day. Manual GitHub Actions runs may publish that day's first release earlier, but cannot bypass the daily limit. GitHub can delay or drop schedules, so publication no longer depends solely on one daily scheduled event or on a developer's computer being awake.
 
-The workflow fixes the selected `main` commit and compares it with the actual tag target of the last official Latest Release. It skips when there are no new commits; merge or revert commits still count even if the resulting file tree is identical. Every main commit triggers `Build`, and publication requires the latest successful main Build for that exact source SHA. Checks from another commit or PR cannot substitute. An unfinished or failed check prevents publication; rerun after the check completes or the problem is fixed.
+CI triggers only accept a successful `Build` from this repository's main branch, started by `push` or manual dispatch, and fix the source to its actual `head_sha`; scheduled and manual runs fix the selected main commit. An older successful check never authorizes a newer main commit. Publication requires the latest successful main Build for that exact source SHA; PRs, other repositories, and unfinished or failed checks cannot publish.
+
+All triggers share one serial queue with up to 100 pending runs, so an older CI event arriving late cannot replace a queued newer event. Sources already published or covered by Latest are skipped; out-of-order CI completion cannot downgrade the release. Merge or revert commits still count as new commits even if their resulting file tree is identical.
+
+The daily limit uses GitHub's actual `published_at` converted to Beijing time and counts all public stable releases, including manual releases and those not marked Latest. Planning, version reservation, and final publication each check the time window and daily limit. Drafts from failed verification or uploads do not consume the day's release allowance.
 
 Versions avoid published Releases, drafts, and reserved tags while respecting a higher version in the source package. Version changes occur only in the temporary CI checkout, without commits or pushes to `main`. An Apple Silicon runner checks its actual architecture, builds the ZIP, DMG, and `SHA256SUMS`, and uses GitHub to generate notes from changes since the previous Release without calling a model service.
 
