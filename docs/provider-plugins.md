@@ -2,7 +2,7 @@
 
 English | [简体中文](provider-plugins.zh-CN.md)
 
-Place each local plugin in its own subdirectory of the plugin directory, with a `manifest.json`, then refresh Providers in the app. Plugins run with the permissions of the current local user, so only load code you trust. Each turn starts one child process without a shell. The built-in IDs `codex`, `claude`, `pi`, `gemini`, `cursor`, `opencode`, and `deepseek-harness` are reserved. Plugins using a reserved ID are rejected; if multiple plugins use the same ID, all of them are rejected.
+Place each local plugin in its own subdirectory of the plugin directory, with a `manifest.json`, then refresh Providers in the app. Plugins run with the permissions of the current local user, so only load code you trust. Each turn starts one child process without a shell. The built-in IDs `codex`, `claude`, `pi`, `gemini`, `cursor`, `qoder`, `opencode`, and `deepseek-harness` are reserved. Plugins using a reserved ID are rejected; if multiple plugins use the same ID, all of them are rejected.
 
 ## Protocol versions
 

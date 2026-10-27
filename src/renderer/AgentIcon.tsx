@@ -12,6 +12,8 @@ import piDarkLogo from './assets/providers/pi-dark.svg';
 import geminiLogo from './assets/providers/gemini.png';
 import cursorLightLogo from './assets/providers/cursor-light.svg';
 import cursorDarkLogo from './assets/providers/cursor-dark.svg';
+import qoderLightLogo from './assets/providers/qoder-light.png';
+import qoderDarkLogo from './assets/providers/qoder-dark.png';
 
 interface ProviderLogo { light: string; dark?: string; sizeOffset?: number }
 
@@ -23,6 +25,7 @@ const providerLogos: Readonly<Record<string, ProviderLogo | undefined>> = {
   pi: { light: piLightLogo, dark: piDarkLogo },
   gemini: { light: geminiLogo },
   cursor: { light: cursorLightLogo, dark: cursorDarkLogo },
+  qoder: { light: qoderLightLogo, dark: qoderDarkLogo },
 };
 
 export function AgentIcon({ providerId, size = 16 }: { providerId: string; size?: number }) {

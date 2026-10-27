@@ -147,6 +147,10 @@ function providerGuides(): Record<string, { install: string; configure: string; 
     install: 'https://cursor.com/docs/cli/installation', configure: 'https://cursor.com/docs/cli/reference/authentication', configureLabel: t('provider.authHelp'),
     note: t('provider.cursorSetup'),
   },
+  qoder: {
+    install: 'https://docs.qoder.com/cli/installation', configure: 'https://docs.qoder.com/cli/authentication', configureLabel: t('provider.authHelp'),
+    note: t('provider.qoderSetup'),
+  },
   opencode: {
     install: 'https://opencode.ai/v2/docs/', configure: 'https://opencode.ai/v2/docs/providers/', configureLabel: t('provider.extraProviderDocs'),
     note: t('provider.opencodeSetup'),

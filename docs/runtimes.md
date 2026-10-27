@@ -17,6 +17,7 @@ Use the official guides for the current installation and sign-in steps. The same
 | Pi | [Official Pi](https://pi.dev/) · [Quickstart](https://pi.dev/docs/latest/quickstart) | [Authentication and models](https://pi.dev/docs/latest/models) |
 | Gemini CLI | [Installation](https://geminicli.com/docs/get-started/installation/) | [Authentication](https://geminicli.com/docs/get-started/authentication/) |
 | Cursor Agent | [CLI installation](https://cursor.com/docs/cli/installation) | [Authentication](https://cursor.com/docs/cli/reference/authentication) |
+| Qoder | [CLI installation](https://docs.qoder.com/cli/installation) | [Authentication](https://docs.qoder.com/cli/authentication) |
 | OpenCode V2 | [OpenCode 2](https://opencode.ai/v2/docs/) | [V2 providers](https://opencode.ai/v2/docs/providers/) |
 | DeepSeek Harness | [Official application and source](https://www.deepseek.com/en/harness/) | [Configure models](https://deepseek-harness.github.io/deepseek-harness/en/guide/providers) |
 
@@ -37,6 +38,7 @@ Open **接入与插件 → 刷新检测** after installing a runtime. The follow
 | Pi | `PI_BINARY` | `PATH`, `~/.local/bin`, Homebrew locations, installed nvm versions |
 | Gemini CLI | `GEMINI_BINARY` | `PATH`, `~/.local/bin`, Homebrew locations, installed nvm versions |
 | Cursor Agent | `CURSOR_BINARY` | `agent`/`cursor-agent` on `PATH`, `~/.local/bin`, official CLI installation directory |
+| Qoder | `QODER_BINARY` | `PATH` and common official CLI installation directories |
 | OpenCode V2 | `OPENCODE_BINARY` | Standard macOS OpenCode application locations, `PATH`, `~/.opencode/bin`, `~/.local/bin` |
 | DeepSeek Harness | `DSH_BINARY` | `PATH`, standard macOS DeepSeek Harness application locations, `~/.local/bin` |
 
@@ -100,6 +102,14 @@ Project and Ensemble collaboration MCP servers are injected through the current 
 
 Gemini CLI and Cursor Agent wait for the current Ensemble MCP initialization handshake before sending a task. Connection failure or timeout stops dispatch.
 
+## Qoder
+
+Ensemble uses the official `qoder --acp` entry point and requires Qoder CLI **1.1.79 or newer**. Install the CLI and complete `qoder login` first. Models come from the native session; an unspecified model keeps that session's current choice. An explicit model must be offered and successfully selected before a task is sent. Failed continuation preserves the original session ID without creating a replacement.
+
+User-level native model, network, and authentication configuration is preserved. Temporary settings exclude project settings and disable hooks, skills, and permission bypass. Native tool checks are routed through Ensemble: reads and searches are allowed directly, while writes and commands require single-use approval in regular turns. Read-only turns retain only reading, searching, questions, and TODO tools. Qoder subagents, Skill, and mode-switch tools are not exposed by this integration.
+
+MCP loads only the configuration supplied for this turn. Issued Ensemble collaboration tools have separate task authorization; file read-only permissions do not remove collaboration grants. Unknown MCP tools are denied in read-only turns and require approval in regular turns. Task dispatch waits for the Ensemble MCP initialization handshake. Temporary configuration is removed after process exit.
+
 ## OpenCode V2
 
 Install OpenCode V2 separately. Ensemble starts its `acp` command using ACP, the Agent Client Protocol used to exchange sessions, prompts, tool events, and permission requests.
@@ -132,7 +142,7 @@ The temporary overlay is removed when the process closes. A missing or unconfirm
 - ACP model, reasoning, and permission choices must be offered and confirmed by the runtime. Unsupported choices stop the task. Permission prompts expose only the native single-use allow/reject choices.
 - Image transport support does not mean every selected model can interpret images. ACP context usage, runtime token usage, and official account balances are separate records.
 - DeepSeek balance lookup is user-initiated. Each returned currency is retained separately, without adding or converting balances. Usage counters are not an invoice or proof of zero cost.
-- Claude Code, Pi, Gemini CLI, Cursor Agent, OpenCode, and DeepSeek Harness do not currently offer native conversation rewind in Ensemble. A context fork creates an editable draft; it starts a new task only when sent.
+- Claude Code, Pi, Gemini CLI, Cursor Agent, Qoder, OpenCode, and DeepSeek Harness do not currently offer native conversation rewind in Ensemble. A context fork creates an editable draft; it starts a new task only when sent.
 - Read-only file access and collaboration permissions are separate. Role names grant no permissions. External agents keep their own native permission settings; Ensemble records only the tasks, messages, and artifacts they exchange through its MCP interface.
 - A runtime error stops that execution attempt. Collaboration can retry according to the run's configured limits, but a failed attempt is retained. A backend restart interrupts unfinished work and requires explicit recovery.
 
