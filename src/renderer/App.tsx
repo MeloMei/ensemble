@@ -3,11 +3,9 @@ import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useSta
 import {
   ArrowUpRight, CheckCircle2, Circle, CircleAlert, CircleDot,
   Folder, GitBranch, Globe, History, Layers2, LoaderCircle, MessageSquare,
-  Network, PanelRight, Pin, Plus, Search, Settings2, TerminalSquare, X, LayoutGrid, Moon, Sun, Palette, FolderOpen,
+  Network, PanelRight, Pin, Plus, Search, Settings2, TerminalSquare, X, LayoutGrid, FolderOpen,
 } from 'lucide-react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { useAppearance, ThemeOptions } from './appearance';
-import { LanguageOptions } from './language';
 import { SPRING_SNAPPY, motionPopover } from './vendor/open-claude-ui/ClaudeMotionPresets';
 import type { PromptInput, ProviderInfo, Session, Snapshot, Workspace, WorkspaceTab } from '../shared/types';
 import type { BackendConnectionState } from '../shared/backend';
@@ -16,17 +14,19 @@ import { sessionAttentionReason, sessionIsUnread } from './session-attention';
 import { PRODUCT_NAME } from '../shared/app-identity';
 import ensembleLogo from '../../docs/brand/ensemble-avatar.png';
 import { AgentIcon } from './AgentIcon';
-import { ApplicationUpdateNotice, ApplicationUpdateSettings, useApplicationUpdates } from './ApplicationUpdates';
+import { ApplicationUpdateNotice, useApplicationUpdates } from './ApplicationUpdates';
 import { FileReviewPanel } from './FileReviewPanel';
-import { WorkspaceTools } from './WorkspaceTools';
+import { SettingsDialog, type SettingsSection } from './SettingsDialog';
+import { AppSelect } from './AppSelect';
+import { Tooltip } from './Tooltip';
 import './features.css';
 import { SessionChat } from './SessionChat';
 import { TerminalPane } from './TerminalPane';
-import { ProvidersDialog, ProvidersView, WorkflowEditor, WorkflowView } from './WorkflowViews';
+import { WorkflowEditor, WorkflowView } from './WorkflowViews';
 import { BusyIcon, DirectoryField, EmptyState, ErrorToast, IconButton, Modal, ModelField, ProviderSelect, Status, statusLabel, defaultModelId, pathName, relativeTime, validModelSelection, type Perform } from './ui';
 
-type Page = 'workspace' | 'history' | 'workflows' | 'providers' | 'collaboration';
-type Dialog = 'workspace' | 'agent' | 'preview' | 'codex' | 'tools' | 'appearance' | 'providers' | null;
+type Page = 'workspace' | 'history' | 'workflows' | 'collaboration';
+type Dialog = 'workspace' | 'agent' | 'preview' | 'codex' | 'settings' | null;
 const CollaborationViews = lazy(() => import('./CollaborationViews').then(module => ({ default: module.CollaborationViews })));
 
 function workspaceGroup(workspace: Workspace, sessions: Session[]) {
@@ -52,7 +52,6 @@ function AttentionBadge({ session }: { session: Session }) {
 export function App() {
   const { t } = useTranslation('shell');
   const applicationUpdates = useApplicationUpdates();
-  const { theme, setPreference } = useAppearance();
   const reducedMotion = useReducedMotion();
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [connection, setConnection] = useState<BackendConnectionState>({ status: 'connecting', synced: false });
@@ -64,6 +63,8 @@ export function App() {
   const [workflowId, setWorkflowId] = useState<string | null>(null);
   const [newWorkflow, setNewWorkflow] = useState(false);
   const [dialog, setDialog] = useState<Dialog>(null);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>('general');
+  const openSettings = (section: SettingsSection = 'general') => { setSettingsSection(section); setDialog('settings'); };
   const [tabMenu, setTabMenu] = useState(false);
   const tabMenuContainer = useRef<HTMLDivElement>(null);
   const activeTabElement = useRef<HTMLDivElement>(null);
@@ -195,7 +196,7 @@ export function App() {
   const renderTab = (tab?: WorkspaceTab) => {
     const tabSession = tab?.kind === 'agent' ? sessions.find(item => item.id === tab.sessionId) : undefined;
     const tabTerminal = tab?.kind === 'terminal' ? snapshot?.terminals.find(item => item.id === tab.terminalId) : undefined;
-    if (tabSession && workspace) return <SessionChat key={tabSession.id} session={tabSession} workspaceId={workspace.id} sessions={sessions} openSession={openSession} connected={connected} provider={providers.find(item => item.id === tabSession.providerId)} perform={perform} pending={pending} draft={drafts[tabSession.id] ?? tabSession.draft ?? { text: '' }} draftError={draftErrors[tabSession.id]} onDraftChange={(value, expected) => updateDraft(tabSession.id, value, expected)} />;
+    if (tabSession && workspace) return <SessionChat key={tabSession.id} session={tabSession} sessions={sessions} openSession={openSession} connected={connected} provider={providers.find(item => item.id === tabSession.providerId)} perform={perform} pending={pending} draft={drafts[tabSession.id] ?? tabSession.draft ?? { text: '' }} draftError={draftErrors[tabSession.id]} onDraftChange={(value, expected) => updateDraft(tabSession.id, value, expected)} />;
     if (tabTerminal && workspace) return <TerminalPane key={tabTerminal.id} info={tabTerminal} cwd={workspace.cwd} perform={perform} />;
     if (tab?.kind === 'preview') return <PreviewPane key={tab.id} tab={tab} />;
     return <EmptyState icon={<Layers2 size={28} />} title={t('app.projectReady')} action={<div className="empty-actions"><button className="button" onClick={() => setDialog('agent')}><Plus size={14} />{t('app.addAgent')}</button><button className="button subtle" disabled={pending.has('create-terminal')} onClick={() => workspace && void perform('create-terminal', () => window.workbench.createTerminal(workspace.id))}><TerminalSquare size={14} />{t('app.openTerminal')}</button></div>}>{t('app.projectReadyNote')}</EmptyState>;
@@ -233,20 +234,20 @@ export function App() {
         })}
         {!workspaces.length && <div className="sidebar-placeholder">{t('app.chooseLocalProject')}<br />{t('app.addRuntimeNote')}</div>}{workspaces.length > 0 && !visibleWorkspaces.length && <div className="sidebar-placeholder">{t('app.noWorkspaceMatch')}</div>}
       </div>
-      <div className={`sidebar-connection connection-${connected ? 'connected' : connection.status}`}><i /><span>{connected ? t('app.connected') : t(`connection.${connection.status}`)}</span><small>{t('app.thisMachine')}</small></div><footer className="sidebar-footer"><button onClick={() => setDialog('workspace')}><Plus size={15} />{t('app.addProject')}</button><IconButton label={t('preferences.open')} onClick={() => setDialog('appearance')}><Palette size={16} /></IconButton><IconButton label={t('app.providers')} onClick={() => setPage('providers')}><Settings2 size={16} /></IconButton></footer>
+      <div className={`sidebar-connection connection-${connected ? 'connected' : connection.status}`}><i /><span>{connected ? t('app.connected') : t(`connection.${connection.status}`)}</span><small>{t('app.thisMachine')}</small></div><footer className="sidebar-footer"><button onClick={() => setDialog('workspace')}><Plus size={15} />{t('app.addProject')}</button><IconButton label={t('preferences.open')} onClick={() => openSettings()}><Settings2 size={16} /></IconButton></footer>
     </aside>
 
-    <main className={`main-workspace ${page === 'workspace' && workspace && rightPane ? 'with-file-panel' : ''}`}><header className="workspace-header"><div className="workspace-heading">{page === 'workspace' && workspace ? <><FolderOpen size={16} /><h1 title={workspace.name}>{workspace.name}</h1><span title={workspace.cwd}>{pathName(workspace.cwd)}</span><IconButton label={workspace.pinned ? t('app.unpin') : t('app.pin')} aria-pressed={workspace.pinned} onClick={() => void perform('pin-workspace', () => window.workbench.updateWorkspace(workspace.id, { pinned: !workspace.pinned }))}><Pin size={13} fill={workspace.pinned ? 'currentColor' : 'none'} /></IconButton></> : <h1>{{ workspace: PRODUCT_NAME, history: t('app.history'), workflows: t('app.workflows'), providers: t('app.providers'), collaboration: t('app.agentCollaboration') }[page]}</h1>}</div>
-      <div className="workspace-header-actions">{page === 'workspace' && workspace && <><button className="header-button" aria-label={t('app.collaboration')} title={t('app.collaboration')} onClick={() => setPage('collaboration')}><Network size={14} /><span>{t('app.collaboration')}</span></button><IconButton label={t('app.projectTools')} onClick={() => setDialog('tools')}><Settings2 size={15} /></IconButton><button className="header-button" disabled={workspace.tabs.length < 2} onClick={() => void perform('split', () => window.workbench.splitWorkspace(workspace.id, secondaryTab ? {} : { tabId: workspace.tabs.find(tab => tab.id !== activeTab?.id)?.id, direction: 'horizontal' }))}>{secondaryTab ? t('app.mergePanes') : t('app.splitPanes')}</button>{secondaryTab && <button className="header-button" onClick={() => void perform('split-direction', () => window.workbench.splitWorkspace(workspace.id, { tabId: secondaryTab.id, direction: workspace.splitDirection === 'vertical' ? 'horizontal' : 'vertical' }))}>{t('app.changeDirection')}</button>}</>}<span className="local-indicator"><i />{t('app.local')}</span><IconButton label={theme === 'light' ? t('app.switchDark') : t('app.switchLight')} onClick={() => setPreference(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={16} /> : <Sun size={16} />}</IconButton>{page === 'workspace' && <button className="header-button" onClick={() => setDialog('codex')} aria-label={t('app.openCodex')} title={t('app.openCodexHint')}><ArrowUpRight size={13} /><span>Codex App</span></button>}{page === 'workspace' && workspace && <IconButton label={rightPane ? t('app.hideFiles') : t('app.showFiles')} aria-pressed={rightPane} onClick={() => setRightPane(value => !value)}><PanelRight size={16} /></IconButton>}</div>
+    <main className={`main-workspace ${page === 'workspace' && workspace && rightPane ? 'with-file-panel' : ''}`}><header className="workspace-header"><div className="workspace-heading">{page === 'workspace' && workspace ? <><FolderOpen size={16} /><h1 title={workspace.name}>{workspace.name}</h1><span title={workspace.cwd}>{pathName(workspace.cwd)}</span><IconButton label={workspace.pinned ? t('app.unpin') : t('app.pin')} aria-pressed={workspace.pinned} onClick={() => void perform('pin-workspace', () => window.workbench.updateWorkspace(workspace.id, { pinned: !workspace.pinned }))}><Pin size={13} fill={workspace.pinned ? 'currentColor' : 'none'} /></IconButton></> : <h1>{{ workspace: PRODUCT_NAME, history: t('app.history'), workflows: t('app.workflows'), collaboration: t('app.agentCollaboration') }[page]}</h1>}</div>
+      <div className="workspace-header-actions">{page === 'workspace' && workspace && <><Tooltip label={t('app.collaboration')}><button className="header-button" aria-label={t('app.collaboration')} title={t('app.collaboration')} onClick={() => setPage('collaboration')}><Network size={14} /><span>{t('app.collaboration')}</span></button></Tooltip><button className="header-button" disabled={workspace.tabs.length < 2} onClick={() => void perform('split', () => window.workbench.splitWorkspace(workspace.id, secondaryTab ? {} : { tabId: workspace.tabs.find(tab => tab.id !== activeTab?.id)?.id, direction: 'horizontal' }))}>{secondaryTab ? t('app.mergePanes') : t('app.splitPanes')}</button>{secondaryTab && <button className="header-button" onClick={() => void perform('split-direction', () => window.workbench.splitWorkspace(workspace.id, { tabId: secondaryTab.id, direction: workspace.splitDirection === 'vertical' ? 'horizontal' : 'vertical' }))}>{t('app.changeDirection')}</button>}</>}<span className="local-indicator"><i />{t('app.local')}</span>{page === 'workspace' && <Tooltip label={t('app.openCodex')}><button className="header-button" onClick={() => setDialog('codex')} aria-label={t('app.openCodex')} title={t('app.openCodexHint')}><ArrowUpRight size={13} /><span>Codex App</span></button></Tooltip>}{page === 'workspace' && workspace && <IconButton label={rightPane ? t('app.hideFiles') : t('app.showFiles')} aria-pressed={rightPane} onClick={() => setRightPane(value => !value)}><PanelRight size={16} /></IconButton>}</div>
     </header>
-      <ApplicationUpdateNotice state={applicationUpdates.state} onOpen={() => setDialog('appearance')} />
+      <ApplicationUpdateNotice state={applicationUpdates.state} onOpen={() => openSettings('general')} />
       {snapshot && !connected && <div className="connection-banner" role="status"><CircleAlert size={14} /><span>{t('connection.stale')}{connection.lastReceivedAt && ` · ${t('connection.lastUpdate', { time: relativeTime(connection.lastReceivedAt) })}`}</span>{connection.error && <small>{connection.error}</small>}</div>}
       {!snapshot ? <div className="loading-view">{loadError ? <><CircleAlert size={23} /><p>{loadError}</p><button className="button" onClick={() => void perform('reload', async () => { setSnapshot(await window.workbench.snapshot()); setLoadError(''); })}>{t('common.reload')}</button></> : <><LoaderCircle className="spin" size={23} /><p>{t('app.loading')}</p></>}</div> : <>
         {page === 'workspace' && (workspace ? <div className="workspace-columns"><div className="workspace-center"><div className="tabbar"><div className="workspace-tabs">{workspace.tabs.map(tab => {
           const tabSession = tab.kind === 'agent' ? sessions.find(item => item.id === tab.sessionId) : undefined;
           const tabTerminal = tab.kind === 'terminal' ? snapshot.terminals.find(item => item.id === tab.terminalId) : undefined;
           const label = tab.kind === 'agent' ? tabSession?.title || providers.find(provider => provider.id === tabSession?.providerId)?.name || tabSession?.providerId || 'Agent' : tab.kind === 'terminal' ? tabTerminal?.title ?? 'Terminal' : tab.url;
-          return <div key={tab.id} ref={activeTab?.id === tab.id ? activeTabElement : undefined} className={`workspace-tab ${activeTab?.id === tab.id ? 'active' : ''}`}>{activeTab?.id === tab.id && <motion.span className="workspace-tab-active" layoutId={`workspace-tab-${workspace.id}`} transition={reducedMotion ? { duration: 0 } : SPRING_SNAPPY} />}<button className="tab-select" aria-current={activeTab?.id === tab.id ? 'page' : undefined} title={tab.kind === 'agent' ? tabSession?.title : label} onClick={() => void perform('activate-tab', () => window.workbench.activateTab(workspace.id, tab.id))}>{tab.kind === 'agent' ? <AgentIcon providerId={tabSession?.providerId ?? ''} size={14} /> : tab.kind === 'terminal' ? <TerminalSquare size={14} /> : <Globe size={14} />}<span>{label}</span>{tabSession && <AttentionBadge session={tabSession} />}{tabSession && ['running', 'waiting_approval', 'waiting_children', 'failed'].includes(tabSession.status) && <i className={`tab-state tab-state-${tabSession.status}`} aria-label={statusLabel(tabSession.status)} title={statusLabel(tabSession.status)} />}</button><button className="tab-close" aria-label={t('app.closeNamedTab', { label })} title={tab.kind === 'terminal' ? t('app.closeTerminalTab') : t('app.closeTab')} onClick={() => void perform(`close-tab-${tab.id}`, () => window.workbench.closeTab(workspace.id, tab.id))}><X size={11} /></button></div>;
+          return <div key={tab.id} ref={activeTab?.id === tab.id ? activeTabElement : undefined} className={`workspace-tab ${activeTab?.id === tab.id ? 'active' : ''}`}>{activeTab?.id === tab.id && <motion.span className="workspace-tab-active" layoutId={`workspace-tab-${workspace.id}`} transition={reducedMotion ? { duration: 0 } : SPRING_SNAPPY} />}<button className="tab-select" aria-current={activeTab?.id === tab.id ? 'page' : undefined} title={tab.kind === 'agent' ? tabSession?.title : label} onClick={() => void perform('activate-tab', () => window.workbench.activateTab(workspace.id, tab.id))}>{tab.kind === 'agent' ? <AgentIcon providerId={tabSession?.providerId ?? ''} size={14} /> : tab.kind === 'terminal' ? <TerminalSquare size={14} /> : <Globe size={14} />}<span>{label}</span>{tabSession && <AttentionBadge session={tabSession} />}{tabSession && ['running', 'waiting_approval', 'waiting_children', 'failed'].includes(tabSession.status) && <i className={`tab-state tab-state-${tabSession.status}`} aria-label={statusLabel(tabSession.status)} title={statusLabel(tabSession.status)} />}</button><Tooltip label={t('app.closeNamedTab', { label })}><button className="tab-close" aria-label={t('app.closeNamedTab', { label })} title={tab.kind === 'terminal' ? t('app.closeTerminalTab') : t('app.closeTab')} onClick={() => void perform(`close-tab-${tab.id}`, () => window.workbench.closeTab(workspace.id, tab.id))}><X size={11} /></button></Tooltip></div>;
         })}</div><div className="tab-add" ref={tabMenuContainer} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setTabMenu(false); }} onKeyDown={event => {
             if (!tabMenu) return;
             if (event.key === 'Escape') { event.preventDefault(); setTabMenu(false); tabMenuContainer.current?.querySelector<HTMLButtonElement>('[aria-haspopup]')?.focus({ preventScroll: true }); return; }
@@ -265,14 +266,12 @@ export function App() {
             provider={providers.find(provider => provider.id === readingSession.providerId)} perform={perform} pending={pending}
             draft={{ text: '' }} onDraftChange={() => {}} openSession={id => openSession(id, true)} />
         </section> : <HistoryView sessions={sessions} providers={providers} openSession={openSession} perform={perform} />)}
-        {page === 'collaboration' && <Suspense fallback={<div className="loading-view"><LoaderCircle className="spin" size={23} /><p>{t('app.loadingCollaboration')}</p></div>}><CollaborationViews snapshot={snapshot} perform={perform} pending={pending} openSession={openSession} initialCwd={workspace?.cwd} openProviderSettings={() => setDialog('providers')} /></Suspense>}
+        {page === 'collaboration' && <Suspense fallback={<div className="loading-view"><LoaderCircle className="spin" size={23} /><p>{t('app.loadingCollaboration')}</p></div>}><CollaborationViews snapshot={snapshot} perform={perform} pending={pending} openSession={openSession} initialCwd={workspace?.cwd} openProviderSettings={() => openSettings('providers')} /></Suspense>}
         {page === 'workflows' && <div className="split-page"><aside className="item-sidebar"><div className="sidebar-heading"><h2>{t('app.workflows')}</h2><IconButton label={t('workflow.new')} onClick={() => setNewWorkflow(true)}><Plus size={17} /></IconButton></div><p className="sidebar-subtitle">{t('workflow.dependenciesNote')}</p><div className="item-list">{workflows.map(item => <button key={item.id} className={`list-item ${item.id === workflow?.id && !newWorkflow ? 'selected' : ''}`} onClick={() => { setWorkflowId(item.id); setNewWorkflow(false); }}><strong>{item.name}</strong><div><span>{t('workflow.stepCount', { count: item.steps.length })}</span><Status value={item.status} /></div></button>)}</div><button className="sidebar-action" onClick={() => setNewWorkflow(true)}><Plus size={14} />{t('workflow.new')}</button></aside>{newWorkflow ? <WorkflowEditor providers={providers} perform={perform} pending={pending} onClose={() => setNewWorkflow(false)} onCreated={id => { setWorkflowId(id); setNewWorkflow(false); }} /> : workflow ? <WorkflowView workflow={workflow} providers={providers} sessions={sessions} perform={perform} pending={pending} openSession={openSession} openWorkflow={id => { setWorkflowId(id); setNewWorkflow(false); }} /> : <EmptyState icon={<GitBranch size={28} />} title={t('workflow.empty')} action={<button className="button" onClick={() => setNewWorkflow(true)}><Plus size={14} />{t('workflow.new')}</button>}>{t('workflow.emptyNote')}</EmptyState>}</div>}
-        {page === 'providers' && <ProvidersView snapshot={snapshot} perform={perform} pending={pending} />}
       </>}
     </main>
-    {dialog === 'appearance' && <Modal title={t('preferences.title')} subtitle={t('preferences.subtitle')} onClose={() => setDialog(null)}><LanguageOptions /><h3 className="preferences-heading">{t('preferences.theme')}</h3><ThemeOptions /><p className="appearance-note">{t('preferences.themeNote')}</p><ApplicationUpdateSettings {...applicationUpdates} /></Modal>}
-    {dialog === 'providers' && snapshot && <ProvidersDialog snapshot={snapshot} perform={perform} pending={pending} onClose={() => setDialog(null)} />}
-    {dialog === 'tools' && workspace && <WorkspaceTools key={workspace.id} workspace={workspace} sessions={sessions} perform={perform} onClose={() => setDialog(null)} />}
+    {dialog === 'settings' && <SettingsDialog snapshot={snapshot} workspace={workspace} sessions={sessions} session={activeSession}
+      perform={perform} pending={pending} updates={applicationUpdates} initialSection={settingsSection} openSession={openSession} onClose={() => setDialog(null)} />}
     {dialog === 'workspace' && <NewWorkspaceDialog perform={perform} pending={pending} onClose={() => setDialog(null)} onCreated={id => { setDialog(null); selectWorkspace(id); }} />}
     {dialog === 'agent' && workspace && <NewAgentDialog workspace={workspace} providers={providers} pending={pending} perform={perform} onClose={() => setDialog(null)} />}
     {dialog === 'preview' && workspace && <PreviewDialog workspace={workspace} pending={pending} perform={perform} onClose={() => setDialog(null)} />}
@@ -301,9 +300,8 @@ function NewWorkspaceDialog({ pending, perform, onClose, onCreated }: { pending:
   };
   return <Modal title={t('app.newWorkspace')} subtitle={t('app.newWorkspaceNote')} busy={busy} onClose={onClose}><form onSubmit={submit}>
     <label>{t('common.projectDirectory')}<DirectoryField value={cwd} onChange={setCwd} perform={perform} /></label>
-    <label>{t('app.workspaceMode')}<select value={mode} disabled={busy} onChange={event => setMode(event.target.value as typeof mode)}>
-      <option value="directory">{t('app.currentDirectory')}</option><option value="worktree">{t('app.independentWorktree')}</option>
-    </select></label>
+    <label>{t('app.workspaceMode')}<AppSelect label={t('app.workspaceMode')} value={mode} disabled={busy} onChange={value => setMode(value as typeof mode)}
+      options={[{ value: 'directory', label: t('app.currentDirectory') }, { value: 'worktree', label: t('app.independentWorktree') }]} /></label>
     {mode === 'worktree' && <><p className="form-note">{t('app.worktreeNote')}</p><label>{t('app.worktreeBranch')}<span className="optional">{t('common.optional')}</span><input value={branch} onChange={event => setBranch(event.target.value)} disabled={busy} placeholder={t('app.worktreeBranchDefault')} /></label></>}
     <label>{t('app.workspaceName')}<span className="optional">{t('common.optional')}</span><input autoFocus value={name} onChange={event => setName(event.target.value)} placeholder={cwd ? pathName(cwd) : t('app.directoryNameDefault')} maxLength={200} /></label>
     <div className="modal-actions"><button type="button" className="button subtle" disabled={busy} onClick={onClose}>{t('common.cancel')}</button><button className="button primary" disabled={!cwd.trim() || busy}><BusyIcon busy={busy}><Plus size={14} /></BusyIcon>{t('app.createWorkspace')}</button></div></form></Modal>;

@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { formatDate, formatNumber } from '../shared/i18n';
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState, useSyncExternalStore } from 'react';
 import { Activity, BellRing, FileText, GitBranch, ListChecks, Plug, Plus, Puzzle, RefreshCw, Wallet } from 'lucide-react';
 import type { NotificationStatus, Session, SkillInfo, Workspace } from '../shared/types';
 import { Modal, type Perform } from './ui';
@@ -11,7 +11,19 @@ import { hasMcpEdits, hasSkillEdits, workspaceToolDrafts, type SkillDraft } from
 const emptySkill = '---\nname: \ndescription: \n---\n\n';
 type ToolTab = 'skills' | 'mcp' | 'usage' | 'diagnostics' | 'worktree';
 
-export function WorkspaceTools({ workspace, sessions, perform, onClose }: { workspace: Workspace; sessions: Session[]; perform: Perform; onClose: () => void }) {
+interface WorkspaceToolsPanelProps {
+  workspace: Workspace;
+  sessions: Session[];
+  perform: Perform;
+  onBusyChange?: (busy: boolean) => void;
+  onRemoved?: () => void;
+}
+
+export interface WorkspaceToolsHandle {
+  requestClose: (action: () => void) => void;
+}
+
+export const WorkspaceToolsPanel = forwardRef<WorkspaceToolsHandle, WorkspaceToolsPanelProps>(function WorkspaceToolsPanel({ workspace, sessions, perform, onBusyChange, onRemoved }, ref) {
   const { t } = useTranslation('workspace');
   const { t: runtimeText } = useTranslation('runtime');
   const [tab, setTab] = useState<ToolTab>('skills');
@@ -25,9 +37,16 @@ export function WorkspaceTools({ workspace, sessions, perform, onClose }: { work
   const editSkill = (next: SkillDraft | undefined) => workspaceToolDrafts.update(workspace, current => ({ ...current, skill: next }));
   const editMcp = (next: { content: string }) => workspaceToolDrafts.update(workspace, current => ({ ...current, mcpDraft: next }));
   const skillDirty = hasSkillEdits(skill);
-  const mcpDirty = hasMcpEdits(drafts);
-  const close = () => { if (workspaceToolDrafts.discard(workspace)) onClose(); };
   const guardDiscard = (action: () => void, dirty: boolean) => { if (dirty) setDiscardAction(current => current ?? action); else action(); };
+  const busy = Boolean(savingSkill) || savingMcp;
+  useEffect(() => { onBusyChange?.(busy); }, [busy, onBusyChange]);
+  useImperativeHandle(ref, () => ({
+    requestClose: action => {
+      const current = workspaceToolDrafts.get(workspace);
+      if (current.savingSkill || current.savingMcp) return;
+      guardDiscard(() => { if (workspaceToolDrafts.discard(workspace)) action(); }, hasSkillEdits(current.skill) || hasMcpEdits(current));
+    },
+  }));
   const readSkill = async (item: SkillInfo) => {
     const generation = ++skillReadGeneration.current;
     const previous = workspaceToolDrafts.get(workspace).skill;
@@ -92,8 +111,7 @@ export function WorkspaceTools({ workspace, sessions, perform, onClose }: { work
   const usage = sessions.filter(session => session.cwd === workspace.cwd).flatMap(session => (session.usage ?? []).map(record => ({ ...record, title: session.title })));
   const tabs: ToolTab[] = ['skills', 'mcp', 'usage', 'diagnostics', ...(workspace.worktree ? ['worktree' as const] : [])];
 
-  return <><Modal title={t('tools.title')} subtitle={workspace.name} busy={Boolean(savingSkill) || savingMcp} onClose={() => guardDiscard(close, skillDirty || mcpDirty)}>
-    <div className="workspace-tools">
+  return <><div className="workspace-tools">
       <div className="tools-tabs" role="group" aria-label={t('tools.categories')} data-tab={tab}>
         {tabs.map(value => <button className={tab === value ? 'selected' : ''} aria-pressed={tab === value} key={value} onClick={() => {
           setTab(value);
@@ -102,7 +120,7 @@ export function WorkspaceTools({ workspace, sessions, perform, onClose }: { work
       </div>
       <div className="tools-content">
         {tab === 'diagnostics' && <DiagnosticsPanel sessions={sessions} />}
-        {tab === 'worktree' && <ManagedWorktreePanel workspace={workspace} onRemoved={onClose} />}
+        {tab === 'worktree' && <ManagedWorktreePanel workspace={workspace} onRemoved={() => onRemoved?.()} />}
         {tab === 'skills' && <>
           <div className="tools-actions"><span>{t('tools.skillSources')}</span><button className="button small" onClick={() => guardDiscard(() => { skillReadGeneration.current++; editSkill({ token: {}, name: '', content: emptySkill, editable: true, saved: { name: '', content: emptySkill } }); }, skillDirty)}><Plus size={13} />{t('tools.newSkill')}</button></div>
           <div className="tools-list">
@@ -151,7 +169,7 @@ export function WorkspaceTools({ workspace, sessions, perform, onClose }: { work
         </>}
       </div>
     </div>
-  </Modal>{discardAction && <Modal title={t('tools.unsavedTitle')} subtitle={t('tools.unsavedDescription')} onClose={() => setDiscardAction(undefined)}>
+  {discardAction && <Modal title={t('tools.unsavedTitle')} subtitle={t('tools.unsavedDescription')} onClose={() => setDiscardAction(undefined)}>
     <div className="modal-actions"><button className="button" autoFocus onClick={() => setDiscardAction(undefined)}>{t('tools.keepEditing')}</button><button className="button danger" onClick={() => { setDiscardAction(undefined); discardAction(); }}>{t('tools.discardChanges')}</button></div>
   </Modal>}</>;
-}
+});

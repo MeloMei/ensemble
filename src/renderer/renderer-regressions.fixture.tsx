@@ -7,12 +7,16 @@ import { MotionConfig } from 'framer-motion';
 import { i18n, translate } from '../shared/i18n';
 import type { DiagnosticEntry, FileContent, McpSettingsView, Message, PromptInput, ProviderInfo, Session, Snapshot, UnsavedFileSummary, Workflow, Workspace } from '../shared/types';
 import type { BackendConnectionState, SessionHistoryWindow } from '../shared/backend';
-import { WorkspaceTools } from './WorkspaceTools';
-import { ProvidersView, WorkflowView } from './WorkflowViews';
+import { SettingsDialog } from './SettingsDialog';
+import { LanguageProvider } from './language';
+import { OverlayProvider } from './overlays';
+import { TooltipProvider } from './Tooltip';
+import { IconButton } from './ui';
+import { ProvidersContent, WorkflowView } from './WorkflowViews';
 import { DiagnosticsPanel } from './DiagnosticsPanel';
 import { ManagedWorktreePanel } from './ManagedWorktreePanel';
 import { FileReviewPanel } from './FileReviewPanel';
-import { SessionChat } from './SessionChat';
+import { SessionChat, SessionSettingsPanel } from './SessionChat';
 import { App } from './App';
 import { ApplicationUpdateNotice, ApplicationUpdateSettings, useApplicationUpdates } from './ApplicationUpdates';
 import type { AppUpdateState } from '../shared/application-updates';
@@ -31,6 +35,11 @@ const session: Session = { id: 'session', title: 'Session', providerId: 'codex',
 const provider: ProviderInfo = { id: 'codex', name: 'Codex', source: 'builtin', available: true, detail: '', capabilities: { resume: true, approvals: true, permissions: true, effort: true }, efforts: ['low', 'high'] };
 const installedUpdateState: AppUpdateState = { currentVersion: '0.8.1', supported: true, autoCheck: true, phase: 'idle' };
 const applicationUpdateApi = { getApplicationUpdate: async () => installedUpdateState, onApplicationUpdateChanged: () => () => {}, confirmApplicationUpdateReady: async () => {} };
+const idleUpdates: ReturnType<typeof useApplicationUpdates> = { state: installedUpdateState, error: '', pending: false, run: async operation => { await operation(); } };
+function ProjectSettings({ workspace, sessions, perform, onClose }: { workspace: Workspace; sessions: Session[]; perform: Perform; onClose: () => void }) {
+  return <SettingsDialog snapshot={null} workspace={workspace} sessions={sessions} perform={perform} pending={new Set()} updates={idleUpdates}
+    initialSection="project" openSession={() => {}} onClose={onClose} />;
+}
 const tick = () => new Promise<void>(resolve => setTimeout(resolve, 0));
 async function frames(count = 3) {
   for (let index = 0; index < count; index++) await act(async () => { await new Promise<void>(resolve => requestAnimationFrame(() => resolve())); });
@@ -68,10 +77,22 @@ let root: Root;
 const errors: string[] = [];
 let operations: Promise<void>[] = [];
 const perform: Perform = (_key, action) => { const operation = action().then(() => {}, error => { errors.push(String(error)); }); operations.push(operation); return operation; };
-async function render(element: ReactElement) { await act(async () => { root.render(<I18nextProvider i18n={i18n}><AppearanceProvider><MotionConfig reducedMotion="always">{element}</MotionConfig></AppearanceProvider></I18nextProvider>); await tick(); }); }
+async function render(element: ReactElement) { await act(async () => { root.render(<I18nextProvider i18n={i18n}><AppearanceProvider><OverlayProvider><TooltipProvider><MotionConfig reducedMotion="always">{element}</MotionConfig></TooltipProvider></OverlayProvider></AppearanceProvider></I18nextProvider>); await tick(); }); }
 async function click(key: string) { await act(async () => { button(key).click(); await tick(); }); }
 async function settle() { await act(async () => { await Promise.all(operations); await tick(); }); }
-const chat = (overrides: Partial<Parameters<typeof SessionChat>[0]> = {}) => <SessionChat session={session} provider={provider} perform={perform} pending={new Set()} draft={{ text: '' }} onDraftChange={() => {}} workspaceId={workspace.id} openSession={() => {}} {...overrides} />;
+async function openSelect(control: HTMLButtonElement) {
+  await act(async () => { control.focus(); control.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await tick(); });
+  await waitFor(() => Boolean(document.querySelector('[role=listbox][data-state=open]')), 'The application select menu did not open');
+  return document.querySelector<HTMLElement>('[role=listbox][data-state=open]')!;
+}
+async function chooseOption(control: HTMLButtonElement, value: string) {
+  const menu = await openSelect(control);
+  const option = [...menu.querySelectorAll<HTMLElement>('[role=option]')].find(item => item.dataset.value === value);
+  assert(option && !option.hasAttribute('data-disabled'), `Missing selectable option ${value}`);
+  await act(async () => { option.click(); await tick(); });
+  await waitFor(() => !document.querySelector('[role=listbox][data-state=open]'), 'The application select menu did not close');
+}
+const chat = (overrides: Partial<Parameters<typeof SessionChat>[0]> = {}) => <SessionChat session={session} provider={provider} perform={perform} pending={new Set()} draft={{ text: '' }} onDraftChange={() => {}} openSession={() => {}} {...overrides} />;
 const messageRange = (start: number, end: number): Message[] => Array.from({ length: end - start }, (_, offset) => {
   const index = start + offset;
   return { id: `message-${index}`, role: index % 2 ? 'user' : 'assistant', text: `Message ${index}\n\n${'Variable markdown height. '.repeat(index % 7 + 1)}`, createdAt: '2026-10-23T02:00:00Z' };
@@ -87,6 +108,107 @@ function collaborationSnapshot(runs: CollaborationRun[], revision = 1): Snapshot
 }
 
 const cases: Record<string, () => Promise<void>> = {
+  'UI-SETTINGS: one settings entry preserves the active workspace and unsaved project edits': async () => {
+    const draft = { text: 'Keep this unfinished task', attachments: [{ id: 'settings-note', name: 'settings-note.txt', kind: 'text' as const,
+      ownedPath: '/settings-note.txt', mimeType: 'text/plain', size: 4, sha256: 'b'.repeat(64) }] };
+    const currentSession: Session = { ...session, id: 'settings-session', historyLoaded: true, draft };
+    const currentWorkspace: Workspace = { ...workspace, id: 'settings-workspace', tabs: [{ kind: 'agent', id: 'settings-tab', sessionId: currentSession.id }], activeTabId: 'settings-tab' };
+    const snapshot: Snapshot = { version: 1, sessions: [currentSession], workspaces: [currentWorkspace], providers: [provider], workflows: [], terminals: [], pluginErrors: [], pluginPath: '/plugins', dataPath: '/data' };
+    const watched: string[][] = [];
+    let subscriptions = 0, unsubscribed = 0;
+    window.workbench = {
+      ...applicationUpdateApi,
+      snapshot: async () => snapshot, subscribe: () => { subscriptions++; return () => { unsubscribed++; }; },
+      getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
+      onLanguageChanged: () => () => {}, setLanguage: async (preference: 'en') => ({ preference, language: 'en' }),
+      watchSessions: async (ids: string[]) => { watched.push(ids); },
+      listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {}, saveSessionDraft: async () => {},
+      providerHealth: async () => [provider], listSkills: async () => [],
+      mcpSettings: async () => ({ content: '{}', revision: 'settings-mcp-0', servers: [] }), notificationStatus: async () => ({ supported: true, state: 'idle' }),
+    } as unknown as Window['workbench'];
+    await render(<LanguageProvider initial={{ preference: 'en', language: 'en' }}><App /></LanguageProvider>);
+    await waitFor(() => Boolean(document.querySelector('.composer textarea')) && Boolean(watched.at(-1)?.includes(currentSession.id)), 'The initial workspace did not load its active session');
+    const textarea = input('.composer textarea');
+    const watchCount = watched.length;
+    const assertWorkspace = () => assert(input('.composer textarea') === textarea && textarea.value === draft.text
+      && document.querySelector('.composer .attachments-strip')?.textContent?.includes('settings-note.txt')
+      && watched.length === watchCount && subscriptions === 1 && unsubscribed === 0,
+    'Settings replaced the workspace, draft, attachments, or session subscriptions');
+    assert(document.querySelectorAll(`.sidebar-footer button[aria-label="${translate('shell:preferences.open')}"]`).length === 1
+      && !document.querySelector(`.workspace-header-actions button[aria-label="${translate('shell:app.projectTools')}"]`)
+      && !document.querySelector(`.chat-toolbar button[aria-label="${translate('workspace:chat.settings')}"]`),
+    'The application retains multiple settings entry buttons');
+    await click('shell:preferences.open');
+    assert(document.querySelector('.settings-nav') && document.querySelector('.language-settings [role=combobox]')
+      && document.querySelector('.appearance-options') && document.querySelector('.application-update-settings'), 'General settings omit a former preferences section');
+    assertWorkspace();
+    await click('shell:settings.project');
+    await click('workspace:tools.newSkill');
+    await change(input('.tools-editor input'), 'settings-draft');
+    await change(input('.tools-editor textarea'), 'Project edits survive settings navigation');
+    const skillEditor = input('.tools-editor textarea');
+    await click('shell:settings.general');
+    assert(skillEditor.isConnected && skillEditor.value === 'Project edits survive settings navigation', 'Leaving Project settings discarded its editor state');
+    await click('shell:app.providers');
+    const directory = document.querySelector<HTMLButtonElement>('.runtime-directory [role=combobox]')!;
+    assert(directory, 'The unified settings dialog omits runtime configuration');
+    const selectMenu = await openSelect(directory);
+    const dialog = document.querySelector<HTMLDialogElement>('dialog[open]')!;
+    assert(dialog.contains(selectMenu), 'The runtime menu was portaled behind the native settings dialog');
+    await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await tick(); });
+    await waitFor(() => !document.querySelector('[role=listbox][data-state=open]'), 'Escape did not close the runtime menu');
+    assert(dialog.open, 'Canceling a select also closed settings');
+    await click('shell:settings.session');
+    assert(document.querySelector('.session-settings'), 'Current-session actions are missing from the unified settings dialog');
+    await click('shell:common.close');
+    const confirmation = () => document.querySelector<HTMLDialogElement>(`dialog[aria-label="${translate('workspace:tools.unsavedTitle')}"]`);
+    const visibleConfirmation = () => {
+      const element = confirmation();
+      assert(element?.open && element.checkVisibility() && element.getClientRects().length > 0, 'The unsaved-project confirmation is hidden by the inactive Project section');
+      return element;
+    };
+    await act(async () => { visibleConfirmation().dispatchEvent(new Event('cancel', { bubbles: true, cancelable: true })); await tick(); });
+    assert(!confirmation() && dialog.open && skillEditor.isConnected, 'Escape in the confirmation also closed settings or discarded project edits');
+    await click('shell:common.close');
+    visibleConfirmation();
+    await click('workspace:tools.keepEditing');
+    assert(dialog.open && skillEditor.isConnected, 'Keeping project edits closed the unified settings dialog');
+    await click('shell:settings.project');
+    assert(input('.tools-editor textarea') === skillEditor && skillEditor.value === 'Project edits survive settings navigation', 'Returning to Project recreated or reset its editor');
+    await click('MCP'); await change(input('.config-editor'), 'Unsaved MCP settings');
+    await click('shell:settings.general'); await click('shell:settings.project');
+    assert(input('.config-editor').value === 'Unsaved MCP settings', 'Settings navigation reset unsaved MCP content');
+    assertWorkspace();
+    await click('shell:settings.general'); await click('shell:common.close');
+    visibleConfirmation(); await click('workspace:tools.discardChanges');
+    await waitFor(() => !document.querySelector('.settings-layout'), 'Confirmed discard did not close settings');
+    assertWorkspace();
+  },
+  'UI-TOOLTIPS: icon-only controls explain hover and focus without changing disabled actions': async () => {
+    let presses = 0;
+    await render(<><IconButton label="Explain action" onClick={() => { presses++; }}><span aria-hidden="true">+</span></IconButton>
+      <IconButton label="Unavailable action" disabled onClick={() => { presses++; }}><span aria-hidden="true">−</span></IconButton>
+      <button type="button">Outside tooltip</button></>);
+    const enabled = button('Explain action'), disabled = button('Unavailable action');
+    const tooltip = () => document.querySelector<HTMLElement>('[role=tooltip]');
+    const hover = async (element: HTMLElement) => act(async () => {
+      element.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerType: 'mouse', clientX: 10, clientY: 10 })); await tick();
+    });
+    assert(!enabled.hasAttribute('title') && !disabled.hasAttribute('title'), 'Icon buttons still use native title bubbles alongside application tooltips');
+    await hover(enabled);
+    await waitFor(() => tooltip()?.textContent === 'Explain action', 'Hovering an icon button did not display its explanation');
+    await act(async () => { enabled.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await tick(); });
+    await waitFor(() => !tooltip(), 'Escape did not dismiss the tooltip');
+    // Hidden Electron windows update activeElement without dispatching focus events.
+    await act(async () => { enabled.focus(); enabled.dispatchEvent(new FocusEvent('focusin', { bubbles: true })); await tick(); });
+    await waitFor(() => document.activeElement === enabled && tooltip()?.textContent === 'Explain action', 'Keyboard focus did not display the icon explanation');
+    await act(async () => { const outside = button('Outside tooltip'); outside.focus(); enabled.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: outside })); await tick(); });
+    await waitFor(() => !tooltip(), 'Leaving an icon button kept its tooltip open');
+    await hover(disabled);
+    await waitFor(() => tooltip()?.textContent === 'Unavailable action', 'A disabled icon button hides its explanation');
+    await act(async () => { disabled.click(); await tick(); });
+    assert(disabled.disabled && presses === 0, 'The tooltip enabled a disabled action');
+  },
   'UPDATES-UI: discovery, download and installation remain separate user actions': async () => {
     const release = { version: '0.8.2', title: 'Ensemble 0.8.2', notes: '## Changes\n\n- Keep your work when updating.', publishedAt: '2026-10-26T03:00:00Z', url: 'https://github.com/MeloMei/ensemble/releases/tag/v0.8.2', downloadUrl: 'https://github.com/MeloMei/ensemble/releases/download/v0.8.2/Ensemble-0.8.2-macOS-arm64.zip', sha256: 'a'.repeat(64), size: 1024 * 1024 };
     let state: AppUpdateState = installedUpdateState;
@@ -146,7 +268,7 @@ const cases: Record<string, () => Promise<void>> = {
       saveSkill: async (_id: string, value: { content: string; revision?: string }) => { skillWrites.push(value); await skillGate.promise; skillFile = { content: value.content, revision: `skill-${skillWrites.length}` }; },
       saveMcpSettings: async (_id: string, value: { content: string; revision: string }) => { mcpWrites.push(value); await mcpGate.promise; config = { ...config, content: value.content, revision: `mcp-${mcpWrites.length}` }; },
     } as unknown as Window['workbench'];
-    await render(<WorkspaceTools workspace={workspace} sessions={[]} perform={perform} onClose={() => {}} />);
+    await render(<ProjectSettings workspace={workspace} sessions={[]} perform={perform} onClose={() => {}} />);
     await click('workspace:tools.newSkill');
     await change(input('.tools-editor input'), 'demo');
     await change(input('.tools-editor textarea'), 'skill A');
@@ -192,7 +314,7 @@ const cases: Record<string, () => Promise<void>> = {
       saveMcpSettings: async (_id: string, value: { content: string }) => { config = { ...config, content: value.content, revision: 'mcp-1' }; },
     } as unknown as Window['workbench'];
     const selectSkill = async (index: number) => act(async () => { document.querySelectorAll<HTMLButtonElement>('.tools-list-item')[index].click(); await tick(); });
-    await render(<WorkspaceTools workspace={workspace} sessions={[]} perform={perform} onClose={() => { closed++; }} />);
+    await render(<ProjectSettings workspace={workspace} sessions={[]} perform={perform} onClose={() => { closed++; }} />);
     await selectSkill(0);
     pendingRead = deferred<void>(); await selectSkill(1);
     await change(input('.tools-editor textarea'), 'typed while loading');
@@ -218,7 +340,7 @@ const cases: Record<string, () => Promise<void>> = {
     await click('shell:common.close');
     assert(Number(closed) === 1 && !document.querySelector('dialog[aria-label="Unsaved changes"]'), 'Saved settings still blocked closing');
     await render(<div />);
-    await render(<WorkspaceTools workspace={workspace} sessions={[]} perform={perform} onClose={() => { closed++; }} />);
+    await render(<ProjectSettings workspace={workspace} sessions={[]} perform={perform} onClose={() => { closed++; }} />);
     await click('Skills'); await selectSkill(0);
     pendingRead = deferred<void>(); await selectSkill(1); await change(input('.tools-editor textarea'), 'late close draft');
     await click('shell:common.close'); pendingRead.resolve(); await settle(); pendingRead = undefined;
@@ -242,7 +364,7 @@ const cases: Record<string, () => Promise<void>> = {
       saveSkill: async (_id: string, value: { content: string; revision?: string }) => { writes.push(value); await saving?.promise; savedSkill = { content: value.content, revision: 'saved-1' }; },
       saveMcpSettings: async (_id: string, value: { revision: string }) => { mcpWrites.push(value.revision); if (value.revision !== config.revision) throw new Error('MCP revision changed'); },
     } as unknown as Window['workbench'];
-    const show = (value: Workspace) => render(<React.StrictMode><WorkspaceTools key={value.id} workspace={value} sessions={[]} perform={perform} onClose={() => {}} /></React.StrictMode>);
+    const show = (value: Workspace) => render(<React.StrictMode><ProjectSettings key={value.id} workspace={value} sessions={[]} perform={perform} onClose={() => {}} /></React.StrictMode>);
     await show(first); await click('workspace:tools.newSkill'); await change(input('.tools-editor input'), 'retained'); await change(input('.tools-editor textarea'), 'Skill before navigation');
     await click('MCP'); await change(input('.config-editor'), 'MCP before initial load'); await render(<div />);
     assert(registered.get('workspace-tools:tool-first')?.count === 2, 'Unmounting dropped the native close and removal guard');
@@ -291,7 +413,7 @@ const cases: Record<string, () => Promise<void>> = {
         await saveGate.promise; config = { content: value.content, revision: `mcp-${writes.length}`, servers: [server('server-B')] };
       },
     } as unknown as Window['workbench'];
-    const show = () => render(<WorkspaceTools workspace={target} sessions={[]} perform={perform} onClose={() => {}} />);
+    const show = () => render(<ProjectSettings workspace={target} sessions={[]} perform={perform} onClose={() => {}} />);
     await show(); await click('MCP'); await change(input('.config-editor'), 'MCP B'); await click('workspace:tools.saveConfig');
     await render(<div />); notificationGate = deferred<void>(); await show(); await click('MCP');
     assert(button('workspace:tools.saveConfig').disabled, 'The reopened editor forgot the pending save');
@@ -367,7 +489,10 @@ const cases: Record<string, () => Promise<void>> = {
     const configuredProvider: ProviderInfo = { ...provider, models: [{ id: 'model-a', name: 'Model A', free: false }, { id: 'model-b', name: 'Model B', free: false }] };
     const configuredSession: Session = { ...session, modelId: 'model-a' };
     const draft = { text: 'Keep this unfinished task', attachments: [{ id: 'attachment', name: 'note.txt', kind: 'text' as const, ownedPath: '/note.txt', mimeType: 'text/plain', size: 4, sha256: 'a'.repeat(64) }] };
-    const show = (overrides: Partial<Parameters<typeof SessionChat>[0]> = {}) => render(chat({ session: configuredSession, provider: configuredProvider, draft, onDraftChange: () => { draftChanges++; }, ...overrides }));
+    let settingsVisible = false;
+    const show = (overrides: Partial<Parameters<typeof SessionChat>[0]> = {}) => render(<>{chat({ session: configuredSession, provider: configuredProvider, draft, onDraftChange: () => { draftChanges++; }, ...overrides })}
+      {settingsVisible && <SessionSettingsPanel session={overrides.session ?? configuredSession} workspaceId={workspace.id} visible perform={perform} openSession={() => {}} />}
+    </>);
     const selector = (key: string) => `.composer-controls button[role=combobox][aria-label="${translate(`workspace:chat.${key}`)}"]`;
     const control = (key: string) => {
       const element = document.querySelector<HTMLButtonElement>(selector(key));
@@ -399,7 +524,7 @@ const cases: Record<string, () => Promise<void>> = {
     await show();
     const textarea = input('textarea');
     const assertDraft = () => assert(input('textarea') === textarea && textarea.value === draft.text && document.querySelector('.attachments-strip')?.textContent?.includes('note.txt') && draftChanges === 0, 'Session controls replaced or erased the unfinished draft');
-    assert(button('workspace:chat.settings').getAttribute('aria-expanded') === 'false' && controls().every(item => !item.disabled), 'Session controls require opening settings or are unavailable while idle');
+    assert(!document.querySelector(`.chat-toolbar button[aria-label="${translate('workspace:chat.settings')}"]`) && controls().every(item => !item.disabled), 'Session controls require opening settings or retain a duplicate settings entry');
     const modelTrigger = control('model');
     const list = await open('model');
     const selectedModel = list.querySelector<HTMLElement>('[role=option][data-value="model-a"]');
@@ -412,14 +537,14 @@ const cases: Record<string, () => Promise<void>> = {
     await choose('permissions', 'read-only');
     await choose('effort', 'high');
     await choose('model', 'model-b');
-    await click('workspace:chat.settings');
-    assert(!document.querySelector('.session-settings select, .session-settings [role=combobox]'), 'Advanced settings duplicate the inline session controls');
+    settingsVisible = true; await show();
+    assert(!document.querySelector('.session-settings [role=combobox]'), 'Advanced settings duplicate the inline session controls');
     await change(input('.session-skills input'), true);
     await choose('effort', '');
     await choose('model', '');
     assert(JSON.stringify(writes) === JSON.stringify([{ settings: { permission: 'read-only' } }, { settings: { effort: 'high' } }, { modelId: 'model-b' }, { settings: { skillIds: ['skill'] } }, { settings: { effort: null } }, { modelId: null }]), `A stale setting was sent: ${JSON.stringify(writes)}`);
     assertDraft();
-    await click('workspace:chat.settings');
+    settingsVisible = false; await show();
     await open('effort');
     await show({ session: { ...configuredSession, status: 'running' } });
     await waitFor(() => !menu(), 'An open session menu remained available after its session started running');
@@ -777,9 +902,9 @@ const cases: Record<string, () => Promise<void>> = {
       createWorkspace: async (input: Record<string, unknown>) => { creations.push(input); if (creations.length === 1) throw new Error('creation response lost'); return 'created-workspace'; },
     } as unknown as Window['workbench'];
     await render(<App />); await click('shell:app.addProject');
-    const mode = input('dialog select') as HTMLSelectElement;
-    assert(mode.value === 'directory', 'Creating a workspace silently defaults to a new worktree');
-    await change(input('.directory-field input'), '/fixture'); await change(mode, 'worktree');
+    const mode = document.querySelector<HTMLButtonElement>('dialog [role=combobox]')!;
+    assert(mode.textContent?.includes(translate('shell:app.currentDirectory')), 'Creating a workspace silently defaults to a new worktree');
+    await change(input('.directory-field input'), '/fixture'); await chooseOption(mode, 'worktree');
     await change(input(`input[placeholder="${translate('shell:app.worktreeBranchDefault')}"]`), 'codex/isolated');
     await click('shell:app.createWorkspace');
     await waitFor(() => creations.length === 1 && !button('shell:app.createWorkspace').disabled, 'Failed creation did not leave the editable dialog');
@@ -1031,17 +1156,18 @@ const cases: Record<string, () => Promise<void>> = {
       refreshProviders: async () => { refreshes++; }, sendPrompt: async () => { sends++; },
     } as unknown as Window['workbench'];
     const snapshot: Snapshot = { version: 1, sessions: [], workspaces: [workspace, other], providers: [checked('unknown', 'no-authentication-evidence')], workflows: [], terminals: [], pluginErrors: [], pluginPath: '/plugins', dataPath: '/data' };
-    await render(<ProvidersView snapshot={snapshot} perform={perform} pending={new Set()} />);
+    await render(<ProvidersContent snapshot={snapshot} perform={perform} pending={new Set()} />);
     const authentication = () => document.querySelector<HTMLElement>('[data-stage="authentication"]')!;
     assert(authentication().dataset.status === 'unknown' && document.querySelector('.availability.available'), 'A detected CLI was treated as authenticated');
-    await change(input('.runtime-directory select'), workspace.cwd);
-    await change(input('.runtime-directory select'), other.cwd);
+    const directory = () => document.querySelector<HTMLButtonElement>('.runtime-directory [role=combobox]')!;
+    await chooseOption(directory(), workspace.cwd);
+    await chooseOption(directory(), other.cwd);
     assert(authentication().dataset.status === 'unknown', 'Changing directories displayed another project authentication');
     await act(async () => { second.resolve([checked('ready', 'completed-turn')]); await tick(); });
     await waitFor(() => authentication().dataset.status === 'ready', 'Selected directory evidence did not load');
     await act(async () => { first.resolve([checked('error', 'runtime-authentication-error')]); await tick(); });
     assert(authentication().dataset.status === 'ready' && authentication().textContent?.includes('A task completed in this directory')
-      && (input('.runtime-directory select') as HTMLSelectElement).value === other.cwd, 'A late response replaced the newly selected directory');
+      && directory().textContent?.includes(other.name) && document.querySelector('.runtime-directory code')?.textContent === other.cwd, 'A late response replaced the newly selected directory');
     await click('shell:provider.refresh'); await settle();
     assert(refreshes === 1 && sends === 0 && requests.every(cwd => cwd === workspace.cwd || cwd === other.cwd), 'Health refresh sent a model task or lost directory scope');
     assert(document.querySelector('[data-stage="quota"]')?.getAttribute('data-status') === 'unknown' && authentication().querySelector('time')?.dateTime, 'Quota unknown or evidence time was omitted');
