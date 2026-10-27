@@ -57,7 +57,6 @@ export function ApplicationUpdateSettings({ state, error, pending, run }: Return
     {state && !state.supported && <p className="application-update-note">{t('updates.installedOnly')}</p>}
     {state?.supported && <>
       <label className="application-update-auto"><input type="checkbox" checked={state.autoCheck} disabled={busy} onChange={event => void run(() => window.workbench.setApplicationUpdateAutoCheck(event.target.checked))} /><span>{t('updates.autoCheck')}</span></label>
-      <p className="application-update-note">{t('updates.autoCheckNote')}</p>
       <p className="application-update-status" role="status" aria-live="polite">{t(`updates.phase.${state.phase}`)}{state.checkedAt && !['checking', 'downloading', 'installing'].includes(state.phase) && <small>{t('updates.checkedAt', { time: formatDate(state.checkedAt) })}</small>}</p>
       {state.release && <div className="application-update-release">
         <div className="application-update-release-heading"><strong>{state.release.title}</strong><a href={state.release.url} target="_blank" rel="noreferrer">{t('updates.releasePage')}<ArrowUpRight size={13} /></a></div>
