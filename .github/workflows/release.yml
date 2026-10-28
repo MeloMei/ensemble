@@ -1,8 +1,12 @@
-name: Publish Daily Release
+name: Publish Release
 
 "on":
+  workflow_run:
+    workflows: [Build]
+    types: [completed]
+    branches: [main]
   schedule:
-    - cron: '15 18 * * *'
+    - cron: '15 18-23 * * *'
       timezone: Asia/Shanghai
   workflow_dispatch:
 
@@ -12,12 +16,23 @@ permissions:
 concurrency:
   group: ensemble-release
   cancel-in-progress: false
+  queue: max
 
 jobs:
   publish:
-    if: github.ref == 'refs/heads/main'
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name != 'workflow_run' ||
+        (github.event.workflow_run.conclusion == 'success' &&
+         github.event.workflow_run.head_branch == 'main' &&
+         github.event.workflow_run.head_sha != '' &&
+         github.event.workflow_run.head_repository.full_name == github.repository &&
+         github.event.workflow_run.path == '.github/workflows/ci.yml' &&
+         contains(fromJSON('["push", "workflow_dispatch"]'), github.event.workflow_run.event)))
     runs-on: macos-15
     timeout-minutes: 30
+    env:
+      RELEASE_SOURCE: ${{ github.event.workflow_run.head_sha || github.sha }}
     permissions:
       actions: read
       contents: write
@@ -25,7 +40,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ env.RELEASE_SOURCE }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -38,7 +53,6 @@ jobs:
         id: plan
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_SOURCE: ${{ github.sha }}
         run: node scripts/prepare-release.mjs plan --repository "$GITHUB_REPOSITORY" --source "$RELEASE_SOURCE" --output "$RUNNER_TEMP/ensemble-release-plan.json"
       - name: Install locked dependencies
         if: steps.plan.outputs.build == 'true'

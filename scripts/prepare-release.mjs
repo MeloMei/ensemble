@@ -16,6 +16,10 @@ const automationAssets = new Map([
   ['ensemble-daily-v1', []],
   [automation, [updateFeedName]],
 ]);
+const releaseCalendar = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+  hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+});
 
 function versionParts(version) {
   const match = stableVersion.exec(version);
@@ -42,6 +46,46 @@ function successfulBuildRun(source, runs) {
 
 function matchesSource(release, source, tagSources) {
   return tagSources[release.tag_name] === source || release.body?.includes(sourceMarker(source)) || release.target_commitish === source;
+}
+
+function releaseSourceStatus(source, previousSource, comparison) {
+  if (source === previousSource) return 'identical';
+  if (comparison?.status === 'ahead' && comparison.merge_base_commit?.sha === previousSource) return 'ahead';
+  if (comparison?.status === 'behind' && comparison.merge_base_commit?.sha === source) return 'behind';
+  throw new Error('The release source does not share a linear main history with the latest published commit.');
+}
+
+function skippedSource(status) {
+  if (status === 'ahead') return undefined;
+  return { ready: false, reason: status === 'identical'
+    ? 'No new main commits since the latest stable release.'
+    : 'A newer main source has already been published.' };
+}
+
+function releaseCalendarTime(date) {
+  const parts = Object.fromEntries(releaseCalendar.formatToParts(date).map(part => [part.type, part.value]));
+  return { day: `${parts.year}-${parts.month}-${parts.day}`, minute: Number(parts.hour) * 60 + Number(parts.minute) };
+}
+
+function publicationWindow(releases, { now, eventName }) {
+  if (!(now instanceof Date) || !Number.isFinite(now.getTime())) throw new Error('A valid release clock time is required.');
+  const current = releaseCalendarTime(now);
+  const published = releases.filter(release => release.draft === false && release.prerelease === false
+    && typeof release.tag_name === 'string' && release.tag_name.startsWith('v') && stableVersion.test(release.tag_name));
+  const dated = published.map(release => {
+    const date = new Date(release.published_at);
+    if (typeof release.published_at !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(release.published_at)
+      || !Number.isFinite(date.getTime()) || date.toISOString().slice(0, 19) !== release.published_at.slice(0, 19)) {
+      throw new Error(`The stable release ${release.tag_name} has no valid GitHub published_at timestamp.`);
+    }
+    return { release, day: releaseCalendarTime(date).day };
+  });
+  const existing = dated.find(item => item.day === current.day)?.release;
+  if (existing) return { ready: false, reason: `A stable release has already been published on ${current.day} in Asia/Shanghai.`, releaseUrl: existing.html_url };
+  if (eventName !== 'workflow_dispatch' && current.minute < 18 * 60 + 15) {
+    return { ready: false, reason: 'Automatic releases wait until 18:15 in Asia/Shanghai.' };
+  }
+  return undefined;
 }
 
 function automationRecord(release) {
@@ -82,13 +126,17 @@ function verifyRelease(release, expected, draft) {
   return record;
 }
 
-export function releasePlan({ source, previousSource, latestVersion, releases, tags, tagSources, packageVersion, workflowRuns }) {
+export function releasePlan({ source, previousSource, sourceComparison, latestVersion, releases, tags, tagSources, packageVersion, workflowRuns,
+  now = new Date(), eventName = process.env.GITHUB_EVENT_NAME }) {
   if (!sourceSha(source) || !sourceSha(previousSource)) throw new Error('Release sources must be full commit SHAs.');
   versionParts(packageVersion); versionParts(latestVersion);
+  const closed = publicationWindow(releases, { now, eventName });
+  if (closed) return closed;
   const published = releases.find(release => !release.draft && !release.prerelease && matchesSource(release, source, tagSources));
   if (published) return { ready: false, reason: 'This main source has already been published.', releaseUrl: published.html_url };
   // Merge and revert commits count even when their final trees are identical.
-  if (source === previousSource) return { ready: false, reason: 'No new main commits since the latest stable release.' };
+  const skipped = skippedSource(releaseSourceStatus(source, previousSource, sourceComparison));
+  if (skipped) return skipped;
   const ci = successfulBuildRun(source, workflowRuns);
   const drafts = releases.filter(release => release.draft && (matchesSource(release, source, tagSources) || release.target_commitish === 'main'));
   if (drafts.length > 1) throw new Error('Multiple drafts may refer to this source. Inspect them before retrying; none was changed.');
@@ -162,6 +210,14 @@ async function tagSource(client, tag, allowMissing = false) {
   throw new Error('The release tag contains too many annotated tag references.');
 }
 
+async function latestReleaseSource(client, source) {
+  const latest = await client.request('releases/latest');
+  if (latest.draft || latest.prerelease || !/^v\d+\.\d+\.\d+$/.test(latest.tag_name)) throw new Error('Latest must point to a stable Ensemble release.');
+  const previousSource = await tagSource(client, latest.tag_name);
+  const sourceComparison = source === previousSource ? undefined : await client.request(`compare/${previousSource}...${source}`);
+  return { latest, previousSource, sourceComparison, status: releaseSourceStatus(source, previousSource, sourceComparison) };
+}
+
 async function remoteTagSources(client, releases) {
   const result = {};
   for (const release of releases) if (/^v\d+\.\d+\.\d+$/.test(release.tag_name)) result[release.tag_name] = await tagSource(client, release.tag_name, release.draft);
@@ -175,16 +231,15 @@ export function releaseNotes(generated, source) {
 
 async function plan(client, source, output) {
   assertSource(source);
-  const latest = await client.request('releases/latest');
-  if (latest.draft || latest.prerelease || !/^v\d+\.\d+\.\d+$/.test(latest.tag_name)) throw new Error('Latest must point to a stable Ensemble release.');
-  const previousSource = git('rev-parse', `${latest.tag_name}^{commit}`);
-  execFileSync('git', ['merge-base', '--is-ancestor', previousSource, source], { cwd: projectRoot });
+  const { latest, previousSource, sourceComparison, status } = await latestReleaseSource(client, source);
   const tags = git('tag', '--list').split('\n').filter(tag => stableVersion.test(tag));
   const tagSources = Object.fromEntries(tags.map(tag => [tag, git('rev-parse', `${tag}^{commit}`)]));
   const releases = await client.pages('releases');
   const pkg = JSON.parse(await readFile(join(projectRoot, 'package.json'), 'utf8'));
-  const result = releasePlan({ source, previousSource, latestVersion: latest.tag_name, releases, tags, tagSources, packageVersion: pkg.version,
-    workflowRuns: source !== previousSource ? await passedWorkflowRuns(client, source) : [] });
+  const now = new Date(); const eventName = process.env.GITHUB_EVENT_NAME;
+  const canPrepare = status === 'ahead' && !publicationWindow(releases, { now, eventName });
+  const result = releasePlan({ source, previousSource, sourceComparison, latestVersion: latest.tag_name, releases, tags, tagSources, packageVersion: pkg.version,
+    workflowRuns: canPrepare ? await passedWorkflowRuns(client, source) : [], now, eventName });
   if (result.ready) {
     if (result.action === 'create') {
       const generated = await client.request('releases/generate-notes', { method: 'POST', json: { tag_name: result.tag, target_commitish: source, previous_tag_name: latest.tag_name } });
@@ -201,24 +256,26 @@ async function plan(client, source, output) {
   return result;
 }
 
-async function canPublishLatest(client, planned) {
-  const latest = await client.request('releases/latest');
-  if (latest.draft || latest.prerelease || !/^v\d+\.\d+\.\d+$/.test(latest.tag_name)) throw new Error('Latest is not a stable release.');
-  const latestSource = await tagSource(client, latest.tag_name);
-  if (latestSource === planned.source) return latest;
+async function canPublishLatest(client, planned, { releases, now, eventName }) {
+  const closed = publicationWindow(releases, { now, eventName });
+  if (closed) return { reason: closed.reason, releaseUrl: closed.releaseUrl };
+  const { latest, status } = await latestReleaseSource(client, planned.source);
+  const skipped = skippedSource(status);
+  if (skipped) return { reason: skipped.reason, releaseUrl: latest.html_url };
   if (compareVersions(planned.version, latest.tag_name) <= 0) throw new Error('A newer release now exists; this draft was not published.');
-  const comparison = await client.request(`compare/${latestSource}...${planned.source}`);
-  if (comparison.status !== 'ahead' || comparison.merge_base_commit?.sha !== latestSource) throw new Error('This source does not advance the latest published main commit; the draft was not published.');
   return undefined;
 }
 
-export async function publishRelease(client, planned, directory, { source, packageVersion, workflowRuns }) {
+export async function publishRelease(client, planned, directory, { source, packageVersion, workflowRuns,
+  clock = () => new Date(), eventName = process.env.GITHUB_EVENT_NAME }) {
   if (!planned.ready || !['create', 'resume'].includes(planned.action) || planned.repository !== client.repository || planned.source !== source
     || !sourceSha(source) || planned.tag !== `v${planned.version}` || planned.title !== `Ensemble v${planned.version}`
     || !planned.body?.includes(sourceMarker(source)) || sha256(planned.body) !== planned.notesSha256
     || planned.action === 'create' && planned.version !== packageVersion) throw new Error('The release plan, package version, notes, and source do not match.');
   successfulBuildRun(source, workflowRuns);
   const releases = await client.pages('releases');
+  const skipped = await canPublishLatest(client, planned, { releases, now: clock(), eventName });
+  if (skipped) return { published: false, skipped: true, ...skipped };
   const tagSources = await remoteTagSources(client, releases);
   const published = releases.find(release => !release.draft && !release.prerelease && matchesSource(release, source, tagSources));
   if (published) return { published: false, skipped: true, reason: 'This source has already been published.', releaseUrl: published.html_url };
@@ -238,7 +295,7 @@ export async function publishRelease(client, planned, directory, { source, packa
       const packageNames = new Set(macReleaseAssets(planned.version, 'arm64'));
       const feed = {
         tag_name: planned.tag, name: planned.title, body: planned.body, html_url: releaseUrl,
-        published_at: new Date().toISOString(), draft: false, prerelease: false,
+        published_at: clock().toISOString(), draft: false, prerelease: false,
         assets: assets.filter(asset => packageNames.has(asset.name)).map(asset => ({
           ...asset, browser_download_url: `${downloadUrl}/${asset.name}`,
         })),
@@ -266,8 +323,8 @@ export async function publishRelease(client, planned, directory, { source, packa
       verifyRelease(staged, planned, true);
     }
     if (await tagSource(client, planned.tag) !== source) throw new Error('The actual release tag no longer points to the fixed source.');
-    const alreadyPublished = await canPublishLatest(client, planned);
-    if (alreadyPublished) return { published: false, skipped: true, reason: 'This source was published while preparing the draft.', releaseUrl: alreadyPublished.html_url };
+    const alreadyPublished = await canPublishLatest(client, planned, { releases: await client.pages('releases'), now: clock(), eventName });
+    if (alreadyPublished) return { published: false, skipped: true, ...alreadyPublished };
     publicationRequested = true;
     const release = await client.request(`releases/${staged.id}`, { method: 'PATCH', json: { draft: false, prerelease: false, make_latest: 'true' } });
     verifyRelease(release, planned, false);
@@ -305,7 +362,7 @@ async function main() {
     });
     if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY, result.published
       ? `## Release published and marked Latest\n\n${result.releaseUrl}\n\nSource: \`${result.source}\`\n\nAll recorded release assets were verified before publication. Installed apps can discover this release.\n`
-      : `${result.reason}\n\n${result.releaseUrl}\n`);
+      : `${result.reason}${result.releaseUrl ? `\n\n${result.releaseUrl}` : ''}\n`);
   } else throw new Error('Use plan or publish.');
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
