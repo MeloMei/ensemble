@@ -112,7 +112,10 @@ function registerIPC(commands: string[]): void {
       return handler(...args);
     });
   };
-  for (const command of commands) if (command !== 'workbench:snapshot') handle(command, (...args) => backend.call(command, ...args));
+  for (const command of commands) if (command !== 'workbench:snapshot') handle(command, async (...args) => {
+    await updates.waitForStartupConfirmation();
+    return backend.call(command, ...args);
+  });
   handle('workbench:snapshot', () => latestSnapshot ?? backend.snapshot());
   handle('workbench:get-connection', () => connection.current);
   handle('workbench:watch-sessions', async input => {

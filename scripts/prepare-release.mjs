@@ -226,7 +226,7 @@ async function remoteTagSources(client, releases) {
 
 export function releaseNotes(generated, source) {
   const notes = generated.replace(/^## What's Changed$/gm, '## 本版更新').replace(/^## New Contributors$/gm, '## 新贡献者').replace(/\*\*Full Changelog\*\*/g, '**完整变更**');
-  return `${notes.trim()}\n\n## 安装与更新\n\n下载 macOS arm64 安装包。DMG 打开后将 Ensemble.app 拖入“应用程序”；ZIP 解压后将应用移到 /Applications。已有版本请先完成正在执行的任务。模型服务和 Agent 运行时需要单独安装、认证并承担相应费用。\n\n## 发布范围\n\n- 本版面向 Apple Silicon Mac，未提供 Intel 安装包。\n- 应用采用 ad-hoc 签名，未做 Developer ID 签名或 Apple 公证，首次打开可能被 macOS 拦截。请核对下载来源和 SHA256SUMS，并参考 [Apple 官方说明](https://support.apple.com/102445) 处理系统提示。\n\n${sourceMarker(source)}\n`;
+  return `${notes.trim()}\n\n## 安装与更新\n\n首次安装：下载 macOS arm64 安装包。DMG 打开后将 Ensemble.app 拖入“应用程序”；ZIP 解压后将应用移到 /Applications。\n\n应用内更新：完成正在执行的任务后，在偏好设置中下载更新，点击“重启并安装”。Ensemble 会自动替换原应用并重启，无需手动删除旧版或重新拖入安装。\n\n模型服务和 Agent 运行时需要单独安装、认证并承担相应费用。\n\n## 发布范围\n\n- 本版面向 Apple Silicon Mac，未提供 Intel 安装包。\n- 应用采用 ad-hoc 签名，未做 Developer ID 签名或 Apple 公证，首次打开可能被 macOS 拦截。请核对下载来源和 SHA256SUMS，并参考 [Apple 官方说明](https://support.apple.com/102445) 处理系统提示。\n\n${sourceMarker(source)}\n`;
 }
 
 async function plan(client, source, output) {
