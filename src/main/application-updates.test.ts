@@ -207,18 +207,39 @@ test('renderer readiness keeps the backend frozen until the matching installed r
   const f = await fixture(); const token = randomUUID(); const cancellations: string[] = [];
   const updates = new ApplicationUpdates({ ...f.options, async cancelInstall(value) { cancellations.push(value); } });
   try {
-    await updates.load();
+    await mkdir(join(f.data, 'updates'));
+    await writeFile(join(f.data, 'updates', 'result.json'), JSON.stringify({ status: 'error', token: randomUUID(), version: f.options.currentVersion }));
     await writeFile(join(f.data, 'updates', 'pending.json'), JSON.stringify({ token, version: f.options.currentVersion }));
+    await updates.load();
+    assert.equal(updates.snapshot.phase, 'installing'); assert.equal(updates.snapshot.error, undefined);
+    let commandsReleased = false;
+    const commands = updates.waitForStartupConfirmation().then(() => { commandsReleased = true; });
     const ready = updates.acknowledgeReady();
     for (let attempt = 0; attempt < 50; attempt++) {
       if ((await readdir(join(f.data, 'updates'))).includes(`ready-${token}`)) break;
       await new Promise(resolveReady => setTimeout(resolveReady, 5));
     }
     assert.deepEqual(cancellations, []);
+    assert.equal(commandsReleased, false);
     await writeFile(join(f.data, 'updates', 'result.json'), JSON.stringify({ status: 'installed', token: randomUUID(), version: f.options.currentVersion }));
-    await new Promise(resolveReady => setTimeout(resolveReady, 120)); assert.deepEqual(cancellations, []);
+    await new Promise(resolveReady => setTimeout(resolveReady, 120)); assert.deepEqual(cancellations, []); assert.equal(commandsReleased, false);
     await writeFile(join(f.data, 'updates', 'result.json'), JSON.stringify({ status: 'installed', token, version: f.options.currentVersion }));
-    await ready; assert.deepEqual(cancellations, [token]);
+    await ready; await commands; assert.deepEqual(cancellations, [token]);
+    assert.equal(commandsReleased, true); assert.equal(updates.snapshot.phase, 'current'); assert.equal(updates.snapshot.error, undefined);
+  } finally { await updates.dispose(); await rm(f.root, { recursive: true, force: true }); }
+});
+
+test('failed startup confirmation rejects queued renderer commands and reports the error', async () => {
+  const f = await fixture(); const updates = new ApplicationUpdates(f.options);
+  try {
+    await mkdir(join(f.data, 'updates'));
+    await writeFile(join(f.data, 'updates', 'pending.json'), JSON.stringify({ token: randomUUID(), version: f.options.currentVersion }));
+    await updates.load();
+    const blocked = assert.rejects(updates.waitForStartupConfirmation(), /安装记录已丢失/);
+    await rm(join(f.data, 'updates', 'pending.json'));
+    await assert.rejects(updates.acknowledgeReady(), /安装记录已丢失/);
+    await blocked;
+    assert.equal(updates.snapshot.phase, 'error'); assert.match(updates.snapshot.error!, /安装记录已丢失/);
   } finally { await updates.dispose(); await rm(f.root, { recursive: true, force: true }); }
 });
 
@@ -273,6 +294,8 @@ test('the detached helper commits a healthy bundle and rolls back a failed new l
       const result = JSON.parse(await readFile(join(updatesPath, 'result.json'), 'utf8'));
       assert.equal(result.status, healthy ? 'installed' : 'error');
       assert.equal(result.token, token);
+      assert.equal(result.phase, healthy ? 'commit' : 'wait-new-ready');
+      assert.equal(result.exitCode, healthy ? 0 : 1);
       assert.equal(await readFile(join(f.data, 'state.json'), 'utf8'), 'preserve user data');
       assert.equal((await readdir(f.root)).some(name => name.startsWith('.ensemble-update-')), false);
       for (let attempt = 0; attempt < 100; attempt++) {

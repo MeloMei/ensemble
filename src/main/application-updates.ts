@@ -228,6 +228,7 @@ export class ApplicationUpdates {
   private checkFailure?: z.infer<typeof checkFailureSchema>;
   private failedChecks = 0;
   private disposed = false;
+  private startupConfirmation?: { promise: Promise<void>; resolve(): void; reject(error: unknown): void };
   private readonly cachePath: string;
   private readonly updatePath: string;
 
@@ -259,8 +260,18 @@ export class ApplicationUpdates {
       } else if (cache.data.checkedAt) this.state.phase = 'current';
       if (this.checkFailure) this.state = { ...this.state, ...this.checkFailure, phase: this.stageRoot ? 'ready' : 'error' };
     }
+    const pending = pendingSchema.safeParse(await readJson(join(this.updatePath, 'pending.json')).catch(() => undefined));
     const result = z.object({ status: z.enum(['installed', 'error', 'rollback-failed']), token: uuid, version: stableVersion }).safeParse(await readJson(join(this.updatePath, 'result.json')).catch(() => undefined));
-    if (result.success && result.data.status !== 'installed' && !semver.gt(this.options.currentVersion, result.data.version)) {
+    const confirming = pending.success && pending.data.version === this.options.currentVersion
+      && !(result.success && result.data.status === 'installed' && result.data.version === pending.data.version && result.data.token === pending.data.token);
+    if (confirming) {
+      let resolve!: () => void; let reject!: (error: unknown) => void;
+      const promise = new Promise<void>((onReady, onError) => { resolve = onReady; reject = onError; });
+      void promise.catch(() => {});
+      this.startupConfirmation = { promise, resolve, reject };
+      this.state.phase = 'installing';
+    }
+    if (!confirming && result.success && result.data.status !== 'installed' && !semver.gt(this.options.currentVersion, result.data.version)) {
       this.state.error = result.data.status === 'rollback-failed'
         ? '更新未完成，自动恢复也未完成。请保留安装目录中的恢复副本，查看更新日志后处理。'
         : '上次更新未完成，已恢复原来的应用。请重新检查后重试。';
@@ -268,6 +279,8 @@ export class ApplicationUpdates {
     }
     this.changed();
   }
+
+  async waitForStartupConfirmation(): Promise<void> { await this.startupConfirmation?.promise; }
 
   schedule(): void {
     if (this.disposed || !this.state.supported || !this.options.getAutoCheck()) return;
@@ -409,20 +422,33 @@ export class ApplicationUpdates {
   }
 
   async acknowledgeReady(): Promise<void> {
-    const pending = pendingSchema.safeParse(await readJson(join(this.updatePath, 'pending.json')));
-    if (!pending.success || pending.data.version !== this.options.currentVersion) return;
-    await writeFile(join(this.updatePath, `ready-${pending.data.token}`), String(process.pid), { mode: 0o600 });
-    const deadline = Date.now() + 20_000;
-    while (Date.now() < deadline) {
-      const result = await readJson(join(this.updatePath, 'result.json'));
-      if (result && typeof result === 'object' && 'status' in result && result.status === 'installed'
-        && 'version' in result && result.version === pending.data.version && 'token' in result && result.token === pending.data.token) {
-        await this.options.cancelInstall(pending.data.token);
+    try {
+      const pending = pendingSchema.safeParse(await readJson(join(this.updatePath, 'pending.json')));
+      if (!pending.success || pending.data.version !== this.options.currentVersion) {
+        if (this.startupConfirmation) throw new Error('更新安装记录已丢失，请重新打开 Ensemble。');
         return;
       }
-      await new Promise(resolveCheck => setTimeout(resolveCheck, 100));
+      await writeFile(join(this.updatePath, `ready-${pending.data.token}`), String(process.pid), { mode: 0o600 });
+      const deadline = Date.now() + 20_000;
+      while (Date.now() < deadline) {
+        const result = await readJson(join(this.updatePath, 'result.json'));
+        if (result && typeof result === 'object' && 'status' in result && result.status === 'installed'
+          && 'version' in result && result.version === pending.data.version && 'token' in result && result.token === pending.data.token) {
+          await this.options.cancelInstall(pending.data.token);
+          this.state = { ...this.state, phase: this.checkFailure ? 'error' : this.state.release ? 'available' : 'current',
+            error: this.checkFailure?.error, errorCode: this.checkFailure?.errorCode, retryAt: this.checkFailure?.retryAt };
+          this.changed();
+          this.startupConfirmation?.resolve();
+          return;
+        }
+        await new Promise(resolveCheck => setTimeout(resolveCheck, 100));
+      }
+      throw new Error('新版已经启动，但安装确认未完成。请稍后重新打开 Ensemble。');
+    } catch (error) {
+      this.state = { ...this.state, phase: 'error', error: errorText(error) }; this.changed();
+      this.startupConfirmation?.reject(error);
+      throw error;
     }
-    throw new Error('新版已经启动，但安装确认未完成。请稍后重新打开 Ensemble。');
   }
 
   async dispose(): Promise<void> {
