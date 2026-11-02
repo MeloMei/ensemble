@@ -45,7 +45,7 @@ async function fixture(run: (context: TurnContext) => Promise<void> = async () =
       current.store = new StateStore(statePath); await current.store.load();
       current.engine = new WorkbenchEngine(current.store, '', () => {}); current.engine.setProviders([provider], [], []);
       await current.engine.prepareExecutionKeys();
-      current.worktrees = new ManagedWorktrees(current.store, current.engine, managed);
+      current.worktrees = new ManagedWorktrees(current.store, current.engine, current.managed);
     },
     async close() { await current.engine.shutdown(); await rm(directory, { recursive: true, force: true }); },
   };
@@ -108,6 +108,41 @@ test('managed removal preserves dirty, untracked, unmerged and running or queued
     assert.equal(f.worktrees.metadata(id)?.path, metadata.path); assert.equal((await stat(metadata.path)).isDirectory(), true);
     assert.equal(await readFile(join(f.nested, 'entry.txt'), 'utf8'), 'base contents\n');
   } finally { await f.close(); }
+});
+
+test('managed removal preserves ignored local files', async () => {
+  const f = await fixture();
+  try {
+    await writeFile(join(f.source, '.gitignore'), 'local/\n');
+    git(f.source, 'add', '.gitignore'); git(f.source, 'commit', '-qm', 'ignore local files');
+    const id = await f.worktrees.create({ name: 'ignored', cwd: f.nested, mode: 'worktree', commandId: 'ignored' });
+    const metadata = f.worktrees.metadata(id)!;
+    const local = join(metadata.path, 'local'); await mkdir(local);
+    const file = join(local, 'notes.txt'); await writeFile(file, 'local data\n');
+    await assert.rejects(f.worktrees.remove(id), /未提交/);
+    assert.equal(await readFile(file, 'utf8'), 'local data\n');
+    assert.equal(git(f.source, 'rev-parse', `refs/heads/${metadata.branch}`), metadata.baseSha);
+    await rm(local, { recursive: true });
+    await f.worktrees.remove(id);
+    await assert.rejects(stat(metadata.path), { code: 'ENOENT' });
+  } finally { await f.close(); }
+});
+
+test('managed removal preserves edits hidden by index flags', async t => {
+  for (const flag of ['assume-unchanged', 'skip-worktree'] as const) await t.test(flag, async () => {
+    const f = await fixture();
+    try {
+      const id = await f.worktrees.create({ name: flag, cwd: f.nested, mode: 'worktree', commandId: flag });
+      const metadata = f.worktrees.metadata(id)!;
+      const file = join(f.engine.workspace(id).cwd, 'entry.txt');
+      git(metadata.path, 'update-index', `--${flag}`, 'packages/app/entry.txt');
+      await writeFile(file, 'hidden local edit\n');
+      const indexBefore = git(metadata.path, 'ls-files', '-v', '--', 'packages/app/entry.txt');
+      await assert.rejects(f.worktrees.remove(id), /索引标记/);
+      assert.equal(await readFile(file, 'utf8'), 'hidden local edit\n');
+      assert.equal(git(metadata.path, 'ls-files', '-v', '--', 'packages/app/entry.txt'), indexBefore);
+    } finally { await f.close(); }
+  });
 });
 
 test('an uncommitted source directory is rejected before creating an orphan checkout or branch', async () => {
@@ -265,6 +300,29 @@ test('creating journal operations recover before and after the native checkout w
       assert.equal(git(f.source, 'worktree', 'list', '--porcelain').split('\n').filter(line => line === `worktree ${recorded.path}`).length, 1);
     } finally { await f.close(); }
   });
+});
+
+test('a managed path containing a newline recovers an existing checkout and can be removed', async () => {
+  const f = await fixture();
+  try {
+    f.managed = join(f.directory, 'managed\ncheckout');
+    f.worktrees = new ManagedWorktrees(f.store, f.engine, f.managed);
+    const input = { name: 'newline path', cwd: f.nested, mode: 'worktree' as const, commandId: 'newline-path' };
+    f.engine.withProjectMutation = async () => {
+      const intent = f.store.state.worktreeOperations![0];
+      git(intent.repoRoot, 'worktree', 'add', '-b', intent.branch, intent.path, intent.baseSha);
+      throw new Error('simulated backend exit after checkout');
+    };
+    await assert.rejects(f.worktrees.create(input), /simulated backend exit/);
+    const path = f.store.state.worktreeOperations![0].path;
+    assert(path.includes('\n'));
+    await f.restart();
+    const id = await f.worktrees.create(input);
+    assert.equal(f.worktrees.metadata(id)?.path, path);
+    await f.worktrees.remove(id);
+    await assert.rejects(stat(path), { code: 'ENOENT' });
+    assert.equal(f.store.state.worktreeOperations![0].status, 'removed');
+  } finally { await f.close(); }
 });
 
 test('removal and queued-message admission cannot delete accepted work', async () => {
