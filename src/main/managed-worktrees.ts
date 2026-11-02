@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { lstat, mkdir, realpath, stat } from 'node:fs/promises';
 import { basename, dirname, join, relative, sep } from 'node:path';
 import { promisify } from 'node:util';
@@ -17,6 +17,42 @@ async function git(cwd: string, args: string[]): Promise<string> {
     env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
   return result.stdout.trim();
 }
+
+async function hasStatusSuppressionFlags(cwd: string): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('git', ['ls-files', '-v', '-z'], { cwd, timeout: 30_000, windowsHide: true,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
+    let atRecordStart = true;
+    let found = false;
+    let stderr = '';
+    child.stdout.on('data', (chunk: Buffer) => {
+      if (found) return;
+      for (const byte of chunk) {
+        if (atRecordStart) {
+          const tag = String.fromCharCode(byte);
+          if (tag === 'S' || (tag >= 'a' && tag <= 'z')) { found = true; break; }
+        }
+        atRecordStart = byte === 0;
+      }
+    });
+    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8').slice(0, 8192 - stderr.length); });
+    child.on('error', reject);
+    child.on('close', (code, signal) => {
+      if (code === 0) resolve(found);
+      else reject(new Error(stderr.trim() || `Git index inspection failed (${signal ?? code})`));
+    });
+  });
+}
+
+async function assertSafeWorktreeRemoval(cwd: string): Promise<void> {
+  if (await git(cwd, ['status', '--porcelain=v1', '--untracked-files=normal', '--ignored=matching'])) {
+    throw new Error('工作区有未提交或被忽略的文件，保留目录和分支。');
+  }
+  if (await hasStatusSuppressionFlags(cwd)) {
+    throw new Error('工作区索引标记可能隐藏文件修改，无法安全判断，保留目录和分支。');
+  }
+}
+
 export class ManagedWorktrees {
   private readonly requests = new Map<string, { hash: string; promise: Promise<string> }>();
   private readonly repositories = new Map<string, Promise<unknown>>();
@@ -169,7 +205,7 @@ export class ManagedWorktrees {
         if (exists) {
           if (!await this.registered(operation)) throw new Error('Git 工作区已变化，不能根据旧记录删除目录。');
           if (await git(operation.path, ['symbolic-ref', '--short', 'HEAD']) !== operation.branch) throw new Error('工作区已切换分支，不能自动回收。');
-          if (await git(operation.path, ['status', '--porcelain=v1', '--untracked-files=all'])) throw new Error('工作区有未提交文件，保留目录和分支。');
+          await assertSafeWorktreeRemoval(operation.path);
           const head = await git(operation.path, ['rev-parse', 'HEAD']);
           await this.assertMerged(operation, head);
           checkReferences();
@@ -230,7 +266,7 @@ export class ManagedWorktrees {
   }
 
   private async registered(operation: WorktreeOperation): Promise<boolean> {
-    const fields = (await git(operation.repoRoot, ['worktree', 'list', '--porcelain', '-z'])).split(/[\0\n]/);
+    const fields = (await git(operation.repoRoot, ['worktree', 'list', '--porcelain', '-z'])).split('\0');
     return fields.includes(`worktree ${operation.path}`);
   }
 
