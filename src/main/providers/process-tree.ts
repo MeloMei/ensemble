@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process';
 
 export function signalProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
   if (!child.pid) return;
@@ -15,4 +15,15 @@ export function signalProcessTree(child: ChildProcess, signal: NodeJS.Signals): 
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
   }
+}
+
+export function watchOutputDrain(child: ChildProcessWithoutNullStreams, onTimeout: () => void): void {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  child.once('exit', () => {
+    timer = setTimeout(() => {
+      try { onTimeout(); }
+      finally { child.stdout.destroy(); child.stderr.destroy(); }
+    }, 1_000);
+  });
+  child.once('close', () => clearTimeout(timer));
 }

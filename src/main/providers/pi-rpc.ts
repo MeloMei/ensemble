@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createNdjsonDecoder } from './ndjson';
-import { signalProcessTree } from './process-tree';
+import { signalProcessTree, watchOutputDrain } from './process-tree';
 import { abortError, asError } from './json-rpc';
 
 export type PiRecord = Record<string, unknown>;
@@ -20,7 +20,6 @@ export class PiRpcProcess {
   private stopping = false;
   private abort = new AbortController();
   private resolveClosed!: () => void;
-  private exitDrainTimer?: ReturnType<typeof setTimeout>;
 
   constructor(command: string, args: string[], options: { cwd: string; env?: NodeJS.ProcessEnv; signal?: AbortSignal; onEvent?(event: PiRecord): void; onFailure?(error: Error): void }) {
     this.closed = new Promise(resolve => { this.resolveClosed = resolve; });
@@ -51,9 +50,9 @@ export class PiRpcProcess {
     this.child.stderr.on('data', (chunk: string) => { this.stderr = (this.stderr + chunk).slice(-8_192); });
     for (const stream of [this.child.stdin, this.child.stdout, this.child.stderr]) stream.on('error', fail);
     this.child.on('error', fail);
-    this.child.on('exit', () => { this.exitDrainTimer = setTimeout(() => { fail(new Error('Pi 已退出，但输出连接仍未关闭。')); this.child.stdout.destroy(); this.child.stderr.destroy(); }, 1_000); });
+    watchOutputDrain(this.child, () => fail(new Error('Pi 已退出，但输出连接仍未关闭。')));
     this.child.on('close', (code, signal) => {
-      this.exited = true; clearTimeout(this.exitDrainTimer);
+      this.exited = true;
       if (!this.failure) { try { decoder.end(); } catch (error) { fail(error); } }
       if (!this.stopping) fail(new Error(`Pi 连接提前关闭（${code ?? signal ?? 'unknown'}）。${this.stderr}`));
       for (const item of this.pending.values()) { clearTimeout(item.timer); item.reject(this.failure ?? new Error('Pi 连接已关闭。')); }

@@ -6,7 +6,7 @@ import * as acp from '@agentclientprotocol/sdk';
 import type { ProviderAdapter, TurnContext } from './types';
 import type { AcpConfigChoice, AcpLaunchSpec, AcpRuntimeDescriptor } from './acp-types';
 import { abortError, asError } from './json-rpc';
-import { signalProcessTree } from './process-tree';
+import { signalProcessTree, watchOutputDrain } from './process-tree';
 import { attachmentText, emitProcess, processStatus, processText } from './provider-events';
 import { answerFormElicitation } from './form-elicitation';
 import { PRODUCT_ID, PRODUCT_NAME, PRODUCT_VERSION } from '../../shared/app-identity';
@@ -74,6 +74,7 @@ class AcpSession {
     });
     this.exited = new Promise(resolve => this.child.once('close', () => { this.closed = true; resolve(); }));
     this.child.on('error', error => { this.fatal = error; this.connection?.close(error); });
+    watchOutputDrain(this.child, () => this.connection.close(new Error('ACP 进程已退出，但子进程仍占用输出连接')));
     this.child.stderr.resume();
     const app = acp.client({ name: PRODUCT_ID })
       .onNotification(acp.methods.client.session.update, event => this.update(event.params))
