@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createNdjsonDecoder } from './ndjson';
-import { signalProcessTree } from './process-tree';
+import { signalProcessTree, watchOutputDrain } from './process-tree';
 import { randomUUID } from 'node:crypto';
 import { diagnosticScope } from '../diagnostics';
 
@@ -50,7 +50,6 @@ export class JsonRpcProcess {
   private terminalError?: Error;
   private exit?: RpcExit;
   private closing?: Promise<void>;
-  private exitDrainTimer?: ReturnType<typeof setTimeout>;
   private resolveClosed!: (exit: RpcExit) => void;
 
   constructor(private readonly options: JsonRpcOptions) {
@@ -73,11 +72,8 @@ export class JsonRpcProcess {
     this.process.stderr.on('error', error => this.fail(error));
     this.process.stdin.on('error', error => this.fail(error));
     this.process.on('error', error => this.fail(error));
-    this.process.on('exit', () => {
-      this.exitDrainTimer = setTimeout(() => this.fail(new Error('Agent 进程已退出，但子进程仍占用输出连接')), 1_000);
-    });
+    watchOutputDrain(this.process, () => this.fail(new Error('Agent 进程已退出，但子进程仍占用输出连接')));
     this.process.on('close', (code, signal) => {
-      clearTimeout(this.exitDrainTimer);
       if (!this.terminalError) {
         try { decoder.end(); } catch (error) { this.terminalError = asError(error); }
       }

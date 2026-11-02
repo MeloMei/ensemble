@@ -79,6 +79,12 @@ createInterface({ input: process.stdin }).on('line', line => {
     response(message.id, { turn: { id: turnId, status: 'inProgress', items: [] } });
     event('turn/started', { turn: { id: turnId, status: 'inProgress', items: [] } });
     if (mode === 'exit') { process.exit(7); }
+    if (mode === 'exit-held-pipe') {
+      const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { detached: true, stdio: ['ignore', process.stdout, process.stderr] });
+      child.unref();
+      if (trace) appendFileSync(trace, JSON.stringify({ fixture: 'held-pipe-child', pid: child.pid }) + '\n');
+      process.stdout.write('', () => process.exit(7)); return;
+    }
     if (mode === 'failed') { complete('failed'); return; }
     if (mode === 'abort') { event('item/started', { turnId, item: { type: 'commandExecution', id: 'cmd', command: 'fixture-ready' } }); return; }
     if (mode === 'question') {
@@ -443,4 +449,40 @@ test('Codex read-only policy routes MCP consent to the user while denying filesy
     for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('Codex ends an active turn when an exited runtime leaves output pipes open', { skip: process.platform === 'win32', timeout: 12_000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'workbench-codex-held-pipe-'));
+  const binary = join(directory, 'codex.mjs');
+  const trace = join(directory, 'trace.jsonl');
+  await writeFile(binary, `#!${process.execPath}\n${fixture}`, { mode: 0o755 });
+  const saved = { CODEX_BINARY: process.env.CODEX_BINARY, CODEX_ADAPTER_FIXTURE_MODE: process.env.CODEX_ADAPTER_FIXTURE_MODE, CODEX_ADAPTER_FIXTURE_TRACE: process.env.CODEX_ADAPTER_FIXTURE_TRACE };
+  Object.assign(process.env, { CODEX_BINARY: binary, CODEX_ADAPTER_FIXTURE_MODE: 'exit-held-pipe', CODEX_ADAPTER_FIXTURE_TRACE: trace });
+  let provider: Awaited<ReturnType<typeof createCodexProvider>> | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    provider = await createCodexProvider();
+    const turn = provider.run({ session: { id: 'held-pipe', title: 'Held pipe', providerId: 'codex', cwd: directory, status: 'running', messages: [], approvals: [], createdAt: '', updatedAt: '' }, prompt: 'fixture', signal: new AbortController().signal, emit: () => {}, approve: async () => { throw new Error('unexpected approval'); } });
+    const result = await Promise.race([turn.then(() => undefined, error => error), new Promise<Error>(resolve => { timer = setTimeout(() => resolve(new Error('active turn did not end')), 5_000); })]);
+    assert.match(result?.message ?? '', /Agent 进程已退出，但子进程仍占用输出连接/);
+  } finally {
+    clearTimeout(timer);
+    const records = await readFile(trace, 'utf8').then(text => text.trim().split('\n').map(line => JSON.parse(line))).catch(() => []);
+    const child = records.find(record => record.fixture === 'held-pipe-child');
+    if (child?.pid) { try { process.kill(child.pid, 'SIGKILL'); } catch {} }
+    await provider?.dispose?.().catch(() => {});
+    for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('JSON-RPC drains the final unterminated response before normal exit', async () => {
+  const source = `process.stdin.once('data', chunk => { const { id } = JSON.parse(chunk.toString()); process.stdout.write(JSON.stringify({ id, result: 'last frame' }), () => process.exit(0)); });`;
+  const rpc = new JsonRpcProcess({ command: process.execPath, args: ['-e', source] });
+  try {
+    assert.equal(await rpc.request('last'), 'last frame');
+    const exit = await rpc.closed;
+    assert.equal(exit.code, 0);
+    assert.equal(exit.error, undefined);
+  } finally { await rpc.close(); }
 });

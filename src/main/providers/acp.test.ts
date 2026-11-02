@@ -132,6 +132,11 @@ createInterface({ input: process.stdin }).on('line', line => {
         count: { type: 'integer', minimum: 1, maximum: 20 }, confirmed: { type: 'boolean' },
       }, required: ['q1', 'count', 'confirmed'] } } }); return;
     }
+    if (mode === 'exit-held-pipe') {
+      const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { detached: true, stdio: ['ignore', process.stdout, process.stderr] });
+      child.unref(); log({ kind: 'held-pipe-child', pid: child.pid });
+      process.stdout.write('', () => process.exit(7)); return;
+    }
     if (mode === 'exit-zero' || mode === 'exit-error') { process.exit(mode === 'exit-zero' ? 0 : 7); }
     if (mode === 'approval' || mode === 'dispose') { permission(); return; }
     if (mode === 'empty') { finish('end_turn'); return; }
@@ -599,4 +604,19 @@ test('ACP dispose withdraws pending approvals and reclaims its process tree', { 
     assert.equal(getEventListeners(f.context.signal, 'abort').length, 0);
     await assert.rejects(f.provider.run(f.context));
   } finally { await f.cleanup(); }
+});
+
+test('ACP ends an active turn when an exited runtime leaves output pipes open', { skip: process.platform === 'win32', timeout: 12_000 }, async () => {
+  const f = await fixture('exit-held-pipe');
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const turn = f.provider.run(f.context);
+    const result = await Promise.race([turn.then(() => undefined, error => error), new Promise<Error>(resolve => { timer = setTimeout(() => resolve(new Error('active turn did not end')), 5_000); })]);
+    assert.match(result?.message ?? '', /ACP 进程已退出，但子进程仍占用输出连接/);
+  } finally {
+    clearTimeout(timer);
+    const child = (await f.trace()).find(frame => frame.kind === 'held-pipe-child');
+    if (child?.pid) { try { process.kill(child.pid, 'SIGKILL'); } catch {} }
+    await f.cleanup();
+  }
 });
