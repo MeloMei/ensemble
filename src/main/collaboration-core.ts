@@ -27,6 +27,15 @@ const terminal = new Set<CollaborationTaskStatus>(['completed', 'failed', 'cance
 const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical)
   : value !== null && typeof value === 'object' ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonical(item)])) : value;
 const contained = (root: string, target: string) => { const path = relative(root, target); return path === '' || (path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path)); };
+const assertUniqueExternalBindings = (participants: CollaborationParticipant[]) => {
+  const identities = new Set<string>();
+  for (const participant of participants) {
+    const identityId = participant.mode === 'external' ? participant.binding?.identityId : undefined;
+    if (!identityId) continue;
+    if (identities.has(identityId)) throw new Error('同一个外部接入身份不能绑定同一运行中的多个参与者。');
+    identities.add(identityId);
+  }
+};
 const taskTransitions: Record<CollaborationTaskStatus, CollaborationTaskStatus[]> = {
   pending: ['queued', 'running', 'failed', 'cancelled', 'interrupted'], queued: ['running', 'failed', 'cancelled', 'interrupted'],
   running: ['waiting', 'completed', 'failed', 'cancelled', 'interrupted'], waiting: ['queued', 'running', 'completed', 'failed', 'cancelled', 'interrupted'],
@@ -130,7 +139,9 @@ export class CollaborationCore {
       if (!participant) throw new Error('此会话未绑定协作参与者。');
       source = 'managed';
     } else {
-      const grant = this.store.state.collaboration.grants.find(item => item.identityId === principal.identityId && item.runId === run.id && !item.revokedAt);
+      const grants = this.store.state.collaboration.grants.filter(item => item.identityId === principal.identityId && item.runId === run.id && !item.revokedAt);
+      if (new Set(grants.map(item => item.participantId)).size > 1) throw new Error('接入身份对应多个参与者，请由用户调整绑定。');
+      const grant = grants[0];
       if (!grant || (!grant.scopes.includes('*') && !grant.scopes.includes(scope))) throw new Error('接入身份没有此运行的操作授权。');
       participant = run.definitionSnapshot.participants.find(item => item.id === grant.participantId);
       if (!participant || participant.mode !== 'external') throw new Error('接入授权不对应有效的外部参与者。');
@@ -173,6 +184,7 @@ export class CollaborationCore {
     const participants = structuredClone(parsed.participants);
     if (new Set(participants.map(item => item.id)).size !== participants.length) throw new Error('参与者 ID 不能重复。');
     if (participants.some(item => item.id === 'user')) throw new Error('user 是用户身份的保留 ID。');
+    assertUniqueExternalBindings(participants);
     const info = this.engine.snapshot().providers;
     for (const participant of participants) {
       participant.cwd = await validateWorkspace(participant.cwd ?? participant.permissions.workspace?.cwd ?? cwd);
@@ -410,6 +422,7 @@ export class CollaborationCore {
   }
 
   private syncIdentityGrants(principal: CollaborationPrincipal, runId: string, definition: CollaborationDefinition, previous?: CollaborationDefinition): void {
+    assertUniqueExternalBindings(definition.participants);
     for (const grant of this.store.state.collaboration.grants.filter(item => item.runId === runId && !item.revokedAt)) {
       const participant = definition.participants.find(item => item.id === grant.participantId && item.mode === 'external');
       const prior = previous?.participants.find(item => item.id === grant.participantId);

@@ -150,6 +150,47 @@ test('external tasks require a user-granted identity and exact attempt, and revo
   } finally { await f.close(); }
 });
 
+test('external identities cannot ambiguously bind multiple participants in one run', async () => {
+  const f = await fixture();
+  try {
+    f.store.atomic(state => state.collaboration.identities.push({ id: 'external', name: 'client', tokenHash: 'fixture', createdAt: new Date().toISOString(), policy: { createRuns: true, workspaceRoots: [f.cwd] } }));
+    const external = { kind: 'external', identityId: 'external' } as const;
+    const first = { ...participant('first', 'external'), binding: { identityId: 'external' } };
+    const second = { ...participant('second', 'external'), binding: { identityId: 'external' } };
+    await assert.rejects(f.create([first, second]), /多个参与者/);
+    await assert.rejects(f.core.call(user, 'create_definition', { name: 'duplicate', cwd: f.cwd, participants: [first, second], relationships: [] }), /多个参与者/);
+    assert.equal(f.store.state.collaboration.runs.length, 0);
+
+    const { runId } = await f.create([first, participant('second', 'external')], { start: false });
+    await assert.rejects(f.core.call(user, 'update_run', { requestId: 'ambiguous-update', runId, expectedVersion: 1, participants: [first, second] }), /多个参与者/);
+    assert.equal(f.store.state.collaboration.runs[0].definitionVersion, 1);
+    await assert.rejects(f.core.call(external, 'create_run', { requestId: 'ambiguous-caller', name: 'caller', cwd: f.cwd,
+      participants: [first, participant('second', 'external')], relationships: [], callerParticipantId: 'second' }), /多个参与者/);
+    assert.equal(f.store.state.collaboration.runs.length, 1);
+
+    f.store.atomic(state => {
+      const definition = structuredClone(state.collaboration.runs[0].definitionSnapshot);
+      definition.id = 'old-ambiguous-definition';
+      definition.participants[1].binding = { identityId: 'external' };
+      state.collaboration.definitions.push(definition);
+    });
+    await assert.rejects(f.core.call(user, 'start_run', { definitionId: 'old-ambiguous-definition' }), /多个参与者/);
+    assert.equal(f.store.state.collaboration.runs.length, 1);
+
+    f.store.atomic(state => {
+      const run = state.collaboration.runs.find(item => item.id === runId)!;
+      run.definitionSnapshot.participants[1].binding = { identityId: 'external' };
+      state.collaboration.grants.push({ id: 'old-ambiguous-grant', identityId: 'external', runId, participantId: 'second', scopes: ['read'], createdAt: new Date().toISOString() });
+    });
+    await assert.rejects(f.core.call(external, 'get_run', { runId }), /多个参与者/);
+    await f.core.call(user, 'update_run', { requestId: 'repair-ambiguous', runId, expectedVersion: 1, participants: [first, participant('second', 'external')] });
+    assert.equal((await f.core.call(external, 'get_run', { runId }) as { run: { id: string } }).run.id, runId);
+    const other = await f.core.call(user, 'create_run', { requestId: 'other-run', name: 'other', cwd: f.cwd,
+      participants: [first], relationships: [] }) as { runId: string };
+    assert.equal((await f.core.call(external, 'get_run', { runId: other.runId }) as { run: { id: string } }).run.id, other.runId);
+  } finally { await f.close(); }
+});
+
 test('external claims and managed dispatch share one atomic concurrency allowance', async () => {
   let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; }); let managedCalls = 0;
   const f = await fixture(async context => { managedCalls++; await gate; context.emit({ type: 'text', itemId: 'result', text: 'done' }); });
