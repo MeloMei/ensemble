@@ -19,7 +19,13 @@ test('actual renderer components preserve approval, draft, recovery and settings
     await build({
       entryPoints: [path.resolve('src/renderer/renderer-regressions.fixture.tsx')], outfile: path.join(directory, 'fixture.js'),
       bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', loader: { '.png': 'file', '.svg': 'file' },
-      plugins: [{ name: 'controlled-editor', setup(builder) {
+      plugins: [{ name: 'layout-worker', setup(builder) {
+        builder.onResolve({ filter: /elk-worker\.min\.js\?worker$/ }, () => ({ path: path.resolve('node_modules/elkjs/lib/elk-worker.min.js'), namespace: 'layout-worker' }));
+        builder.onLoad({ filter: /.*/, namespace: 'layout-worker' }, async args => {
+          await build({ entryPoints: [args.path], outfile: path.join(directory, 'layout-worker.js'), bundle: true, platform: 'browser' });
+          return { contents: 'export default class extends Worker { constructor() { super(new URL("layout-worker.js", window.location.href)); } }', loader: 'js' };
+        });
+      } }, { name: 'controlled-editor', setup(builder) {
         builder.onLoad({ filter: /[/\\]CodeEditor\.tsx$/ }, () => ({ contents: 'export function CodeEditor({value, onChange, readOnly}) { return <textarea data-test-editor value={value} readOnly={readOnly} onChange={event => onChange(event.target.value)} />; }', loader: 'tsx' }));
       } }],
     });

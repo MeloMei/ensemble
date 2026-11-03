@@ -1,5 +1,5 @@
 import { CollaborationViews } from './CollaborationViews';
-import type { CollaborationRun, CollaborationEvent } from '../shared/collaboration';
+import type { CollaborationRun, CollaborationEvent, CollaborationParticipant, CollaborationTask } from '../shared/collaboration';
 import React, { act, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { I18nextProvider } from 'react-i18next';
@@ -161,6 +161,59 @@ const cases: Record<string, () => Promise<void>> = {
     await render(<WorkspaceToolsPanel workspace={{ ...project, id: 'motion-resources-other' }} sessions={[]} perform={perform} />, 'user');
     await click('MCP'); connectionGate.resolve({ status: 'connected', tools: [] }); await settle();
     assert(!document.querySelector('.tools-connection-result') && !button('workspace:tools.testConnection').disabled, 'An old project connection result leaked into the new project');
+  },
+  'MOTION-COLLABORATION: only new deliveries animate and details retain focus and scroll': async () => {
+    const a: CollaborationParticipant = { id: 'worker', name: 'Worker', mode: 'managed', providerId: 'codex', roles: ['implementation'], permissions: { submitTasks: false, sendMessages: false, configureRun: false, publishArtifacts: false } };
+    const b: CollaborationParticipant = { ...a, id: 'reviewer', name: 'Reviewer', roles: ['review'] };
+    const run = collaborationRun('Motion run', '2026-11-03T00:00:00Z');
+    run.definitionSnapshot.participants = [a, b];
+    run.definitionSnapshot.steps = [{ id: 'review', title: 'Review', participantId: b.id, prompt: 'Review the output', dependsOn: [], artifactIds: ['report'] }];
+    const task: CollaborationTask = { id: 'review', runId: run.id, participantId: b.id, createdBy: 'user', title: 'Review', prompt: 'Keep this reading position.\n'.repeat(40), definitionVersion: 1, participantSnapshot: b, dependsOn: [], artifactIds: ['report'], status: 'queued', attempts: [], createdAt: run.createdAt, updatedAt: run.updatedAt };
+    let snapshot = collaborationSnapshot([run], 1000);
+    snapshot.collaboration!.tasks = [task];
+    snapshot.collaboration!.artifacts = [{ id: 'report', artifactId: 'report', runId: run.id, version: 1, participantId: a.id, name: 'Review material', kind: 'document', content: 'The saved output', sha256: 'a'.repeat(64), createdAt: run.createdAt }];
+    const event = (seq: number): CollaborationEvent => ({ id: `delivery-${seq}`, seq, runId: run.id, type: 'artifact.injected', source: 'managed', participantId: a.id, targetParticipantId: b.id, taskId: task.id, artifactVersionId: 'report', createdAt: run.createdAt, data: {} });
+    const records = Array.from({ length: 1000 }, (_, index) => event(index + 1));
+    window.workbench = { queryCollaborationEvents: async (_id: string, after: number) => records.filter(item => item.seq > after).slice(0, 500) } as unknown as Window['workbench'];
+    const show = () => render(<CollaborationViews snapshot={snapshot} perform={perform} pending={new Set()} openSession={() => {}} />, 'user');
+    await show();
+    await waitFor(() => document.querySelectorAll('.react-flow__edge').length > 0, 'The actual graph did not render its artifact edge', 150);
+    assert(!document.querySelector('.collaboration-edge-handoff'), 'Initial history played as a live delivery');
+    records.push(event(1001)); snapshot = { ...snapshot, collaborationEventSeq: 1001 }; await show();
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    assert(document.querySelector('.collaboration-timeline-list')?.textContent?.includes('#1001'), 'Unloaded history delayed a new delivery');
+    assert(reduced ? !document.querySelector('.collaboration-edge-handoff') : document.querySelector('.collaboration-edge-handoff[data-event-seq="1001"]'), 'A new delivery behind historical pages did not follow the motion preference');
+    await waitFor(() => !document.querySelector('.collaboration-edge-handoff'), 'The first delivery feedback never ended', 100);
+    await click('collaboration:timeline.loadMore'); await settle();
+    assert(!document.querySelector('.collaboration-edge-handoff'), 'Loading older events replayed a delivery');
+    await act(async () => { document.querySelector<HTMLElement>('.react-flow__node[data-id="task-review"]')!.click(); await tick(); });
+    await frames();
+    const detail = document.querySelector<HTMLElement>('.collaboration-selection-scroll')!;
+    detail.scrollTop = 140;
+    records.push(event(1002)); snapshot = { ...snapshot, collaborationEventSeq: 1002, collaboration: { ...snapshot.collaboration!, tasks: [{ ...task, status: 'running' }] } }; await show();
+    assert(reduced ? !document.querySelector('.collaboration-edge-handoff') : document.querySelector('.collaboration-edge-handoff[data-event-seq="1002"]'), 'A real delivery did not follow the current motion preference');
+    assert(detail.scrollTop === 140, 'Live delivery reset the detail reading position');
+    const statusFeedback = document.querySelector<HTMLElement>('.collaboration-node-status-feedback');
+    if (reduced) assert(!statusFeedback, 'Reduced motion still flashed a status transition');
+    else {
+      assert(statusFeedback && getComputedStyle(statusFeedback).animationName === 'collaboration-status-feedback', 'Task status feedback did not start its animation');
+      statusFeedback.style.animation = 'none';
+      assert(getComputedStyle(statusFeedback).opacity === '0', 'Disabled animation left an opaque layer over the task text');
+      statusFeedback.style.removeProperty('animation');
+    }
+    await click('collaboration:run.relationships'); await click('collaboration:run.dataFlow');
+    assert(!document.querySelector('.collaboration-edge-handoff'), 'Switching views replayed a delivery');
+    const close = document.querySelector<HTMLButtonElement>('.collaboration-selection header button')!;
+    close.focus({ preventScroll: true });
+    await act(async () => { close.click(); await tick(); });
+    const panel = document.querySelector<HTMLElement>('.collaboration-selection')!;
+    assert(panel.inert && panel.getAttribute('aria-hidden') === 'true' && !panel.contains(document.activeElement), 'Collapsed detail retained keyboard interaction');
+    await click('collaboration:detail.expand'); await frames();
+    assert(document.querySelector('.collaboration-selection-scroll') === detail && detail.scrollTop === 140, 'Reopening details recreated or reset the scroller');
+    records.push(event(1003)); snapshot = { ...snapshot, collaborationEventSeq: 1003 }; await show();
+    await waitFor(() => !document.querySelector('.collaboration-edge-handoff'), 'A delivery animation never finished', 100);
+    await show();
+    assert(!document.querySelector('.collaboration-edge-handoff'), 'An unchanged snapshot replayed a finished delivery');
   },
   'MOTION-SIDEBAR: state and pin moves preserve the project row, focus and reading position': async () => {
     const projects = Array.from({ length: 24 }, (_, index) => ({ ...workspace, id: `motion-${index}`, name: `Project ${index}`, cwd: `/motion-${index}` }));
