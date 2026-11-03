@@ -24,6 +24,7 @@ import { TerminalPane } from './TerminalPane';
 import { Terminal } from '@xterm/xterm';
 import { AppearanceProvider } from './appearance';
 import type { Perform } from './ui';
+import './vendor/open-claude-ui/cds-foundations.css';
 import './styles.css';
 
 interface Result { name: string; error?: string }
@@ -77,7 +78,7 @@ let root: Root;
 const errors: string[] = [];
 let operations: Promise<void>[] = [];
 const perform: Perform = (_key, action) => { const operation = action().then(() => {}, error => { errors.push(String(error)); }); operations.push(operation); return operation; };
-async function render(element: ReactElement) { await act(async () => { root.render(<I18nextProvider i18n={i18n}><AppearanceProvider><OverlayProvider><TooltipProvider><MotionConfig reducedMotion="always">{element}</MotionConfig></TooltipProvider></OverlayProvider></AppearanceProvider></I18nextProvider>); await tick(); }); }
+async function render(element: ReactElement, reducedMotion: 'always' | 'user' = 'always') { await act(async () => { root.render(<I18nextProvider i18n={i18n}><AppearanceProvider><OverlayProvider><TooltipProvider><MotionConfig reducedMotion={reducedMotion}>{element}</MotionConfig></TooltipProvider></OverlayProvider></AppearanceProvider></I18nextProvider>); await tick(); }); }
 async function click(key: string) { await act(async () => { button(key).click(); await tick(); }); }
 async function settle() { await act(async () => { await Promise.all(operations); await tick(); }); }
 async function openSelect(control: HTMLButtonElement) {
@@ -108,6 +109,38 @@ function collaborationSnapshot(runs: CollaborationRun[], revision = 1): Snapshot
 }
 
 const cases: Record<string, () => Promise<void>> = {
+  'MOTION-SIDEBAR: state and pin moves preserve the project row, focus and reading position': async () => {
+    const projects = Array.from({ length: 24 }, (_, index) => ({ ...workspace, id: `motion-${index}`, name: `Project ${index}`, cwd: `/motion-${index}` }));
+    const values = projects.map((project, index) => ({ ...session, id: `motion-session-${index}`, cwd: project.cwd, status: 'running' as const }));
+    let snapshot: Snapshot = { version: 1, sessions: values, providers: [provider], workspaces: projects, workflows: [], terminals: [], pluginErrors: [], pluginPath: '/plugins', dataPath: '/data' };
+    let publish!: (value: Snapshot) => void;
+    window.workbench = {
+      ...applicationUpdateApi,
+      snapshot: async () => snapshot, subscribe: (listener: (value: Snapshot) => void) => { publish = listener; return () => {}; },
+      getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
+      watchSessions: async () => {}, listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {},
+    } as unknown as Window['workbench'];
+    await render(<App />, 'user'); await frames();
+    const scroller = document.querySelector<HTMLElement>('.workspace-sidebar-scroll')!;
+    const row = document.querySelector<HTMLButtonElement>('[data-workspace-id="motion-8"]')!;
+    scroller.scrollTop = 240;
+    row.focus({ preventScroll: true });
+    const top = scroller.scrollTop;
+    snapshot = { ...snapshot, sessions: snapshot.sessions.map(value => value.id === 'motion-session-8' ? { ...value, status: 'completed', attention: { revision: 1, seenRevision: 0, reason: 'result', updatedAt: value.updatedAt } } : value) };
+    await act(async () => { publish(snapshot); await tick(); }); await frames();
+    assert(document.querySelector('[data-workspace-id="motion-8"]') === row && row.classList.contains('group-review'), 'Finishing a task replaced its project row or lost its review state');
+    assert(document.activeElement === row, 'Moving a project to review lost keyboard focus');
+    assert(scroller.scrollTop === top, 'A background status change moved the sidebar reading position');
+    snapshot = { ...snapshot, workspaces: projects.map(project => project.id === 'motion-8' ? { ...project, pinned: true } : project) };
+    await act(async () => { publish(snapshot); await tick(); }); await frames();
+    assert(document.querySelector('[data-workspace-id="motion-8"]') === row && row.classList.contains('group-pinned') && document.activeElement === row, 'Pinning replaced the row or lost focus');
+    assert(scroller.scrollTop === top, 'Pinning scrolled away from the reading position');
+    const search = button('shell:app.searchWorkspaces'); search.focus();
+    snapshot = { ...snapshot, workspaces: projects };
+    await act(async () => { publish(snapshot); await tick(); }); await frames();
+    assert(document.activeElement === search, 'A project move stole focus from another control');
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) assert(!row.style.transform || row.style.transform === 'none', 'Reduced motion still moved a project row');
+  },
   'UI-SETTINGS: one settings entry preserves the active workspace and unsaved project edits': async () => {
     const draft = { text: 'Keep this unfinished task', attachments: [{ id: 'settings-note', name: 'settings-note.txt', kind: 'text' as const,
       ownedPath: '/settings-note.txt', mimeType: 'text/plain', size: 4, sha256: 'b'.repeat(64) }] };
@@ -919,7 +952,7 @@ const cases: Record<string, () => Promise<void>> = {
       } as unknown as Window['workbench'];
       await render(<App />); await frames(5);
       assert(watched.some(ids => ids.length === 2 && ids.includes(failed.id) && ids.includes(latest.id)), 'Split view did not subscribe to both session tails');
-      assert(document.querySelector('.group-attention .workspace-row .attention-failure') && document.querySelector('.workspace-unread')?.textContent === '1', 'A newer result hid an older unread failure');
+      assert(document.querySelector('.workspace-row.group-attention .attention-failure') && document.querySelector('.workspace-unread')?.textContent === '1', 'A newer result hid an older unread failure');
       await act(async () => { connectionChanged({ status: 'reconnecting', synced: false, lastReceivedAt: '2026-10-23T02:00:00Z' }); await tick(); });
       assert(document.querySelector('.sidebar-connection')?.textContent?.includes('Reconnecting') && document.querySelector('.connection-banner'), 'A cached snapshot still claimed the backend was connected');
       assert(button('workspace:chat.sendTask').disabled && document.querySelector('.workspace-row'), 'Disconnect discarded cached workspaces or allowed sending');

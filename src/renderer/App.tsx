@@ -202,17 +202,19 @@ export function App() {
     return <EmptyState icon={<Layers2 size={28} />} title={t('app.projectReady')} action={<div className="empty-actions"><button className="button" onClick={() => setDialog('agent')}><Plus size={14} />{t('app.addAgent')}</button><button className="button subtle" disabled={pending.has('create-terminal')} onClick={() => workspace && void perform('create-terminal', () => window.workbench.createTerminal(workspace.id))}><TerminalSquare size={14} />{t('app.openTerminal')}</button></div>}>{t('app.projectReadyNote')}</EmptyState>;
   };
 
-  const workspaceRow = (item: Workspace) => {
+  const workspaceRow = (item: Workspace, group: string, last: boolean) => {
     const related = sessions.filter(session => session.cwd === item.cwd).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     const current = related.find(session => sessionAttentionReason(session) === 'approval')
       ?? related.find(session => sessionAttentionReason(session) === 'failure')
       ?? related.find(session => ['running', 'waiting_children', 'queued'].includes(session.status))
       ?? related.find(session => sessionAttentionReason(session) === 'result') ?? related[0];
     const unread = related.filter(sessionIsUnread).length;
-    return <button key={item.id} className={`workspace-row ${page === 'workspace' && workspace?.id === item.id ? 'selected' : ''}`} onClick={() => selectWorkspace(item.id)}>
+    return <motion.button key={`workspace:${item.id}`} data-workspace-id={item.id} initial={false}
+      layout={reducedMotion || searching ? false : 'position'} transition={{ layout: SPRING_SNAPPY }}
+      className={`workspace-row group-${group}${last ? ' workspace-group-end' : ''} ${page === 'workspace' && workspace?.id === item.id ? 'selected' : ''}`} onClick={() => selectWorkspace(item.id)}>
       <span className="workspace-glyph">{current ? <AgentIcon providerId={current.providerId} size={15} /> : <Layers2 size={15} />}{current?.status === 'running' && <i />}</span>
       <span className="workspace-row-body"><span className="workspace-row-title">{item.name}</span>{current && <span className="workspace-row-meta"><Status value={current.status} /><AttentionBadge session={current} /></span>}</span>{unread > 0 && <span className="workspace-unread" aria-label={t('attention.unreadSessions', { count: unread })}>{unread}</span>}<time>{relativeTime(item.updatedAt)}</time>
-    </button>;
+    </motion.button>;
   };
 
   const groups = [
@@ -222,18 +224,27 @@ export function App() {
     { id: 'new', label: t('app.projects'), icon: <Layers2 size={15} /> },
     { id: 'done', label: t('app.done'), icon: <Circle size={15} /> },
   ];
+  const sidebarItems: ReactNode[] = [];
+  const pinnedWorkspaces = visibleWorkspaces.filter(item => item.pinned);
+  if (pinnedWorkspaces.length) {
+    sidebarItems.push(<div key="heading:pinned" className="sidebar-section-title">{t('app.pinned')}</div>);
+    sidebarItems.push(...pinnedWorkspaces.map((item, index) => workspaceRow(item, 'pinned', index === pinnedWorkspaces.length - 1)));
+  }
+  sidebarItems.push(<div key="heading:local" className="sidebar-section-title workspace-section-heading"><span>{t('app.localProjects')}</span><IconButton label={t('app.searchWorkspaces')} onClick={() => { setSearching(value => !value); setQuery(''); }}><Search size={13} /></IconButton></div>);
+  if (searching) sidebarItems.push(<div key="search" className="workspace-search"><Search size={13} /><input aria-label={t('app.searchWorkspaces')} autoFocus value={query} onChange={event => setQuery(event.target.value)} placeholder={t('app.searchPlaceholder')} /></div>);
+  for (const group of groups) {
+    const items = visibleWorkspaces.filter(item => !item.pinned && workspaceGroup(item, sessions) === group.id);
+    if (!items.length) continue;
+    sidebarItems.push(<div key={`heading:${group.id}`} className={`workspace-group-label group-${group.id}`}>{group.icon}<span>{group.label}</span></div>);
+    sidebarItems.push(...items.map((item, index) => workspaceRow(item, group.id, index === items.length - 1)));
+  }
+  if (!workspaces.length) sidebarItems.push(<div key="empty" className="sidebar-placeholder">{t('app.chooseLocalProject')}<br />{t('app.addRuntimeNote')}</div>);
+  if (workspaces.length > 0 && !visibleWorkspaces.length) sidebarItems.push(<div key="no-match" className="sidebar-placeholder">{t('app.noWorkspaceMatch')}</div>);
 
   return <div className="workbench">
     <aside className="workspace-sidebar"><div className="sidebar-titlebar"><img className="brand-symbol" src={ensembleLogo} alt="" /><span>{PRODUCT_NAME}<span className="brand-period">.</span></span></div>
       <nav className="sidebar-navigation" aria-label={t('app.navigation')}><button className="new-workspace-button" onClick={() => setDialog('workspace')}><Plus size={17} /><span>{t('app.newWorkspace')}</span></button><button className={page === 'workspace' ? 'selected' : ''} aria-current={page === 'workspace' ? 'page' : undefined} onClick={() => setPage('workspace')}><LayoutGrid size={17} /><span>{t('app.workspace')}</span><small>{workspaces.length || ''}</small></button><button className={page === 'history' ? 'selected' : ''} aria-current={page === 'history' ? 'page' : undefined} onClick={() => setPage('history')}><History size={17} />{t('app.history')}</button><button className={page === 'collaboration' ? 'selected' : ''} aria-current={page === 'collaboration' ? 'page' : undefined} onClick={() => setPage('collaboration')}><Network size={17} />{t('app.collaboration')}</button><button className={page === 'workflows' ? 'selected' : ''} aria-current={page === 'workflows' ? 'page' : undefined} onClick={() => setPage('workflows')}><GitBranch size={17} />{t('app.workflows')}</button></nav>
-      <div className="workspace-sidebar-scroll">{visibleWorkspaces.some(item => item.pinned) && <section className="sidebar-section pinned-section"><div className="sidebar-section-title">{t('app.pinned')}</div>{visibleWorkspaces.filter(item => item.pinned).map(workspaceRow)}</section>}
-        <div className="sidebar-section-title workspace-section-heading"><span>{t('app.localProjects')}</span><IconButton label={t('app.searchWorkspaces')} onClick={() => { setSearching(value => !value); setQuery(''); }}><Search size={13} /></IconButton></div>{searching && <div className="workspace-search"><Search size={13} /><input aria-label={t('app.searchWorkspaces')} autoFocus value={query} onChange={event => setQuery(event.target.value)} placeholder={t('app.searchPlaceholder')} /></div>}
-        {groups.map(group => {
-          const items = visibleWorkspaces.filter(item => !item.pinned && workspaceGroup(item, sessions) === group.id);
-          return items.length ? <section className={`sidebar-section group-${group.id}`} key={group.id}><div className="workspace-group-label">{group.icon}<span>{group.label}</span></div>{items.map(workspaceRow)}</section> : null;
-        })}
-        {!workspaces.length && <div className="sidebar-placeholder">{t('app.chooseLocalProject')}<br />{t('app.addRuntimeNote')}</div>}{workspaces.length > 0 && !visibleWorkspaces.length && <div className="sidebar-placeholder">{t('app.noWorkspaceMatch')}</div>}
-      </div>
+      <motion.div className="workspace-sidebar-scroll" layoutScroll>{sidebarItems}</motion.div>
       <div className={`sidebar-connection connection-${connected ? 'connected' : connection.status}`}><i /><span>{connected ? t('app.connected') : t(`connection.${connection.status}`)}</span><small>{t('app.thisMachine')}</small></div><footer className="sidebar-footer"><button onClick={() => setDialog('workspace')}><Plus size={15} />{t('app.addProject')}</button><IconButton label={t('preferences.open')} onClick={() => openSettings()}><Settings2 size={16} /></IconButton></footer>
     </aside>
 

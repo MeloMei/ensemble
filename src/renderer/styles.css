@@ -163,17 +163,17 @@ a { color: var(--accent); text-underline-offset: 3px; }
 .sidebar-navigation button.selected { background: var(--selected); color: var(--text); font-weight: 550; }
 .sidebar-navigation .new-workspace-button { background: var(--surface-raised); border: 1px solid var(--border-strong); color: var(--text); margin-bottom: 10px; min-height: 34px; }
 .sidebar-navigation .new-workspace-button:hover { border-color: var(--dim); background: var(--bg); }
-.workspace-sidebar-scroll { flex: 1; min-height: 0; overflow: auto; padding: 0 10px 20px; }
+.workspace-sidebar-scroll { flex: 1; min-height: 0; overflow: auto; overflow-anchor: none; padding: 0 10px 20px; }
 .sidebar-section-title { display: flex; align-items: center; min-height: 31px; padding: 0 10px; color: var(--dim); font-size: 11px; }
 .workspace-section-heading { justify-content: space-between; margin: 3px 0 7px; border-top: 1px solid var(--border); padding-top: 9px; }
-.sidebar-section { margin-bottom: 14px; }
-.pinned-section { margin-bottom: 9px; }
 .workspace-group-label { display: flex; align-items: center; gap: 6px; padding: 4px 10px 7px; color: var(--muted); font-size: 11px; }
 .workspace-group-label svg { width: 12px; height: 12px; color: var(--dim); }
-.group-working .workspace-group-label svg { color: var(--accent); }
-.group-review .workspace-group-label svg { color: var(--success); }
-.group-attention .workspace-group-label svg { color: var(--warning); }
-.workspace-row { position: relative; display: flex; align-items: flex-start; gap: 8px; width: 100%; padding: 7px 9px; border-radius: var(--radius-control); text-align: left; margin-bottom: 2px; }
+.workspace-group-label.group-working svg { color: var(--accent); }
+.workspace-group-label.group-review svg { color: var(--success); }
+.workspace-group-label.group-attention svg { color: var(--warning); }
+.workspace-row { position: relative; display: flex; align-items: flex-start; gap: 8px; width: 100%; padding: 7px 9px; border-radius: var(--radius-control); text-align: left; margin-bottom: 2px; transition: background-color var(--duration-fast) ease, color var(--duration-fast) ease, border-color var(--duration-fast) ease, box-shadow var(--duration-normal) ease; }
+.workspace-row.workspace-group-end { margin-bottom: 16px; }
+.workspace-row.group-pinned.workspace-group-end { margin-bottom: 11px; }
 .workspace-row:hover { background: var(--hover); }
 .workspace-row.selected { background: var(--selected); }
 .workspace-row.selected::before, .sidebar-navigation button.selected::before, .list-item.selected::before { content: ""; position: absolute; top: 8px; bottom: 8px; left: 0; width: 2px; border-radius: 2px; background: var(--accent); }
