@@ -18,6 +18,7 @@ import { ManagedWorktreePanel } from './ManagedWorktreePanel';
 import { FileReviewPanel } from './FileReviewPanel';
 import { SessionChat, SessionSettingsPanel } from './SessionChat';
 import { App } from './App';
+import { WorkspaceToolsPanel } from './WorkspaceTools';
 import { ApplicationUpdateNotice, ApplicationUpdateSettings, useApplicationUpdates } from './ApplicationUpdates';
 import type { AppUpdateState } from '../shared/application-updates';
 import { TerminalPane } from './TerminalPane';
@@ -109,6 +110,58 @@ function collaborationSnapshot(runs: CollaborationRun[], revision = 1): Snapshot
 }
 
 const cases: Record<string, () => Promise<void>> = {
+  'MOTION-RESOURCES: feedback follows actual operations and preserves editors and tab scroll': async () => {
+    const project = { ...workspace, id: 'motion-resources' };
+    const skills = Array.from({ length: 20 }, (_, index) => ({ id: `motion-skill-${index}`, path: `/fixture/.agents/skills/skill-${index}/SKILL.md`, name: `skill-${index}`, description: 'Resource for this project', scope: 'project' as const, editable: true }));
+    let saved = { content: 'Original skill', revision: 'skill-0' };
+    let saveGate = deferred<void>();
+    let connectionGate = deferred<{ status: 'connected' | 'failed'; tools: []; error?: string }>();
+    let connections = 0;
+    window.workbench = {
+      setUnsavedFiles: () => {}, listSkills: async () => skills, readSkill: async () => saved,
+      saveSkill: async (_id: string, value: { content: string }) => { await saveGate.promise; saved = { content: value.content, revision: 'skill-1' }; },
+      mcpSettings: async () => ({ content: '{}', revision: 'mcp-0', servers: [{ name: 'fixture-tools', source: 'project', transport: 'stdio', status: 'enabled' }] }),
+      notificationStatus: async () => ({ supported: true, state: 'idle' }),
+      testMcpServer: async () => { connections++; return connectionGate.promise; },
+    } as unknown as Window['workbench'];
+    await render(<ProjectSettings workspace={project} sessions={[]} perform={perform} onClose={() => {}} />, 'user');
+    await act(async () => { document.querySelector<HTMLButtonElement>('.tools-list-item')!.click(); await tick(); });
+    const editor = input('.tools-editor textarea') as HTMLTextAreaElement;
+    await change(editor, 'Saved request');
+    await click('workspace:tools.saveSkill');
+    assert(button('workspace:tools.saveSkill').getAttribute('aria-busy') === 'true' && document.querySelector('.tools-operation-feedback[data-state="pending"]'), 'An outstanding save has no pending feedback');
+    await change(editor, 'Newer unsaved text');
+    saveGate.resolve(); await settle();
+    assert(editor.value === 'Newer unsaved text' && !document.querySelector('.tools-operation-feedback[data-state="saved"]'), 'A save claimed success for newer unsaved content');
+    saveGate = deferred<void>(); await click('workspace:tools.saveSkill'); saveGate.reject(new Error('Controlled save failure')); await settle();
+    assert(document.querySelector('.tools-operation-feedback[data-state="failed"]') && !button('workspace:tools.saveSkill').disabled, 'Failed save stayed pending or claimed success');
+    saveGate = deferred<void>(); await click('workspace:tools.saveSkill');
+    editor.focus({ preventScroll: true }); editor.setSelectionRange(3, 7);
+    saveGate.resolve(); await settle();
+    assert(document.querySelector('.tools-operation-feedback[data-state="saved"]') && input('.tools-editor textarea') === editor && document.activeElement === editor && editor.selectionStart === 3 && editor.selectionEnd === 7, 'Confirmed save replaced the editor or lost the selection');
+    const skillPanel = document.querySelector<HTMLElement>('[data-tool-panel="skills"]')!;
+    skillPanel.scrollTop = 130;
+    await click('MCP');
+    assert(skillPanel.hidden && skillPanel.inert, 'Hidden resource controls remain interactive');
+    const testButton = button('workspace:tools.testConnection');
+    await act(async () => { testButton.click(); testButton.click(); await tick(); });
+    assert(connections === 1 && testButton.disabled && testButton.getAttribute('aria-busy') === 'true', 'Repeated connection clicks duplicated the pending operation');
+    connectionGate.reject(new Error('Controlled connection failure')); await settle();
+    assert(!testButton.disabled && document.querySelector('.tools-connection-result [data-state="failed"]'), 'Thrown connection failure stayed pending');
+    connectionGate = deferred(); await click('workspace:tools.testConnection'); connectionGate.resolve({ status: 'failed', tools: [], error: 'Not connected' }); await settle();
+    assert(!testButton.disabled && document.querySelector('.tools-connection-result [data-state="failed"]'), 'A rejected connection result showed success');
+    connectionGate = deferred(); await click('workspace:tools.testConnection'); connectionGate.resolve({ status: 'connected', tools: [] }); await settle();
+    assert(document.querySelector('.tools-connection-result [data-state="saved"]'), 'A successful connection was not shown');
+    await click('Skills');
+    assert(skillPanel.scrollTop === 130 && input('.tools-editor textarea') === editor, 'Changing resource tabs lost scroll or recreated the editor');
+    await change(editor, 'Another edit');
+    assert(!skillPanel.querySelector('[data-state="saved"]'), 'Editing retained a saved label on unsaved content');
+    await render(<WorkspaceToolsPanel workspace={project} sessions={[]} perform={perform} />, 'user');
+    await click('MCP'); connectionGate = deferred(); await click('workspace:tools.testConnection');
+    await render(<WorkspaceToolsPanel workspace={{ ...project, id: 'motion-resources-other' }} sessions={[]} perform={perform} />, 'user');
+    await click('MCP'); connectionGate.resolve({ status: 'connected', tools: [] }); await settle();
+    assert(!document.querySelector('.tools-connection-result') && !button('workspace:tools.testConnection').disabled, 'An old project connection result leaked into the new project');
+  },
   'MOTION-SIDEBAR: state and pin moves preserve the project row, focus and reading position': async () => {
     const projects = Array.from({ length: 24 }, (_, index) => ({ ...workspace, id: `motion-${index}`, name: `Project ${index}`, cwd: `/motion-${index}` }));
     const values = projects.map((project, index) => ({ ...session, id: `motion-session-${index}`, cwd: project.cwd, status: 'running' as const }));
