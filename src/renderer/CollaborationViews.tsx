@@ -2,10 +2,10 @@ import { AppSelect } from './AppSelect';
 import { Tooltip } from './Tooltip';
 import { useTranslation } from 'react-i18next';
 import { translate, formatDate, formatNumber } from '../shared/i18n';
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { useReducedMotion } from 'framer-motion';
 import { ArrowUpRight, Check, ChevronRight, Copy, FileText, GitBranch, KeyRound, LoaderCircle, Maximize, MessageSquare, Minus, Network, PanelRight, Pause, Play, Plus, RefreshCw, Settings2, Square, Trash2, X } from 'lucide-react';
-import { Background, ControlButton, Controls, Handle, MarkerType, Position, ReactFlow, useNodes, useNodesInitialized, useReactFlow, useStore, type Connection, type Edge, type EdgeChange, type Node, type NodeChange, type NodeProps } from '@xyflow/react';
+import { Background, ControlButton, Controls, Handle, MarkerType, Position, ReactFlow, SmoothStepEdge, getSmoothStepPath, useNodes, useNodesInitialized, useReactFlow, useStore, type Connection, type Edge, type EdgeChange, type EdgeProps, type Node, type NodeChange, type NodeProps } from '@xyflow/react';
 import ELK from 'elkjs/lib/elk-api.js';
 import ELKWorker from 'elkjs/lib/elk-worker.min.js?worker';
 import type { CollaborationArtifactVersion, CollaborationDefinition, CollaborationEvent, CollaborationMessage, CollaborationParticipant, CollaborationRun, CollaborationTask, CollaborationTaskTemplate } from '../shared/collaboration';
@@ -186,15 +186,37 @@ function CollaborationEditor({ providers, identities, initialCwd, run, perform, 
 interface GraphNodeData extends Record<string, unknown> { title: string; subtitle: string; detail?: string; kind: 'participant' | 'task' | 'artifact'; status?: string; external?: boolean }
 type CollaborationNode = Node<GraphNodeData, 'collaboration'>;
 type GraphSelection = { kind: 'participant' | 'task' | 'artifact' | 'event' | 'message' | 'relationship'; id: string } | { kind: 'events'; ids: string[] };
-interface GraphEdgeData extends Record<string, unknown> { selection?: GraphSelection; configured?: boolean }
+interface GraphEdgeData extends Record<string, unknown> { selection?: GraphSelection; configured?: boolean; handoffSeqs?: number[]; onHandoffEnd?: (seq: number) => void }
 type CollaborationEdge = Edge<GraphEdgeData>;
 function CollaborationNodeView({ data, selected, isConnectable }: NodeProps<CollaborationNode>) {
   const { t } = useTranslation('collaboration');
-  return <div className={`collaboration-node node-${data.kind} ${selected ? 'selected' : ''}`}><Handle type="target" position={Position.Left} isConnectable={isConnectable} /><div className="collaboration-node-eyebrow">{data.kind === 'artifact' ? <FileText size={12} /> : data.kind === 'task' ? <GitBranch size={12} /> : <Network size={12} />}<span>{data.subtitle}</span></div><strong>{data.title}</strong>{data.detail && <p>{data.detail}</p>}<footer>{data.status && <Status value={data.status} />}{data.external && <span>{t('participant.externalConnection')}</span>}</footer><Handle type="source" position={Position.Right} isConnectable={isConnectable} /></div>;
+  const reducedMotion = useReducedMotion();
+  const previousStatus = useRef(data.status);
+  const [statusFeedback, setStatusFeedback] = useState<string>();
+  useEffect(() => {
+    if (previousStatus.current !== data.status && !reducedMotion) setStatusFeedback(data.status ?? 'idle');
+    previousStatus.current = data.status;
+    if (reducedMotion) setStatusFeedback(undefined);
+  }, [data.status, reducedMotion]);
+  return <div className={`collaboration-node node-${data.kind} ${selected ? 'selected' : ''}`} data-status={data.status}>
+    {statusFeedback && !reducedMotion && <span key={statusFeedback} className="collaboration-node-status-feedback" aria-hidden="true" onAnimationEnd={() => setStatusFeedback(undefined)} />}
+    <Handle type="target" position={Position.Left} isConnectable={isConnectable} /><div className="collaboration-node-eyebrow">{data.kind === 'artifact' ? <FileText size={12} /> : data.kind === 'task' ? <GitBranch size={12} /> : <Network size={12} />}<span>{data.subtitle}</span></div><strong>{data.title}</strong>{data.detail && <p>{data.detail}</p>}<footer>{data.status && <Status value={data.status} />}{data.external && <span>{t('participant.externalConnection')}</span>}</footer><Handle type="source" position={Position.Right} isConnectable={isConnectable} /></div>;
 }
 const nodeTypes = { collaboration: CollaborationNodeView };
-const edgeFor = (id: string, source: string, target: string, label: string, selection?: GraphSelection, configured = false): CollaborationEdge => ({ id, source, target, label, type: 'smoothstep', markerEnd: { type: MarkerType.ArrowClosed, width: 15, height: 15, color: configured ? 'var(--dim)' : 'var(--muted)' }, style: { stroke: configured ? 'var(--dim)' : 'var(--muted)', strokeWidth: configured ? 1 : 1.25, ...(configured ? { strokeDasharray: '6 5' } : {}) }, labelStyle: { fill: configured ? 'var(--muted)' : 'var(--text)', fontSize: 11 }, labelBgStyle: { fill: 'var(--surface)', fillOpacity: 1 }, labelBgBorderRadius: 3, labelBgPadding: [7, 5], data: { selection, configured } });
+function CollaborationEdgeView(props: EdgeProps<CollaborationEdge>) {
+  const [path] = getSmoothStepPath(props);
+  return <><SmoothStepEdge {...props} />{!props.data?.configured && props.data?.handoffSeqs?.map(seq => <path key={seq} className="collaboration-edge-handoff" data-event-seq={seq} d={path} pathLength={1} aria-hidden="true" onAnimationEnd={() => props.data?.onHandoffEnd?.(seq)} />)}</>;
+}
+const edgeTypes = { collaboration: CollaborationEdgeView };
+const edgeFor = (id: string, source: string, target: string, label: string, selection?: GraphSelection, configured = false, delivered = false): CollaborationEdge => ({ id, source, target, label, className: delivered ? 'collaboration-edge-delivered' : undefined, type: 'collaboration', markerEnd: { type: MarkerType.ArrowClosed, width: 15, height: 15, color: configured ? 'var(--dim)' : 'var(--muted)' }, style: { stroke: configured ? 'var(--dim)' : delivered ? 'var(--accent)' : 'var(--muted)', strokeWidth: configured ? 1 : 1.25, ...(configured ? { strokeDasharray: '6 5' } : {}) }, labelStyle: { fill: configured ? 'var(--muted)' : 'var(--text)', fontSize: 11 }, labelBgStyle: { fill: 'var(--surface)', fillOpacity: 1 }, labelBgBorderRadius: 3, labelBgPadding: [7, 5], data: { selection, configured } });
 const graphNode = (id: string, data: GraphNodeData): CollaborationNode => ({ id, type: 'collaboration', position: { x: 0, y: 0 }, data, width: 228, height: 118 });
+
+function handoffEdgeId(event: CollaborationEvent, view: 'relationships' | 'data') {
+  if (!['message.injected', 'message.reported', 'artifact.injected'].includes(event.type)) return;
+  if (view === 'relationships' && event.participantId && event.targetParticipantId) return `observed-${event.participantId}:${event.targetParticipantId}:${event.type}`;
+  if (view === 'data' && event.type === 'artifact.injected' && event.artifactVersionId && event.taskId) return `input-${event.artifactVersionId}-${event.taskId}`;
+  if (view === 'data' && event.messageId) return `message-${event.messageId}`;
+}
 
 function buildGraph(run: CollaborationRun, participants: CollaborationParticipant[], tasks: CollaborationTask[], messages: CollaborationMessage[], artifacts: CollaborationArtifactVersion[], events: CollaborationEvent[], view: 'relationships' | 'data', sessions: Session[]) {
   const nodes: CollaborationNode[] = [], edges: CollaborationEdge[] = [];
@@ -223,10 +245,10 @@ function buildGraph(run: CollaborationRun, participants: CollaborationParticipan
     for (const task of tasks) {
       for (const dependency of task.dependsOn) if (taskIds.has(dependency)) edges.push(edgeFor(`dependency-${dependency}-${task.id}`, `task-${dependency}`, `task-${task.id}`, translate('collaboration:graph.waitForCompletion'), { kind: 'task', id: task.id }, true));
       const inputs = new Set([...task.artifactIds, ...task.attempts.flatMap(attempt => attempt.inputArtifactIds)]);
-      for (const artifactId of inputs) if (artifactIds.has(artifactId)) { const injected = events.some(event => event.type === 'artifact.injected' && event.taskId === task.id && event.artifactVersionId === artifactId); edges.push(edgeFor(`input-${artifactId}-${task.id}`, `artifact-${artifactId}`, `task-${task.id}`, injected ? translate('collaboration:graph.delivered') : translate('collaboration:graph.boundInput'), { kind: 'artifact', id: artifactId }, !injected)); }
+      for (const artifactId of inputs) if (artifactIds.has(artifactId)) { const injected = events.some(event => event.type === 'artifact.injected' && event.taskId === task.id && event.artifactVersionId === artifactId); edges.push(edgeFor(`input-${artifactId}-${task.id}`, `artifact-${artifactId}`, `task-${task.id}`, injected ? translate('collaboration:graph.delivered') : translate('collaboration:graph.boundInput'), { kind: 'artifact', id: artifactId }, !injected, injected)); }
     }
     for (const artifact of artifacts) if (artifact.taskId && taskIds.has(artifact.taskId)) edges.push(edgeFor(`output-${artifact.id}`, `task-${artifact.taskId}`, `artifact-${artifact.id}`, translate('collaboration:graph.output'), { kind: 'artifact', id: artifact.id }));
-    for (const message of messages) if (message.taskId && message.targetTaskId && message.taskId !== message.targetTaskId && taskIds.has(message.taskId) && taskIds.has(message.targetTaskId)) edges.push(edgeFor(`message-${message.id}`, `task-${message.taskId}`, `task-${message.targetTaskId}`, deliveryLabel(message.delivery), { kind: 'message', id: message.id }));
+    for (const message of messages) if (message.taskId && message.targetTaskId && message.taskId !== message.targetTaskId && taskIds.has(message.taskId) && taskIds.has(message.targetTaskId)) edges.push(edgeFor(`message-${message.id}`, `task-${message.taskId}`, `task-${message.targetTaskId}`, deliveryLabel(message.delivery), { kind: 'message', id: message.id }, false, ['injected', 'reported'].includes(message.delivery)));
   }
   return { nodes, edges };
 }
@@ -315,7 +337,7 @@ function CollaborationCanvas({ graph, view, onSelect, onConnect }: { graph: Retu
     return () => { active = false; elk.terminateWorker(); };
   }, [layoutKey]);
   return <div className="collaboration-canvas">
-    <ReactFlow<CollaborationNode, CollaborationEdge> nodes={nodes} edges={edges} nodeTypes={nodeTypes}
+    <ReactFlow<CollaborationNode, CollaborationEdge> nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
       onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
       onNodeClick={(_, node) => onSelect({ kind: node.data.kind, id: node.data.kind === 'participant' ? node.id : node.id.replace(/^(task|artifact)-/, '') })}
       onEdgeClick={(_, edge) => edge.data?.selection && onSelect(edge.data.selection)}
@@ -360,8 +382,20 @@ function CanvasControls() {
 
 function CollaborationRunView({ run, state, stateVersion, providers, sessions, perform, pending, openSession, onEdit }: { run: CollaborationRun; state: PublicCollaborationState; stateVersion?: number; providers: ProviderInfo[]; sessions: Session[]; perform: Perform; pending: Set<string>; openSession: (id: string) => void; onEdit: () => void }) {
   const { t, i18n } = useTranslation('collaboration');
+  const reducedMotion = useReducedMotion();
   const tasks = state.tasks.filter(item => item.runId === run.id), messages = state.messages.filter(item => item.runId === run.id), artifacts = state.artifacts.filter(item => item.runId === run.id);
   const [view, setView] = useState<'relationships' | 'data'>(run.definitionSnapshot.steps?.length ? 'data' : 'relationships');
+  const [handoffs, setHandoffs] = useState<{ view: typeof view; events: CollaborationEvent[] }>({ view, events: [] });
+  const feedbackContext = useRef({ view, reducedMotion });
+  feedbackContext.current = { view, reducedMotion };
+  const changeView = (next: typeof view) => { setHandoffs({ view: next, events: [] }); setView(next); };
+  const finishHandoff = useCallback((seq: number) => setHandoffs(current => ({ ...current, events: current.events.filter(event => event.seq !== seq) })), []);
+  useEffect(() => {
+    if (reducedMotion) { setHandoffs(current => current.events.length ? { ...current, events: [] } : current); return; }
+    if (!handoffs.events.length) return;
+    const timer = window.setTimeout(() => setHandoffs(current => ({ ...current, events: [] })), 700);
+    return () => window.clearTimeout(timer);
+  }, [handoffs, reducedMotion]);
   const [selection, setSelection] = useState<GraphSelection>();
   const [selectionOpen, setSelectionOpen] = useState(false);
   const selectRecord = (value: GraphSelection) => { setSelection(value); setSelectionOpen(true); };
@@ -371,23 +405,49 @@ function CollaborationRunView({ run, state, stateVersion, providers, sessions, p
   const [eventError, setEventError] = useState('');
   const [more, setMore] = useState(false);
   const [timeline, setTimeline] = useState(true);
-  const cursor = useRef(0);
-  const eventRead = useRef<{ active: boolean; requested: boolean; promise?: Promise<void> }>({ active: true, requested: false });
+  const historyCursor = useRef(0);
+  const liveCursor = useRef(stateVersion);
+  const initialEventRead = useRef(true);
+  const failedEventRead = useRef<'history' | 'live' | undefined>(undefined);
+  const eventRead = useRef<{ active: boolean; historyRequested: boolean; liveRequested: boolean; promise?: Promise<void> }>({ active: true, historyRequested: false, liveRequested: false });
   const revision = [stateVersion, run.updatedAt, ...tasks.map(item => item.updatedAt), ...messages.map(item => `${item.id}:${item.delivery}`), artifacts.length].join('|');
-  const loadEvents = useCallback(() => {
+  const loadEvents = useCallback((source: 'history' | 'live') => {
     const read = eventRead.current;
-    read.requested = true;
+    if (source === 'history') read.historyRequested = true;
+    else read.liveRequested = true;
     if (read.promise) return read.promise;
     const drain = async () => {
-      while (read.active && read.requested) {
-        read.requested = false;
+      while (read.active && (read.historyRequested || read.liveRequested)) {
+        const source = read.liveRequested && liveCursor.current !== undefined ? 'live' : 'history';
+        const afterSeq = source === 'live' ? liveCursor.current! : historyCursor.current;
+        const requestedView = feedbackContext.current.view;
+        if (source === 'live') read.liveRequested = false;
+        else read.historyRequested = false;
         try {
-          const incoming = await window.workbench.queryCollaborationEvents(run.id, cursor.current, 500);
+          const incoming = await window.workbench.queryCollaborationEvents(run.id, afterSeq, 500);
           if (!read.active) return;
-          cursor.current = incoming.at(-1)?.seq ?? cursor.current;
+          const context = feedbackContext.current;
+          const fresh = source === 'live' && !context.reducedMotion && requestedView === context.view
+            ? incoming.filter(event => event.seq > afterSeq && handoffEdgeId(event, context.view)) : [];
+          if (fresh.length) setHandoffs(current => ({ view: context.view, events: [...(current.view === context.view ? current.events : []), ...fresh] }));
+          const nextSeq = Math.max(afterSeq, incoming.at(-1)?.seq ?? afterSeq);
+          if (source === 'live') {
+            liveCursor.current = nextSeq;
+            if (incoming.length === 500) read.liveRequested = true;
+          } else {
+            historyCursor.current = nextSeq;
+            setMore(incoming.length === 500);
+            if (liveCursor.current === undefined) {
+              if (incoming.length === 500) read.historyRequested = true;
+              else liveCursor.current = nextSeq;
+            }
+          }
           setEvents(previous => [...new Map([...previous, ...incoming].map(event => [event.seq, event])).values()].sort((a, b) => a.seq - b.seq));
-          setMore(incoming.length === 500); setEventError('');
-        } catch (reason) { if (read.active) setEventError(reason instanceof Error ? reason.message : String(reason)); }
+          if (!failedEventRead.current || failedEventRead.current === source) { failedEventRead.current = undefined; setEventError(''); }
+        } catch (reason) {
+          if (read.active) { failedEventRead.current = source; setEventError(reason instanceof Error ? reason.message : String(reason)); }
+          break;
+        }
       }
     };
     read.promise = drain().finally(() => { read.promise = undefined; });
@@ -396,16 +456,26 @@ function CollaborationRunView({ run, state, stateVersion, providers, sessions, p
   useEffect(() => {
     const read = eventRead.current;
     read.active = true;
-    return () => { read.active = false; read.requested = false; };
+    return () => { read.active = false; read.historyRequested = false; read.liveRequested = false; };
   }, []);
-  useEffect(() => { void loadEvents(); }, [revision, loadEvents]);
+  useEffect(() => {
+    const source = initialEventRead.current ? 'history' : 'live';
+    initialEventRead.current = false;
+    void loadEvents(source);
+  }, [revision, loadEvents]);
   const participants = useMemo(() => recordedParticipants(run, state, events), [run, state, events]);
-  const graph = useMemo(() => buildGraph(run, participants, tasks, messages, artifacts, events, view, sessions), [run, state, events, view, participants, sessions, i18n.resolvedLanguage]);
+  const graph = useMemo(() => {
+    const result = buildGraph(run, participants, tasks, messages, artifacts, events, view, sessions);
+    if (reducedMotion || handoffs.view !== view || !handoffs.events.length) return result;
+    return { ...result, edges: result.edges.map(edge => ({ ...edge, data: { ...edge.data,
+      handoffSeqs: edge.data?.configured ? [] : handoffs.events.filter(event => handoffEdgeId(event, view) === edge.id).map(event => event.seq), onHandoffEnd: finishHandoff,
+    } })) };
+  }, [run, state, events, view, participants, sessions, i18n.resolvedLanguage, handoffs, reducedMotion, finishHandoff]);
   const control = (action: string) => void perform(`collaboration-control-${run.id}`, () => call('control_run', { requestId: requestId(), runId: run.id, action }));
   const busy = pending.has(`collaboration-control-${run.id}`);
   return <section className="collaboration-run-view"><div className="collaboration-run-heading"><div><div className="collaboration-heading-kicker"><Network size={12} />{t('run.workspace')}</div><h1>{run.definitionSnapshot.name}</h1><p title={run.definitionSnapshot.cwd}>{pathName(run.definitionSnapshot.cwd)}<span>{t('run.configVersion', { version: run.definitionVersion })}</span><Status value={run.status} /></p></div><div className="collaboration-run-actions"><IconButton label={t('run.editSetup')} onClick={onEdit}><Settings2 size={16} /></IconButton>{run.status === 'draft' ? <button className="button primary small" disabled={busy} onClick={() => control('start')}><Play size={13} />{t('action.start')}</button> : run.status === 'running' ? <button className="button small" disabled={busy} onClick={() => control('pause')}><Pause size={13} />{t('action.pauseDispatch')}</button> : ['paused', 'interrupted', 'failed'].includes(run.status) ? <button className="button small" disabled={busy} onClick={() => control('resume')}><Play size={13} />{t('action.resume')}</button> : null}{['running', 'paused'].includes(run.status) && <><button className="button small" disabled={busy || tasks.some(task => ['running', 'queued', 'waiting', 'pending'].includes(task.status))} onClick={() => control('finish')}><Check size={13} />{t('action.finish')}</button><IconButton label={t('action.stop')} disabled={busy} onClick={() => control('cancel')}><Square size={14} /></IconButton></>}</div></div>
     {run.status === 'draft' && <section className="collaboration-launch-plan" aria-label={t('run.beforeStart')}><SetupSteps current={3} /><div className="collaboration-launch-summary"><div><strong>{t('run.saved')}</strong><p>{tasks.length ? t('run.taskPlan', { count: tasks.length }) : t('run.noPresetTasks')} {t('run.projectOrder')}</p></div><div className="collaboration-launch-participants">{run.definitionSnapshot.participants.map(participant => <span key={participant.id}><strong>{participant.name}</strong><small>{participant.mode === 'external' ? t('participant.externalPlatform') : providers.find(provider => provider.id === participant.providerId)?.name ?? participant.providerId} · {participant.permissions.workspace?.access === 'read-only' || participant.settings?.permission === 'read-only' ? t('permission.readOnly') : t('permission.readWrite')}</small></span>)}</div></div></section>}
-    <div className="collaboration-toolbar"><div className="collaboration-view-switch" role="tablist" aria-label={t('run.views')}><button role="tab" aria-selected={view === 'relationships'} className={view === 'relationships' ? 'active' : ''} onClick={() => setView('relationships')}><Network size={14} />{t('run.relationships')}</button><button role="tab" aria-selected={view === 'data'} className={view === 'data' ? 'active' : ''} onClick={() => setView('data')}><GitBranch size={14} />{t('run.dataFlow')}</button></div><div className="collaboration-toolbar-actions"><button className="button small" onClick={() => setComposer('task')}><Plus size={13} />{t('action.submitTask')}</button><button className="button small" onClick={() => setComposer('artifact')}><FileText size={13} />{t('action.publishMaterial')}</button><IconButton label={t('action.sendCollaborationMessage')} onClick={() => setComposer('message')}><MessageSquare size={15} /></IconButton><IconButton label={selectionOpen ? t('detail.collapse') : t('detail.expand')} disabled={!selection} aria-expanded={selectionOpen} onClick={() => setSelectionOpen(value => !value)}><PanelRight size={15} /></IconButton></div></div>
+    <div className="collaboration-toolbar"><div className="collaboration-view-switch" role="tablist" aria-label={t('run.views')}><button role="tab" aria-selected={view === 'relationships'} className={view === 'relationships' ? 'active' : ''} onClick={() => changeView('relationships')}><Network size={14} />{t('run.relationships')}</button><button role="tab" aria-selected={view === 'data'} className={view === 'data' ? 'active' : ''} onClick={() => changeView('data')}><GitBranch size={14} />{t('run.dataFlow')}</button></div><div className="collaboration-toolbar-actions"><button className="button small" onClick={() => setComposer('task')}><Plus size={13} />{t('action.submitTask')}</button><button className="button small" onClick={() => setComposer('artifact')}><FileText size={13} />{t('action.publishMaterial')}</button><IconButton label={t('action.sendCollaborationMessage')} onClick={() => setComposer('message')}><MessageSquare size={15} /></IconButton><IconButton label={selectionOpen ? t('detail.collapse') : t('detail.expand')} disabled={!selection} aria-expanded={selectionOpen} onClick={() => setSelectionOpen(value => !value)}><PanelRight size={15} /></IconButton></div></div>
     <div className="collaboration-legend"><span><i className="configured" />{t('graph.configuredLegend')}</span><span><i />{t('graph.observedLegend')}</span><span>{t('graph.taskCount', { count: tasks.length })} · {t('graph.artifactCount', { count: artifacts.length })}</span>{view === 'relationships' && <small>{t('graph.connectHint')}</small>}</div>
     {run.error && <div className="collaboration-inline-error">{run.error}</div>}
     <div className={`collaboration-graph-body ${selectionOpen ? 'with-selection' : ''}`}><CollaborationCanvas graph={graph} view={view} onSelect={selectRecord} onConnect={value => { if (value.source !== value.target && run.definitionSnapshot.participants.some(item => item.id === value.source) && run.definitionSnapshot.participants.some(item => item.id === value.target)) setConnection(value); }} />{selection && <SelectionPanel selection={selection} open={selectionOpen} sessions={sessions} run={run} participants={participants} tasks={tasks} messages={messages} artifacts={artifacts} events={events} providers={providers} openSession={openSession} perform={perform} pending={pending} onSelect={selectRecord} onClose={() => setSelectionOpen(false)} />}</div>
@@ -415,7 +485,7 @@ function CollaborationRunView({ run, state, stateVersion, providers, sessions, p
         <div className="collaboration-timeline-list">{events.map(event => <button key={event.id} className={selection?.kind === 'event' && selection.id === event.id ? 'selected' : ''} onClick={() => selectRecord({ kind: 'event', id: event.id })}>
           <span className="collaboration-event-marker" aria-hidden="true">{eventStatus(event) ? <Status value={eventStatus(event)!} /> : <span className="event-dot" />}</span><span className="event-sequence">#{event.seq}</span><time>{formatDate(event.createdAt, { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</time><strong>{eventLabel(event.type)}</strong><span className="event-participants">{participantName(run, event.participantId)}{event.targetParticipantId ? ` → ${participantName(run, event.targetParticipantId)}` : ''}</span>{event.source === 'external' && <small>{t('source.external')}</small>}
         </button>)}</div>
-        {!events.length && !eventError && <p>{t('timeline.empty')}</p>}{more && <button className="text-button" onClick={() => void perform('collaboration-load-events', loadEvents)}>{t('timeline.loadMore')}</button>}{eventError && <p className="collaboration-inline-error">{eventError}<button className="text-button" onClick={() => void loadEvents()}>{t('action.retryRead')}</button></p>}
+        {!events.length && !eventError && <p>{t('timeline.empty')}</p>}{more && <button className="text-button" onClick={() => void perform('collaboration-load-events', () => loadEvents('history'))}>{t('timeline.loadMore')}</button>}{eventError && <p className="collaboration-inline-error">{eventError}<button className="text-button" onClick={() => void loadEvents(failedEventRead.current ?? 'live')}>{t('action.retryRead')}</button></p>}
       </div></div></div>
     </div>
     {composer && <RunComposer kind={composer} run={run} tasks={tasks} artifacts={artifacts} perform={perform} pending={pending} onClose={() => setComposer(undefined)} />}
@@ -434,6 +504,17 @@ function SelectionPanel({ selection, open, sessions, run, participants, tasks, m
   selection: GraphSelection; open: boolean; sessions: Session[]; run: CollaborationRun; participants: CollaborationParticipant[]; tasks: CollaborationTask[]; messages: CollaborationMessage[]; artifacts: CollaborationArtifactVersion[]; events: CollaborationEvent[]; providers: ProviderInfo[]; openSession: (id: string) => void; perform: Perform; pending: Set<string>; onSelect: (selection: GraphSelection) => void; onClose: () => void;
 }) {
   const { t } = useTranslation('collaboration');
+  const panel = useRef<HTMLElement>(null);
+  const selectionKey = selection.kind === 'events' ? `events:${selection.ids.join(',')}` : `${selection.kind}:${selection.id}`;
+  const previousOpen = useRef(open);
+  const focusedDetail = useRef<{ key: string; element: HTMLElement } | undefined>(undefined);
+  useLayoutEffect(() => {
+    const element = panel.current;
+    const toggle = element?.closest('.collaboration-run-view')?.querySelector<HTMLButtonElement>('.collaboration-toolbar-actions button[aria-expanded]');
+    if (!open && element?.contains(document.activeElement)) toggle?.focus({ preventScroll: true });
+    if (open && !previousOpen.current && focusedDetail.current?.key === selectionKey && document.activeElement === toggle && focusedDetail.current.element.isConnected) focusedDetail.current.element.focus({ preventScroll: true });
+    previousOpen.current = open;
+  }, [open, selectionKey]);
   const participant = selection.kind === 'participant' ? participants.find(item => item.id === selection.id) : undefined;
   const task = selection.kind === 'task' ? tasks.find(item => item.id === selection.id) : undefined;
   const artifact = selection.kind === 'artifact' ? artifacts.find(item => item.id === selection.id) : undefined;
@@ -442,7 +523,7 @@ function SelectionPanel({ selection, open, sessions, run, participants, tasks, m
   const selectedEvents = selection.kind === 'event' ? events.filter(item => item.id === selection.id) : selection.kind === 'events' ? events.filter(item => selection.ids.includes(item.id)) : [];
   const artifactLink = (id: string) => { const item = artifacts.find(value => value.id === id); return <button className="collaboration-detail-link" key={id} onClick={() => onSelect({ kind: 'artifact', id })}><FileText size={12} />{item ? `${item.name} · v${item.version}` : id}<ArrowUpRight size={12} /></button>; };
   const title = participant?.name ?? task?.title ?? artifact?.name ?? (message ? t('detail.message') : relation ? t('relationships.title') : selectedEvents.length ? t('detail.events') : t('detail.title'));
-  return <aside className="collaboration-selection" aria-label={t('detail.label')} data-open={open} aria-hidden={!open} inert={!open}><header><strong>{title}</strong><IconButton label={t('detail.close')} onClick={onClose}><X size={15} /></IconButton></header><div className="collaboration-selection-scroll">
+  return <aside ref={panel} className="collaboration-selection" aria-label={t('detail.label')} data-open={open} aria-hidden={!open} inert={!open} onFocusCapture={event => { if (event.target instanceof HTMLElement) focusedDetail.current = { key: selectionKey, element: event.target }; }}><header><strong>{title}</strong><IconButton label={t('detail.close')} onClick={onClose}><X size={15} /></IconButton></header><div className="collaboration-selection-scroll">
     {participant && <><DetailField label={t('field.roles')}>{participant.roles.join(' · ') || t('field.unspecified')}</DetailField><DetailField label={t('field.connectionMode')}>{participant.mode === 'external' ? t('participant.external') : t('participant.managed')}</DetailField>{participant.providerId && <DetailField label={t('field.runtimeModel')}>{providers.find(item => item.id === participant.providerId)?.name ?? participant.providerId}{participant.modelId ? ` · ${modelName(providers.find(item => item.id === participant.providerId), participant.modelId)}` : ''}</DetailField>}<DetailField label={t('field.responsibilities')}>{participant.instructions || t('field.notProvided')}</DetailField><DetailField label={t('field.permissions')}><div className="collaboration-permission-summary">{([[t('action.submitTask'), participant.permissions.submitTasks], [t('action.sendMessage'), participant.permissions.sendMessages], [t('action.publishArtifact'), participant.permissions.publishArtifacts], [t('permission.configure'), participant.permissions.configureRun]] as const).map(([label, allowed]) => <span key={label}>{t(allowed ? 'permission.allowed' : 'permission.denied', { permission: label })}</span>)}<span>{t('permission.fileSummary', { access: participant.permissions.workspace?.access === 'read-write' ? t('permission.readWriteRoots') : t('permission.readOnly') })}</span></div></DetailField>{participant.mode === 'external' && <p className="collaboration-observation-note">{t('participant.externalRecordsNote')}</p>}<DetailField label={t('field.tasks')}>{tasks.filter(item => item.participantId === participant.id).map(item => <button key={item.id} className="collaboration-detail-link" onClick={() => onSelect({ kind: 'task', id: item.id })}>{item.title}<Status value={taskDisplayStatus(item, sessions)} /></button>)}</DetailField></>}
     {task && <><DetailField label={t('task.assignee')}>{task.participantSnapshot.name} · {t('run.configVersion', { version: task.definitionVersion })}</DetailField><DetailField label={t('task.status')}><Status value={taskDisplayStatus(task, sessions)} /></DetailField><DetailField label={t('task.prompt')}><pre>{task.prompt}</pre></DetailField>{task.error && <p className="collaboration-inline-error">{task.error}</p>}<DetailField label={t('task.inputs')}>{task.artifactIds.length ? task.artifactIds.map(artifactLink) : t('task.noInputs')}</DetailField>{task.result && <DetailField label={t('task.result')}><pre>{task.result}</pre></DetailField>}{task.sessionId && <button className="button small" onClick={() => openSession(task.sessionId!)}><MessageSquare size={13} />{t('action.openSession')}<ArrowUpRight size={13} /></button>}<DetailField label={t('task.attempts')}>{task.attempts.length ? task.attempts.map((attempt, index) => <div className="collaboration-attempt" key={attempt.id}><strong>{t('attempt.label', { kind: attempt.continuationOf ? t('attempt.continuation') : attempt.retryOf ? t('attempt.retry') : t('attempt.execution'), number: index + 1 })} <Status value={attempt.status === 'running' ? taskDisplayStatus(task, sessions) : attempt.status} /></strong><time>{dateLabel(attempt.startedAt)}{attempt.physicalTurns !== undefined ? t('attempt.turns', { count: attempt.physicalTurns }) : ''}</time>{attempt.nativeId && <code title={attempt.nativeId}>nativeId: {attempt.nativeId}</code>}{attempt.error && <p>{attempt.error}</p>}{attempt.inputArtifactIds.map(artifactLink)}{attempt.outputArtifactIds.map(artifactLink)}{attempt.sessionId && attempt.sessionId !== task.sessionId && <button className="text-button" onClick={() => openSession(attempt.sessionId!)}>{t('attempt.openSession')}</button>}</div>) : t('task.notStarted')}</DetailField>{['running', 'queued', 'waiting', 'pending'].includes(task.status) && <button className="button small" disabled={pending.has(`collaboration-task-${task.id}`)} onClick={() => void perform(`collaboration-task-${task.id}`, () => call('control_task', { requestId: requestId(), runId: run.id, taskId: task.id, action: 'cancel' }))}><Square size={12} />{t('task.stop')}</button>}{['failed', 'cancelled', 'interrupted'].includes(task.status) && <button className="button small" disabled={pending.has(`collaboration-task-${task.id}`)} onClick={() => void perform(`collaboration-task-${task.id}`, () => call('control_task', { requestId: requestId(), runId: run.id, taskId: task.id, action: 'retry' }))}><RefreshCw size={12} />{t('task.retry')}</button>}</>}
     {artifact && <><DetailField label={t('artifact.version')}>v{artifact.version} · {artifact.kind}</DetailField><DetailField label={t('artifact.publisher')}>{participantName(run, artifact.participantId)}</DetailField><DetailField label={t('artifact.versionId')}><code>{artifact.id}</code></DetailField><DetailField label="SHA256"><code>{artifact.sha256}</code></DetailField>{artifact.revision && <DetailField label={t('artifact.revision')}><code>{artifact.revision}</code></DetailField>}<DetailField label={t('artifact.publishedAt')}>{dateLabel(artifact.createdAt)}</DetailField>{artifact.taskId && <button className="collaboration-detail-link" onClick={() => onSelect({ kind: 'task', id: artifact.taskId! })}><GitBranch size={12} />{t('artifact.producer')}<ArrowUpRight size={12} /></button>}{artifact.path && <DetailField label={t('artifact.importFile')}><code>{artifact.path}</code></DetailField>}{artifact.content !== undefined && <DetailField label={t('artifact.content')}><pre>{artifact.content}</pre></DetailField>}<DetailField label={t('artifact.consumers')}>{tasks.filter(item => item.artifactIds.includes(artifact.id) || item.attempts.some(attempt => attempt.inputArtifactIds.includes(artifact.id))).map(item => <button className="collaboration-detail-link" key={item.id} onClick={() => onSelect({ kind: 'task', id: item.id })}>{item.title}<ArrowUpRight size={12} /></button>)}</DetailField></>}
@@ -469,7 +550,7 @@ function RunComposer({ kind, run, tasks, artifacts, perform, pending, onClose }:
     {kind === 'artifact' && <div className="collaboration-view-switch"><button type="button" className={artifactMode === 'text' ? 'active' : ''} onClick={() => setArtifactMode('text')}>{t('artifact.enterContent')}</button><button type="button" className={artifactMode === 'file' ? 'active' : ''} onClick={() => setArtifactMode('file')}>{t('artifact.importFile')}</button></div>}
     {kind !== 'artifact' || artifactMode === 'text' ? <label>{kind === 'task' ? t('task.scope') : kind === 'message' ? t('message.text') : t('artifact.text')}<textarea value={text} required rows={6} onChange={event => setText(event.target.value)} /></label> : <label>{t('artifact.path')}<input value={path} required onChange={event => setPath(event.target.value)} placeholder={t('artifact.pathPlaceholder', { cwd: run.definitionSnapshot.cwd })} /><small>{t('artifact.copyNote')}</small></label>}
     {kind === 'task' && tasks.length > 0 && <fieldset className="collaboration-check-list"><legend>{t('task.dependencies')}</legend>{tasks.map(task => <label key={task.id}><input type="checkbox" checked={dependsOn.includes(task.id)} onChange={event => setDependsOn(ids => event.target.checked ? [...ids, task.id] : ids.filter(id => id !== task.id))} />{task.title}</label>)}</fieldset>}
-    {kind !== 'artifact' && artifacts.length > 0 && <fieldset className="collaboration-check-list"><legend>{t('task.inputVersions')}</legend>{artifacts.map(artifact => <label key={artifact.id}><input type="checkbox" checked={artifactIds.includes(artifact.id)} onChange={event => setArtifactIds(ids => event.target.checked ? [...ids, artifact.id] : ids.filter(id => id !== artifact.id))} />{artifact.name} · v{artifact.version}<code>{artifact.sha256.slice(0, 8)}</code></label>)}</fieldset>}
+    {kind !== 'artifact' && artifacts.length > 0 && <fieldset className="collaboration-check-list"><legend>{t('task.inputVersions')}</legend>{artifacts.map(artifact => <label className="collaboration-artifact-input" data-bound={artifactIds.includes(artifact.id)} key={artifact.id}><input type="checkbox" checked={artifactIds.includes(artifact.id)} onChange={event => setArtifactIds(ids => event.target.checked ? [...ids, artifact.id] : ids.filter(id => id !== artifact.id))} />{artifact.name} · v{artifact.version}<code>{artifact.sha256.slice(0, 8)}</code></label>)}</fieldset>}
     <div className="modal-actions"><button type="button" className="button subtle" disabled={busy} onClick={onClose}>{t('action.cancel')}</button><button className="button primary" disabled={!valid || busy}>{busy ? <LoaderCircle className="spin" size={14} /> : <Check size={14} />}{labels[kind]}</button></div>
   </form></Modal>;
 }
