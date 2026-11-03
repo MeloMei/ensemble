@@ -30,6 +30,10 @@ test('actual renderer components preserve approval, draft, recovery and settings
       app.whenReady().then(async () => {
         const window = new BrowserWindow({show: false, webPreferences: {contextIsolation: true, sandbox: true}});
         await window.loadFile(${JSON.stringify(path.join(directory, 'index.html'))});
+        if (${JSON.stringify(process.env.ENSEMBLE_REDUCED_MOTION === '1')}) {
+          window.webContents.debugger.attach('1.3');
+          await window.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', {features: [{name: 'prefers-reduced-motion', value: 'reduce'}]});
+        }
         const results = await window.webContents.executeJavaScript(${JSON.stringify(`window.runRendererRegressions(${JSON.stringify(selectedCases ?? null)})`)});
         console.log('RENDERER_RESULTS=' + JSON.stringify(results));
         window.destroy(); app.quit();
