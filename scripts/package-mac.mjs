@@ -6,6 +6,7 @@ import { mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:f
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { fileSha256, macReleaseAssets } from './mac-release-assets.mjs';
+import { buildMacUpdateInstaller } from './build-mac-update-installer.mjs';
 
 if (process.platform !== 'darwin') throw new Error('此打包命令用于本机 macOS。');
 const projectRoot = fileURLToPath(new URL('../', import.meta.url));
@@ -29,11 +30,12 @@ try {
     out: temporaryDirectory, overwrite: true, asar: false, prune: true,
     appBundleId: 'local.agent-workbench.desktop',
     appCategoryType: 'public.app-category.developer-tools',
-    ignore: [nonRuntimeEntries],
+    ignore: [nonRuntimeEntries, /^\/bin\/apply-app-update\.sh$/],
   });
   if (paths.length !== 1) throw new Error('Expected exactly one macOS application.');
   await mkdir(releaseDirectory, { recursive: true });
   const app = join(paths[0], `${productName}.app`);
+  await buildMacUpdateInstaller({ destination: join(app, 'Contents', 'Helpers', 'Ensemble Installer.app') });
   await run('codesign', ['--force', '--deep', '--sign', '-', app]);
   await run('codesign', ['--verify', '--deep', '--strict', app]);
   await run('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', app, temporaryArchive]);

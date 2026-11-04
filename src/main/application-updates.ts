@@ -2,9 +2,9 @@
 // Copyright (c) 2026 AgentRecall contributors. MIT; see licenses/AgentRecall-MIT.txt.
 // Ensemble validates and replaces a complete macOS bundle instead of an npm directory.
 import { createHash, randomUUID } from 'node:crypto';
-import { execFile, spawn } from 'node:child_process';
-import { constants } from 'node:fs';
-import { access, copyFile, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { constants, existsSync } from 'node:fs';
+import { access, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, posix, relative, sep } from 'node:path';
 import { promisify } from 'node:util';
 import extractZip from 'extract-zip';
@@ -209,7 +209,6 @@ export interface ApplicationUpdatesOptions {
   appPath?: string;
   dataPath: string;
   arch: string;
-  helperPath: string;
   getAutoCheck(): boolean;
   setAutoCheck(enabled: boolean): Promise<void>;
   publish(state: AppUpdateState): void;
@@ -396,26 +395,35 @@ export class ApplicationUpdates {
       signal.throwIfAborted();
       const token = randomUUID();
       const backendPid = await this.options.prepareInstall(token);
+      const handoff = join(stage, token);
+      const installerName = 'Ensemble Installer.app';
+      const installer = join(handoff, installerName);
       try {
-      signal.throwIfAborted();
-        const helper = join(stage, 'apply-update.sh');
-        await copyFile(this.options.helperPath, helper);
+        signal.throwIfAborted();
+        await mkdir(handoff, { mode: 0o700 });
+        await run('/usr/bin/ditto', [join(app, 'Contents', 'Helpers', installerName), installer], { signal });
+        await run('/usr/bin/open', ['-n', installer, '--args', app, join(stage, 'unpacked', 'Ensemble.app'),
+          join(stage, 'previous.app'), String(process.pid), String(backendPid), this.options.dataPath, token, release.version],
+        { signal, timeout: 15_000 });
+        const ready = join(handoff, 'ready');
+        const deadline = Date.now() + 15_000;
+        while (!existsSync(ready)) {
+          signal.throwIfAborted();
+          if (Date.now() >= deadline) throw new Error('安装助手未能启动，请重试。');
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        signal.throwIfAborted();
         await saveJson(join(this.updatePath, 'pending.json'), { token, version: release.version });
-        const log = await open(join(this.updatePath, 'installer.log'), 'a', 0o600);
-        let child: ReturnType<typeof spawn>;
-        try {
-          child = spawn('/bin/sh', [helper, app, join(stage, 'unpacked', 'Ensemble.app'), join(stage, 'previous.app'), String(process.pid), String(backendPid), this.options.dataPath, token, release.version], {
-            detached: true, stdio: ['ignore', log.fd, log.fd], env: { ...process.env, ELECTRON_RUN_AS_NODE: undefined, WORKBENCH_DEV_URL: undefined, WORKBENCH_DATA_DIR: this.options.dataPath },
-          });
-          await new Promise<void>((resolveSpawn, reject) => { child.once('spawn', resolveSpawn); child.once('error', reject); });
-          child.unref();
-        } finally { await log.close(); }
         this.state = { ...this.state, phase: 'installing', error: undefined }; this.changed();
         this.options.requestQuit();
         return this.snapshot;
       } catch (error) {
-        await this.options.cancelInstall(token);
-        await rm(join(this.updatePath, 'pending.json'), { force: true });
+        try {
+          if (existsSync(installer)) await run('/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister',
+            ['-u', installer]).catch(() => {});
+          await rm(handoff, { recursive: true, force: true });
+          await rm(join(this.updatePath, 'pending.json'), { force: true });
+        } finally { await this.options.cancelInstall(token); }
         throw error;
       }
     });
