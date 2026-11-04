@@ -4,7 +4,7 @@ import { isAbsolute, relative, sep } from 'node:path';
 import { z } from 'zod';
 import type {
   AgentMail, ApprovalInput, CollaborationCaller, McpServerConfig, PromptInput, ProviderInfo,
-  Session, SessionAttempt, SessionCommandReceipt, SessionQueueItem, SessionSettings, SessionSettingsPatch, SessionStatus, Snapshot, TerminalInfo, Workflow,
+  Session, SessionAttempt, SessionCommandReceipt, SessionQueueItem, SessionSettings, SessionSkillAssignment, SessionSkillAssignmentReceipt, SessionStatus, SessionUpdate, Snapshot, TerminalInfo, Workflow,
   WorkflowInput, Workspace, WorkspaceTab,
 } from '../shared/types';
 import type { LoadedPromptAttachment, ProviderAdapter, ProviderEvent } from './providers/types';
@@ -306,9 +306,13 @@ export class WorkbenchEngine {
     this.publish(this.liveSnapshot());
   }
 
-  updateSession(id: string, input: { title?: string; archived?: boolean; settings?: SessionSettingsPatch; modelId?: string | null }): void {
+  updateSession(id: string, input: SessionUpdate & { skillAssignment: SessionSkillAssignment }): SessionSkillAssignmentReceipt;
+  updateSession(id: string, input: SessionUpdate): void;
+  updateSession(id: string, input: SessionUpdate & { skillAssignment?: SessionSkillAssignment }): SessionSkillAssignmentReceipt | void;
+  updateSession(id: string, input: SessionUpdate & { skillAssignment?: SessionSkillAssignment }): SessionSkillAssignmentReceipt | void {
     const session = this.session(id);
     if (this.active.has(id)) throw new Error('请等当前任务结束后修改会话。');
+    if (input.skillAssignment && input.settings?.skillIds !== undefined) throw new Error('不能同时替换全部 Skills 和修改单项 Skill 分派。');
     const provider = this.adapters.get(session.providerId)?.info;
     let modelId = session.modelId;
     if (input.modelId !== undefined) {
@@ -327,16 +331,24 @@ export class WorkbenchEngine {
       if (value === null) delete settings[key];
       else if (value !== undefined) Object.assign(settings, { [key]: structuredClone(value) });
     }
+    if (input.skillAssignment) {
+      const { skillId, enabled } = input.skillAssignment;
+      const selected = settings.skillIds ?? [];
+      const skillIds = enabled ? [...new Set([...selected, skillId])] : selected.filter(id => id !== skillId);
+      if (skillIds.length > 8) throw new Error('每个会话最多启用 8 个 Skill。');
+      settings.skillIds = skillIds;
+    }
     const modelChanged = modelId !== session.modelId;
     if (modelChanged && input.settings?.effort === undefined && settings.effort && efforts && !efforts.includes(settings.effort)) delete settings.effort;
     Object.assign(session, {
       modelId,
-      ...(input.settings || modelChanged ? { settings } : {}),
+      ...(input.settings || input.skillAssignment || modelChanged ? { settings } : {}),
       ...(input.title !== undefined ? { title: input.title.trim() || '新会话' } : {}),
       ...(input.archived !== undefined ? { archived: input.archived } : {}),
-      updatedAt: now(),
+      updatedAt: new Date(Math.max(Date.now(), Date.parse(session.updatedAt) + 1)).toISOString(),
     });
     this.changed();
+    if (input.skillAssignment) return { skillIds: [...(session.settings?.skillIds ?? [])], updatedAt: session.updatedAt };
   }
 
   async forkSession(id: string, beforeMessageId?: string): Promise<string> {

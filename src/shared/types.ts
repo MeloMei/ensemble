@@ -278,7 +278,8 @@ export interface WorkbenchAPI {
   chooseAttachments(): Promise<PromptAttachment[]>;
   sendPrompt(sessionId: string, input: PromptInput, commandId?: string): Promise<void>;
   saveSessionDraft(sessionId: string, input: PromptInput): Promise<void>;
-  updateSession(sessionId: string, input: { title?: string; archived?: boolean; settings?: SessionSettingsPatch; modelId?: string | null }): Promise<void>;
+  updateSession(sessionId: string, input: SessionUpdate & { skillAssignment: SessionSkillAssignment }): Promise<SessionSkillAssignmentReceipt>;
+  updateSession(sessionId: string, input: SessionUpdate): Promise<void>;
   forkSession(sessionId: string, beforeMessageId?: string): Promise<string>;
   rewindSession(sessionId: string, userMessageId: string): Promise<PromptInput>;
   retryWorkflowStep(workflowId: string, stepId: string): Promise<void>;
@@ -310,6 +311,9 @@ export interface CurrencyBalance { currency: string; total: string; granted: str
 export interface DeepSeekBalance extends CurrencyBalance { balances: CurrencyBalance[]; checkedAt: string }
 export interface SessionSettings { effort?: string; permission?: 'review' | 'read-only'; skillIds?: string[] }
 export type SessionSettingsPatch = { [K in keyof SessionSettings]?: SessionSettings[K] | null };
+export interface SessionUpdate { title?: string; archived?: boolean; settings?: SessionSettingsPatch; modelId?: string | null }
+export interface SessionSkillAssignment { skillId: string; enabled: boolean }
+export interface SessionSkillAssignmentReceipt { skillIds: string[]; updatedAt: string }
 export interface ProcessEvent {
   id: string; kind: 'tool' | 'plan' | 'task' | 'subagent'; title: string;
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';

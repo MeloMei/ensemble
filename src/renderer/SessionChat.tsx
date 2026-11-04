@@ -16,7 +16,7 @@ import {
   Paperclip, Pause, Play, Search, ShieldCheck, TerminalSquare, Users, X,
 } from 'lucide-react';
 import type {
-  Approval, Message, ProcessEvent, PromptAttachment, PromptInput, ProviderInfo, Session, SkillInfo, UsageRecord,
+  Approval, Message, ProcessEvent, PromptAttachment, PromptInput, ProviderInfo, Session, SessionSkillAssignmentReceipt, SkillInfo, UsageRecord,
 } from '../shared/types';
 import { IconButton, Modal, Status, modelName, pathName, type Perform } from './ui';
 import { SPRING_SNAPPY } from './vendor/open-claude-ui/ClaudeMotionPresets';
@@ -145,6 +145,109 @@ function CollapsibleRegion({ expanded, id, className = '', regionRef, onClose, c
   </div>;
 }
 
+type SkillAssignmentChange = {
+  skillId: string;
+  enabled: boolean;
+  phase: 'saving' | 'saved' | 'failed';
+};
+
+function SessionSkillAssignments({ session, workspaceId, visible, perform }: {
+  session: Session;
+  workspaceId: string;
+  visible: boolean;
+  perform: Perform;
+}) {
+  const { t } = useTranslation('workspace');
+  const id = useId();
+  const [skills, setSkills] = useState<SkillInfo[]>([]);
+  const [change, setChange] = useState<SkillAssignmentChange>();
+  const [receipt, setReceipt] = useState<SessionSkillAssignmentReceipt>();
+  const latestSession = useRef(session);
+  if (session.updatedAt >= latestSession.current.updatedAt) latestSession.current = session;
+  const inFlight = useRef<SkillAssignmentChange | undefined>(undefined);
+  const mounted = useRef(false);
+  const authority = latestSession.current;
+  const active = activeStatuses.has(session.status);
+  const skillIds = receipt && receipt.updatedAt >= authority.updatedAt ? receipt.skillIds : authority.settings?.skillIds ?? [];
+  const busy = change?.phase === 'saving';
+  useLayoutEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; inFlight.current = undefined; };
+  }, []);
+  useEffect(() => {
+    let current = true;
+    if (visible) void perform(`session-skills-${session.id}`, async () => {
+      const next = await window.workbench.listSkills(workspaceId);
+      if (current) setSkills(next.filter(skill => !skill.issue));
+    });
+    return () => { current = false; };
+  }, [workspaceId, session.id, visible, perform]);
+
+  const assign = (skillId: string, enabled: boolean) => {
+    if (inFlight.current || active) return;
+    const operation: SkillAssignmentChange = { skillId, enabled, phase: 'saving' };
+    inFlight.current = operation;
+    setChange(operation);
+    void perform(`session-skill-${session.id}`, async () => {
+      try {
+        const saved = await window.workbench.updateSession(session.id, { skillAssignment: { skillId, enabled } });
+        if (mounted.current && inFlight.current === operation) {
+          setReceipt(saved);
+          inFlight.current = undefined;
+          setChange({ ...operation, phase: 'saved' });
+        }
+      } catch (error) {
+        if (mounted.current && inFlight.current === operation) {
+          inFlight.current = undefined;
+          setChange({ ...operation, phase: 'failed' });
+        }
+        throw error;
+      }
+    });
+  };
+
+  if (!skills.length) return null;
+  return <section className="session-skills" aria-labelledby={`${id}-heading`} aria-busy={busy}>
+    <span id={`${id}-heading`}>{t('chat.skills')}</span>
+    <div className="skills-select">
+      {skills.map((skill, index) => {
+        const enabled = skillIds.includes(skill.id);
+        const current = change?.skillId === skill.id && !(change.phase === 'saved' && change.enabled !== enabled) ? change : undefined;
+        const status = current?.phase === 'saving'
+          ? t(current.enabled ? 'chat.skillEnabling' : 'chat.skillRemoving')
+          : current?.phase === 'failed'
+            ? t(current.enabled ? 'chat.skillEnableFailed' : 'chat.skillRemoveFailed')
+            : current?.phase === 'saved'
+              ? t(current.enabled ? 'chat.skillEnabledSaved' : 'chat.skillRemovedSaved')
+              : t(enabled ? 'chat.skillEnabled' : 'chat.skillNotEnabled');
+        const statusId = `${id}-${index}-status`;
+        return <div className="session-skill-assignment" key={skill.id} data-skill-id={skill.id}
+          data-state={current?.phase ?? (enabled ? 'enabled' : 'disabled')} data-enabled={enabled}>
+          <label title={skill.description}>
+            <input type="checkbox" disabled={active || busy} checked={enabled} aria-describedby={statusId}
+              onChange={event => assign(skill.id, event.target.checked)} />
+            <span className="session-skill-agent" aria-hidden="true">
+              <AgentIcon providerId={session.providerId} size={16} />
+              <span className="session-skill-badge">
+                {current?.phase === 'saving' ? <LoaderCircle size={10} />
+                  : current?.phase === 'failed' ? <CircleAlert size={10} />
+                    : enabled ? <Check size={10} /> : <X size={10} />}
+              </span>
+            </span>
+            <strong>{skill.name}</strong>
+          </label>
+          <span className="session-skill-status" id={statusId} role="status" aria-live="polite" aria-atomic="true">
+            {status}
+          </span>
+          {current?.phase === 'failed' && <button type="button" className="session-skill-retry" disabled={active || busy}
+            aria-label={t(current.enabled ? 'chat.skillRetryEnable' : 'chat.skillRetryRemove', { name: skill.name })}
+            onClick={() => assign(skill.id, current.enabled)}>{t('chat.skillRetry')}</button>}
+        </div>;
+      })}
+    </div>
+  </section>;
+}
+
 export function SessionSettingsPanel({ session, workspaceId, visible, perform, openSession }: {
   session: Session;
   workspaceId: string;
@@ -154,29 +257,8 @@ export function SessionSettingsPanel({ session, workspaceId, visible, perform, o
 }) {
   const { t } = useTranslation('workspace');
   const active = activeStatuses.has(session.status);
-  const [skills, setSkills] = useState<SkillInfo[]>([]);
-  const availableSkills = skills.filter(skill => !skill.issue);
-  useEffect(() => {
-    if (visible) void perform('session-skills', async () => setSkills(await window.workbench.listSkills(workspaceId)));
-  }, [workspaceId, visible, perform]);
-
   return <div className="session-settings">
-    {availableSkills.length > 0 && <div className="session-skills">
-      <span>{t('chat.skills')}</span>
-      <div className="skills-select">
-        {availableSkills.map(skill => <label key={skill.id} title={skill.description}>
-          <input type="checkbox" disabled={active} checked={session.settings?.skillIds?.includes(skill.id) ?? false}
-            onChange={event => void perform('session-skill', () => window.workbench.updateSession(session.id, {
-              settings: {
-                skillIds: event.target.checked
-                  ? [...(session.settings?.skillIds ?? []), skill.id]
-                  : session.settings?.skillIds?.filter(id => id !== skill.id),
-              },
-            }))} />
-          {skill.name}
-        </label>)}
-      </div>
-    </div>}
+    <SessionSkillAssignments key={`${workspaceId}:${session.id}`} session={session} workspaceId={workspaceId} visible={visible} perform={perform} />
     <div className="session-settings-footer">
       {active && <span>{t('chat.settingsAfterTask')}</span>}
       <button disabled={active} onClick={() => void perform('archive-session',

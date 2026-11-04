@@ -110,6 +110,42 @@ function collaborationSnapshot(runs: CollaborationRun[], revision = 1): Snapshot
 }
 
 const cases: Record<string, () => Promise<void>> = {
+  'MOTION-SKILL-ASSIGNMENT: recipient feedback follows the saved session selection': async () => {
+    const skillList = ['review', 'build', 'docs'].map(id => ({ id, name: id, description: id, path: '/' + id, scope: 'project', editable: true }));
+    const writes: { skillId: string; enabled: boolean }[] = [];
+    let gate = deferred<{ skillIds: string[]; updatedAt: string }>();
+    window.workbench = {
+      listSkills: async () => skillList,
+      updateSession: async (_id: string, patch: { skillAssignment: typeof writes[number] }) => { writes.push(patch.skillAssignment); return gate.promise; },
+    } as unknown as Window['workbench'];
+    const show = (current: Session) => render(<SessionSettingsPanel session={current} workspaceId={workspace.id} visible perform={perform} openSession={() => {}} />, 'user');
+    const row = (id: string) => document.querySelector<HTMLElement>(`[data-skill-id="${id}"]`)!;
+    const toggle = (id: string) => row(id).querySelector<HTMLInputElement>('input')!;
+    await show(session);
+    await act(async () => { toggle('review').click(); toggle('build').click(); await tick(); });
+    assert(writes.length === 1 && row('review').dataset.state === 'saving' && row('review').querySelector('.session-skill-agent .session-skill-badge'), 'A pending assignment did not lock or mark the receiving Agent');
+    gate.reject(new Error('Cannot save selection')); await settle();
+    assert(row('review').dataset.state === 'failed' && !toggle('review').checked && !toggle('build').disabled, 'Failed assignment did not retain the selection and unlock retry');
+    gate = deferred();
+    await act(async () => { row('review').querySelector('button')!.click(); await tick(); });
+    await show({ ...session, title: 'Changed title', updatedAt: '2026-11-04T00:00:01Z' });
+    gate.resolve({ skillIds: ['review'], updatedAt: '2026-11-04T00:00:02Z' }); await settle();
+    assert(toggle('review').checked && row('review').dataset.state === 'saved', 'Retried assignment did not show the saved selection');
+    gate = deferred();
+    await change(toggle('build'), true);
+    assert(writes.at(-1)?.skillId === 'build' && writes.at(-1)?.enabled === true, 'The second assignment must send only the selected Skill');
+    const synced = { ...session, updatedAt: '2026-11-04T01:00:00Z', settings: { ...session.settings, skillIds: ['review', 'docs'] } };
+    await show(synced); gate.resolve({ skillIds: ['review', 'build'], updatedAt: '2026-11-04T00:00:03Z' }); await settle();
+    assert(toggle('docs').checked && !toggle('build').checked && !toggle('build').disabled, 'An old acknowledgement overwrote a newer selection');
+    gate = deferred();
+    await change(toggle('review'), false);
+    assert(writes.at(-1)?.skillId === 'review' && writes.at(-1)?.enabled === false, 'Removal must send only the removed Skill');
+    gate.resolve({ skillIds: ['docs'], updatedAt: '2026-11-04T01:00:01Z' }); await settle();
+    assert(!toggle('review').checked && toggle('docs').checked && row('review').dataset.state === 'saved' && row('review').querySelector('.session-skill-badge .lucide-x'), 'The removed Skill still appeared enabled');
+    gate = deferred(); await change(toggle('build'), true);
+    await show({ ...session, id: 'other-recipient', status: 'running' }); gate.resolve({ skillIds: ['docs', 'build'], updatedAt: '2026-11-04T01:00:02Z' }); await settle();
+    assert(!toggle('build').checked && toggle('build').disabled && row('build').dataset.state === 'disabled', 'A previous Agent response was applied to another active session');
+  },
   'MOTION-RESOURCES: feedback follows actual operations and preserves editors and tab scroll': async () => {
     const project = { ...workspace, id: 'motion-resources' };
     const skills = Array.from({ length: 20 }, (_, index) => ({ id: `motion-skill-${index}`, path: `/fixture/.agents/skills/skill-${index}/SKILL.md`, name: `skill-${index}`, description: 'Resource for this project', scope: 'project' as const, editable: true }));
@@ -700,7 +736,7 @@ const cases: Record<string, () => Promise<void>> = {
     };
     window.workbench = {
       listSkills: async () => [{ id: 'skill', name: 'Skill', path: '/skill', description: '', scope: 'project', editable: true }],
-      updateSession: async (_id: string, patch: Record<string, unknown>) => { writes.push(structuredClone(patch)); },
+      updateSession: async (_id: string, patch: Record<string, unknown>) => { writes.push(structuredClone(patch)); if (patch.skillAssignment) return { skillIds: ['skill'], updatedAt: '2026-11-04T01:00:00Z' }; },
     } as unknown as Window['workbench'];
     await show();
     const textarea = input('textarea');
@@ -723,7 +759,7 @@ const cases: Record<string, () => Promise<void>> = {
     await change(input('.session-skills input'), true);
     await choose('effort', '');
     await choose('model', '');
-    assert(JSON.stringify(writes) === JSON.stringify([{ settings: { permission: 'read-only' } }, { settings: { effort: 'high' } }, { modelId: 'model-b' }, { settings: { skillIds: ['skill'] } }, { settings: { effort: null } }, { modelId: null }]), `A stale setting was sent: ${JSON.stringify(writes)}`);
+    assert(JSON.stringify(writes) === JSON.stringify([{ settings: { permission: 'read-only' } }, { settings: { effort: 'high' } }, { modelId: 'model-b' }, { skillAssignment: { skillId: 'skill', enabled: true } }, { settings: { effort: null } }, { modelId: null }]), `A stale setting was sent: ${JSON.stringify(writes)}`);
     assertDraft();
     settingsVisible = false; await show();
     await open('effort');
