@@ -1,10 +1,11 @@
+import { AgentIcon } from './AgentIcon';
 import { AppSelect } from './AppSelect';
 import { Tooltip } from './Tooltip';
 import { useTranslation } from 'react-i18next';
 import { translate, formatDate, formatNumber } from '../shared/i18n';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { useReducedMotion } from 'framer-motion';
-import { ArrowUpRight, Check, ChevronRight, Copy, FileText, GitBranch, KeyRound, LoaderCircle, Maximize, MessageSquare, Minus, Network, PanelRight, Pause, Play, Plus, RefreshCw, Settings2, Square, Trash2, X } from 'lucide-react';
+import { ArrowUpRight, Check, ChevronRight, CircleHelp, Clock3, Copy, FileCheck2, FileText, GitBranch, KeyRound, LoaderCircle, Maximize, MessageSquare, Minus, Network, PanelRight, Pause, Play, Plus, RefreshCw, Settings2, Square, Trash2, X } from 'lucide-react';
 import { Background, ControlButton, Controls, Handle, MarkerType, Position, ReactFlow, SmoothStepEdge, getSmoothStepPath, useNodes, useNodesInitialized, useReactFlow, useStore, type Connection, type Edge, type EdgeChange, type EdgeProps, type Node, type NodeChange, type NodeProps } from '@xyflow/react';
 import ELK from 'elkjs/lib/elk-api.js';
 import ELKWorker from 'elkjs/lib/elk-worker.min.js?worker';
@@ -13,6 +14,7 @@ import type { McpServerConfig, ProviderInfo, PublicCollaborationState, Session, 
 import { DirectoryField, EmptyState, IconButton, Modal, ModelField, ProviderSelect, Status, defaultModelId, modelName, pathName, relativeTime, validModelSelection, type Perform } from './ui';
 import { useAppearance } from './appearance';
 import { createImplementationReviewDraft, participantPermissionIssue, withCollaborationGoal } from './collaboration-template';
+import { projectResourceDelivery, type ResourceDeliveryCount } from './collaboration-resource-delivery';
 import '@xyflow/react/dist/style.css';
 import './CollaborationViews.css';
 
@@ -28,11 +30,14 @@ const eventLabel = (type: string) => eventKeys[type] ? translate(`collaboration:
 const deliveryLabel = (delivery: string) => deliveryKeys[delivery] ? translate(`collaboration:${deliveryKeys[delivery]}`) : delivery;
 function taskDisplayStatus(task: CollaborationTask, sessions: Session[]) {
   if (task.status === 'waiting' && task.waitingForTaskIds?.length) return 'waiting_children';
-  if (task.status === 'running' || task.status === 'queued') {
+  if (task.status === 'running') {
     const session = sessions.find(item => item.id === task.sessionId);
-    if (session && ['queued', 'running', 'waiting_approval', 'waiting_children'].includes(session.status)) return session.status;
+    if (session?.status === 'waiting_approval' || session?.status === 'waiting_children') return session.status;
   }
   return task.status;
+}
+function runningExecution(task?: CollaborationTask) {
+  if (task?.status === 'running') return JSON.stringify([task.id, task.attemptId]);
 }
 function eventStatus(event: CollaborationEvent) {
   if (event.type === 'task.wait_requested' || event.type === 'task.waiting') return 'waiting_children';
@@ -183,24 +188,42 @@ function CollaborationEditor({ providers, identities, initialCwd, run, perform, 
   </section>;
 }
 
-interface GraphNodeData extends Record<string, unknown> { title: string; subtitle: string; detail?: string; kind: 'participant' | 'task' | 'artifact'; status?: string; external?: boolean }
+interface GraphNodeData extends Record<string, unknown> { title: string; subtitle: string; detail?: string; kind: 'participant' | 'task' | 'artifact'; status?: string; external?: boolean; recipientProviderId?: string; executionId?: string; resourceDelivery?: ResourceDeliveryCount[] }
 type CollaborationNode = Node<GraphNodeData, 'collaboration'>;
 type GraphSelection = { kind: 'participant' | 'task' | 'artifact' | 'event' | 'message' | 'relationship'; id: string } | { kind: 'events'; ids: string[] };
-interface GraphEdgeData extends Record<string, unknown> { selection?: GraphSelection; configured?: boolean; handoffSeqs?: number[]; onHandoffEnd?: (seq: number) => void }
+interface GraphEdgeData extends Record<string, unknown> { selection?: GraphSelection; configured?: boolean; historicalResourceInput?: boolean; handoffSeqs?: number[]; onHandoffEnd?: (seq: number) => void }
 type CollaborationEdge = Edge<GraphEdgeData>;
+const resourceDeliveryIcons = { queued: Clock3, failed: X, injected: FileCheck2, reported: ArrowUpRight, unconfirmed: CircleHelp };
 function CollaborationNodeView({ data, selected, isConnectable }: NodeProps<CollaborationNode>) {
   const { t } = useTranslation('collaboration');
   const reducedMotion = useReducedMotion();
-  const previousStatus = useRef(data.status);
-  const [statusFeedback, setStatusFeedback] = useState<string>();
+  const previousExecution = useRef(data.executionId);
+  const [executionStarted, setExecutionStarted] = useState(false);
   useEffect(() => {
-    if (previousStatus.current !== data.status && !reducedMotion) setStatusFeedback(data.status ?? 'idle');
-    previousStatus.current = data.status;
-    if (reducedMotion) setStatusFeedback(undefined);
-  }, [data.status, reducedMotion]);
+    const started = Boolean(data.executionId) && data.executionId !== previousExecution.current;
+    previousExecution.current = data.executionId;
+    setExecutionStarted(started && data.status === 'running' && !reducedMotion);
+  }, [data.executionId, data.status, reducedMotion]);
   return <div className={`collaboration-node node-${data.kind} ${selected ? 'selected' : ''}`} data-status={data.status}>
-    {statusFeedback && !reducedMotion && <span key={statusFeedback} className="collaboration-node-status-feedback" aria-hidden="true" onAnimationEnd={() => setStatusFeedback(undefined)} />}
-    <Handle type="target" position={Position.Left} isConnectable={isConnectable} /><div className="collaboration-node-eyebrow">{data.kind === 'artifact' ? <FileText size={12} /> : data.kind === 'task' ? <GitBranch size={12} /> : <Network size={12} />}<span>{data.subtitle}</span></div><strong>{data.title}</strong>{data.detail && <p>{data.detail}</p>}<footer>{data.status && <Status value={data.status} />}{data.external && <span>{t('participant.externalConnection')}</span>}</footer><Handle type="source" position={Position.Right} isConnectable={isConnectable} /></div>;
+    {executionStarted && !reducedMotion && <span className="collaboration-node-status-feedback" aria-hidden="true" onAnimationEnd={() => setExecutionStarted(false)} />}
+    <Handle type="target" position={Position.Left} isConnectable={isConnectable} />
+    <div className="collaboration-node-eyebrow">
+      {data.recipientProviderId ? <AgentIcon providerId={data.recipientProviderId} size={12} />
+        : data.kind === 'artifact' ? <FileText size={12} /> : data.kind === 'task' ? <GitBranch size={12} /> : <Network size={12} />}
+      <span title={data.subtitle}>{data.subtitle}</span>
+      {!!data.resourceDelivery?.length && <div className="collaboration-resource-deliveries" role="group" aria-label={t('resource.deliverySummary')}>
+        {data.resourceDelivery.map(item => {
+          const Icon = resourceDeliveryIcons[item.status];
+          const total = item.tasks + item.messages;
+          const label = [t(`resource.delivery.${item.status}`), item.tasks ? t('resource.taskCount', { count: item.tasks }) : '', item.messages ? t('resource.messageCount', { count: item.messages }) : ''].filter(Boolean).join(' · ');
+          return <Tooltip key={item.status} label={label}><span className="collaboration-resource-delivery" role="img" tabIndex={0} aria-label={label} data-resource-delivery={item.status} data-resource-tasks={item.tasks} data-resource-messages={item.messages}><Icon size={10} aria-hidden="true" /><span aria-hidden="true">{total > 99 ? '99+' : total}</span></span></Tooltip>;
+        })}
+      </div>}
+    </div>
+    <strong>{data.title}</strong>{data.detail && <p>{data.detail}</p>}
+    <footer>{data.status && <Status value={data.status} />}{data.external && <span>{t('participant.externalConnection')}</span>}</footer>
+    <Handle type="source" position={Position.Right} isConnectable={isConnectable} />
+  </div>;
 }
 const nodeTypes = { collaboration: CollaborationNodeView };
 function CollaborationEdgeView(props: EdgeProps<CollaborationEdge>) {
@@ -220,12 +243,13 @@ function handoffEdgeId(event: CollaborationEvent, view: 'relationships' | 'data'
 
 function buildGraph(run: CollaborationRun, participants: CollaborationParticipant[], tasks: CollaborationTask[], messages: CollaborationMessage[], artifacts: CollaborationArtifactVersion[], events: CollaborationEvent[], view: 'relationships' | 'data', sessions: Session[]) {
   const nodes: CollaborationNode[] = [], edges: CollaborationEdge[] = [];
+  const resourceDelivery = projectResourceDelivery(tasks, messages, events);
   if (view === 'relationships') {
     for (const participant of participants) {
       const active = tasks.filter(task => task.participantId === participant.id);
       const current = run.definitionSnapshot.participants.some(item => item.id === participant.id);
-      const currentTask = active.find(task => ['running', 'waiting', 'queued'].includes(task.status));
-      nodes.push(graphNode(participant.id, { kind: 'participant', title: participant.name, subtitle: participant.roles.join(' · ') || translate('collaboration:participant.noRoles'), detail: !current ? translate('collaboration:participant.historical') : participant.mode === 'managed' ? [participant.providerId, participant.modelId].filter(Boolean).join(' · ') : translate('collaboration:participant.platformRecordsOnly'), external: participant.mode === 'external', status: currentTask ? taskDisplayStatus(currentTask, sessions) : undefined }));
+      const currentTask = active.find(task => task.status === 'running') ?? active.find(task => ['waiting', 'queued'].includes(task.status));
+      nodes.push(graphNode(participant.id, { kind: 'participant', title: participant.name, subtitle: participant.roles.join(' · ') || translate('collaboration:participant.noRoles'), detail: !current ? translate('collaboration:participant.historical') : participant.mode === 'managed' ? [participant.providerId, participant.modelId].filter(Boolean).join(' · ') : translate('collaboration:participant.platformRecordsOnly'), external: participant.mode === 'external', status: currentTask ? taskDisplayStatus(currentTask, sessions) : undefined, recipientProviderId: participant.providerId, executionId: runningExecution(currentTask), resourceDelivery: resourceDelivery.participantCounts.get(participant.id) }));
     }
     if (events.some(event => event.participantId === 'user' || event.targetParticipantId === 'user')) nodes.push(graphNode('user', { kind: 'participant', title: translate('collaboration:actor.user'), subtitle: translate('collaboration:participant.actionSource'), detail: translate('collaboration:participant.platformActions') }));
     const ids = new Set(nodes.map(node => node.id));
@@ -239,13 +263,19 @@ function buildGraph(run: CollaborationRun, participants: CollaborationParticipan
     }
     for (const [key, group] of groups) edges.push(edgeFor(`observed-${key}`, group.from, group.to, `${eventLabel(group.type)}${group.ids.length > 1 ? ` ×${group.ids.length}` : ''}`, { kind: 'events', ids: group.ids }));
   } else {
-    for (const task of tasks) nodes.push(graphNode(`task-${task.id}`, { kind: 'task', title: task.title, subtitle: task.participantSnapshot.name, detail: translate('collaboration:graph.taskDetail', { count: task.attempts.length, version: task.definitionVersion }), status: taskDisplayStatus(task, sessions) }));
+    for (const task of tasks) nodes.push(graphNode(`task-${task.id}`, { kind: 'task', title: task.title, subtitle: task.participantSnapshot.name, detail: translate('collaboration:graph.taskDetail', { count: task.attempts.length, version: task.definitionVersion }), status: taskDisplayStatus(task, sessions), recipientProviderId: task.participantSnapshot.providerId, executionId: runningExecution(task), resourceDelivery: resourceDelivery.taskCounts.get(task.id) }));
     for (const artifact of artifacts) nodes.push(graphNode(`artifact-${artifact.id}`, { kind: 'artifact', title: artifact.name, subtitle: translate('collaboration:graph.artifactVersion', { version: artifact.version, kind: artifact.kind }), detail: artifact.sha256.slice(0, 16) }));
     const taskIds = new Set(tasks.map(task => task.id)), artifactIds = new Set(artifacts.map(artifact => artifact.id));
     for (const task of tasks) {
       for (const dependency of task.dependsOn) if (taskIds.has(dependency)) edges.push(edgeFor(`dependency-${dependency}-${task.id}`, `task-${dependency}`, `task-${task.id}`, translate('collaboration:graph.waitForCompletion'), { kind: 'task', id: task.id }, true));
-      const inputs = new Set([...task.artifactIds, ...task.attempts.flatMap(attempt => attempt.inputArtifactIds)]);
-      for (const artifactId of inputs) if (artifactIds.has(artifactId)) { const injected = events.some(event => event.type === 'artifact.injected' && event.taskId === task.id && event.artifactVersionId === artifactId); edges.push(edgeFor(`input-${artifactId}-${task.id}`, `artifact-${artifactId}`, `task-${task.id}`, injected ? translate('collaboration:graph.delivered') : translate('collaboration:graph.boundInput'), { kind: 'artifact', id: artifactId }, !injected, injected)); }
+      for (const input of resourceDelivery.inputs.get(task.id) ?? []) if (artifactIds.has(input.artifactId)) {
+        const delivered = input.statuses.some(status => status === 'injected' || status === 'reported');
+        const stateLabel = input.statuses.map(status => translate(`collaboration:resource.delivery.${status}`)).join(' · ');
+        const inputEdge = edgeFor(`input-${input.artifactId}-${task.id}`, `artifact-${input.artifactId}`, `task-${task.id}`, input.historical ? translate('collaboration:resource.historicalInput', { status: stateLabel }) : stateLabel, { kind: 'artifact', id: input.artifactId }, !delivered, delivered);
+        if (input.historical) inputEdge.data = { ...inputEdge.data, historicalResourceInput: true };
+        inputEdge.className = [inputEdge.className, ...input.statuses.map(status => `collaboration-resource-edge-${status}`)].filter(Boolean).join(' ');
+        edges.push(inputEdge);
+      }
     }
     for (const artifact of artifacts) if (artifact.taskId && taskIds.has(artifact.taskId)) edges.push(edgeFor(`output-${artifact.id}`, `task-${artifact.taskId}`, `artifact-${artifact.id}`, translate('collaboration:graph.output'), { kind: 'artifact', id: artifact.id }));
     for (const message of messages) if (message.taskId && message.targetTaskId && message.taskId !== message.targetTaskId && taskIds.has(message.taskId) && taskIds.has(message.targetTaskId)) edges.push(edgeFor(`message-${message.id}`, `task-${message.taskId}`, `task-${message.targetTaskId}`, deliveryLabel(message.delivery), { kind: 'message', id: message.id }, false, ['injected', 'reported'].includes(message.delivery)));
@@ -386,9 +416,14 @@ function CollaborationRunView({ run, state, stateVersion, providers, sessions, p
   const tasks = state.tasks.filter(item => item.runId === run.id), messages = state.messages.filter(item => item.runId === run.id), artifacts = state.artifacts.filter(item => item.runId === run.id);
   const [view, setView] = useState<'relationships' | 'data'>(run.definitionSnapshot.steps?.length ? 'data' : 'relationships');
   const [handoffs, setHandoffs] = useState<{ view: typeof view; events: CollaborationEvent[] }>({ view, events: [] });
-  const feedbackContext = useRef({ view, reducedMotion });
-  feedbackContext.current = { view, reducedMotion };
-  const changeView = (next: typeof view) => { setHandoffs({ view: next, events: [] }); setView(next); };
+  const feedbackContext = useRef({ view, afterSeq: stateVersion ?? 0, reducedMotion });
+  feedbackContext.current.reducedMotion = reducedMotion;
+  const changeView = (next: typeof view) => {
+    if (next === view) return;
+    feedbackContext.current = { view: next, afterSeq: stateVersion ?? 0, reducedMotion };
+    setHandoffs({ view: next, events: [] });
+    setView(next);
+  };
   const finishHandoff = useCallback((seq: number) => setHandoffs(current => ({ ...current, events: current.events.filter(event => event.seq !== seq) })), []);
   useEffect(() => {
     if (reducedMotion) { setHandoffs(current => current.events.length ? { ...current, events: [] } : current); return; }
@@ -409,31 +444,31 @@ function CollaborationRunView({ run, state, stateVersion, providers, sessions, p
   const liveCursor = useRef(stateVersion);
   const initialEventRead = useRef(true);
   const failedEventRead = useRef<'history' | 'live' | undefined>(undefined);
-  const eventRead = useRef<{ active: boolean; historyRequested: boolean; liveRequested: boolean; promise?: Promise<void> }>({ active: true, historyRequested: false, liveRequested: false });
+  const eventRead = useRef<{ active: boolean; historyRequested: boolean; liveRequested?: typeof feedbackContext.current; promise?: Promise<void> }>({ active: true, historyRequested: false });
   const revision = [stateVersion, run.updatedAt, ...tasks.map(item => item.updatedAt), ...messages.map(item => `${item.id}:${item.delivery}`), artifacts.length].join('|');
   const loadEvents = useCallback((source: 'history' | 'live') => {
     const read = eventRead.current;
     if (source === 'history') read.historyRequested = true;
-    else read.liveRequested = true;
+    else read.liveRequested = feedbackContext.current;
     if (read.promise) return read.promise;
     const drain = async () => {
       while (read.active && (read.historyRequested || read.liveRequested)) {
         const source = read.liveRequested && liveCursor.current !== undefined ? 'live' : 'history';
         const afterSeq = source === 'live' ? liveCursor.current! : historyCursor.current;
-        const requestedView = feedbackContext.current.view;
-        if (source === 'live') read.liveRequested = false;
+        const requestedView = read.liveRequested;
+        if (source === 'live') read.liveRequested = undefined;
         else read.historyRequested = false;
         try {
           const incoming = await window.workbench.queryCollaborationEvents(run.id, afterSeq, 500);
           if (!read.active) return;
           const context = feedbackContext.current;
-          const fresh = source === 'live' && !context.reducedMotion && requestedView === context.view
-            ? incoming.filter(event => event.seq > afterSeq && handoffEdgeId(event, context.view)) : [];
+          const fresh = source === 'live' && !context.reducedMotion && requestedView === context
+            ? incoming.filter(event => event.seq > Math.max(afterSeq, context.afterSeq) && handoffEdgeId(event, context.view)) : [];
           if (fresh.length) setHandoffs(current => ({ view: context.view, events: [...(current.view === context.view ? current.events : []), ...fresh] }));
           const nextSeq = Math.max(afterSeq, incoming.at(-1)?.seq ?? afterSeq);
           if (source === 'live') {
             liveCursor.current = nextSeq;
-            if (incoming.length === 500) read.liveRequested = true;
+            if (incoming.length === 500) read.liveRequested ??= requestedView;
           } else {
             historyCursor.current = nextSeq;
             setMore(incoming.length === 500);
@@ -456,7 +491,7 @@ function CollaborationRunView({ run, state, stateVersion, providers, sessions, p
   useEffect(() => {
     const read = eventRead.current;
     read.active = true;
-    return () => { read.active = false; read.historyRequested = false; read.liveRequested = false; };
+    return () => { read.active = false; read.historyRequested = false; read.liveRequested = undefined; };
   }, []);
   useEffect(() => {
     const source = initialEventRead.current ? 'history' : 'live';
@@ -468,7 +503,7 @@ function CollaborationRunView({ run, state, stateVersion, providers, sessions, p
     const result = buildGraph(run, participants, tasks, messages, artifacts, events, view, sessions);
     if (reducedMotion || handoffs.view !== view || !handoffs.events.length) return result;
     return { ...result, edges: result.edges.map(edge => ({ ...edge, data: { ...edge.data,
-      handoffSeqs: edge.data?.configured ? [] : handoffs.events.filter(event => handoffEdgeId(event, view) === edge.id).map(event => event.seq), onHandoffEnd: finishHandoff,
+      handoffSeqs: edge.data?.configured || edge.data?.historicalResourceInput ? [] : handoffs.events.filter(event => handoffEdgeId(event, view) === edge.id).map(event => event.seq), onHandoffEnd: finishHandoff,
     } })) };
   }, [run, state, events, view, participants, sessions, i18n.resolvedLanguage, handoffs, reducedMotion, finishHandoff]);
   const control = (action: string) => void perform(`collaboration-control-${run.id}`, () => call('control_run', { requestId: requestId(), runId: run.id, action }));

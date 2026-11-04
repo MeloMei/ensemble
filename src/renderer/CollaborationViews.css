@@ -127,6 +127,14 @@
 .collaboration-node > footer { display: flex; align-items: center; justify-content: space-between; min-height: 16px; margin-top: 6px; color: var(--dim); font-size: 11px; }
 .collaboration-node .react-flow__handle { width: 6px; height: 6px; border: 1px solid var(--surface); background: var(--dim); }
 .collaboration-node .status { font-size: 11px; }
+.collaboration-node-eyebrow:has(.collaboration-resource-deliveries) > span { min-width: 0; flex: 1; }
+.collaboration-resource-deliveries { display: flex; flex-shrink: 0; align-items: center; gap: 2px; }
+.collaboration-resource-deliveries .collaboration-resource-delivery { display: inline-flex; align-items: center; gap: 2px; padding: 1px 2px; border: 1px solid var(--border); border-radius: 3px; color: var(--muted); font-size: 9px; line-height: 1.3; white-space: nowrap; overflow: visible; }
+.collaboration-resource-delivery > svg { flex-shrink: 0; }
+.collaboration-resource-deliveries .collaboration-resource-delivery > span { overflow: visible; white-space: nowrap; }
+.collaboration-resource-delivery[data-resource-delivery="injected"], .collaboration-resource-delivery[data-resource-delivery="reported"] { color: var(--accent); }
+.collaboration-resource-delivery[data-resource-delivery="failed"] { color: var(--danger); }
+.collaboration-resource-edge-failed .react-flow__edge-path { stroke: var(--danger); }
 
 .collaboration-selection { --selection-width: 300px; display: flex; flex-direction: column; flex-shrink: 0; width: var(--selection-width); min-height: 0; overflow: hidden; border-left: 1px solid var(--border); background: var(--surface); visibility: visible; transition: width var(--collaboration-feedback-duration) var(--ease-out), border-color var(--collaboration-feedback-duration) var(--ease-out), visibility 0s; }
 .collaboration-selection > header { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 10px; width: var(--selection-width); padding: 10px 16px; border-bottom: 1px solid var(--border); }
@@ -223,6 +231,10 @@
 .collaboration-selection[data-open="false"] { width: 0; border-left-color: transparent; visibility: hidden; transition: width var(--collaboration-feedback-duration) var(--ease-out), border-color var(--collaboration-feedback-duration) var(--ease-out), visibility 0s var(--collaboration-feedback-duration); }
 .collaboration-selection > * { transition: opacity var(--duration-fast) var(--ease-out); }
 .collaboration-selection[data-open="false"] > * { opacity: 0; }
+@starting-style {
+  .collaboration-selection[data-open="true"] { width: 0; border-left-color: transparent; }
+  .collaboration-selection[data-open="true"] > * { opacity: 0; }
+}
 .collaboration-timeline-content[data-open="false"] { grid-template-rows: 0fr; }
 .collaboration-timeline-clip { min-height: 0; overflow: hidden; }
 .collaboration-event-marker { position: relative; display: grid; flex-shrink: 0; align-self: stretch; place-items: center; width: 16px; min-height: 18px; }
