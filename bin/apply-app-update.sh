@@ -2,7 +2,7 @@
 # Whole-directory rename and rollback adapted from AgentRecall V1 apply-update.cjs
 # at e130f72a1a34a87e4065d9f85f7733bdf632f1b6. Copyright (c) 2026
 # AgentRecall contributors; MIT, see licenses/AgentRecall-MIT.txt.
-# The helper lives outside the bundle so it survives replacement of the old app.
+# The installer runs from its own staged bundle while the live app is replaced.
 set -eu
 
 [ "$#" -eq 8 ] || exit 2
@@ -32,6 +32,9 @@ case "$version" in *[!0-9.]*|'') exit 2 ;; esac
 parent=$(/usr/bin/dirname "$live")
 [ "$(/usr/bin/dirname "$stage")" = "$parent" ] || exit 2
 case "${stage##*/}" in .ensemble-update-??????) ;; *) exit 2 ;; esac
+handoff=$stage/$token
+installer="$handoff/Ensemble Installer.app"
+[ "$0" = "$installer/Contents/Resources/apply-app-update.sh" ] || exit 2
 [ -d "$live/Contents" ] && [ ! -L "$live" ] && [ ! -L "$stage" ] || exit 2
 
 alive() {
@@ -75,10 +78,8 @@ write_result() {
 }
 
 launch() {
-  unset ELECTRON_RUN_AS_NODE WORKBENCH_DEV_URL
-  export WORKBENCH_DATA_DIR="$data"
-  "$live/Contents/MacOS/Ensemble" >> "$updates/installer.log" 2>&1 &
-  new_pid=$!
+  new_pid=$("${0%/*}/../MacOS/EnsembleInstaller" --launch-app "$live" "$data" "$@") || return 1
+  case "$new_pid" in ''|*[!0-9]*|0) return 1 ;; esac
   printf 'update version=%s phase=%s launchedPid=%s\n' "$version" "$phase" "$new_pid" || true
 }
 
@@ -116,13 +117,11 @@ finish() {
         write_result rollback-failed
         exit 1
       fi
-      unset WORKBENCH_UPDATE_TOKEN
       enter_phase rollback-launch-old
-      launch
+      launch || { write_result rollback-failed; exit 1; }
     elif ! alive "$gui"; then
-      unset WORKBENCH_UPDATE_TOKEN
       enter_phase recover-launch-old
-      launch
+      launch || { write_result rollback-failed; exit 1; }
     fi
     write_result error
   fi
@@ -130,6 +129,7 @@ finish() {
   if [ "$backed_up" -eq 0 ] || [ "$completed" -eq 1 ] || [ -d "$live/Contents" ]; then
     remove_bundle "$staged"
     remove_bundle "$backup"
+    "$lsregister" -u "$installer" >/dev/null 2>&1 || true
     /bin/rm -rf "$stage"
     enter_phase refresh-launch-registration
     if ! "$lsregister" -f "$live" >/dev/null 2>&1; then
@@ -138,6 +138,21 @@ finish() {
   fi
   exit "$result"
 }
+# Only the GUI that received this readiness marker can authorize the swap.
+marker=$handoff/ready
+: > "$marker"
+remaining=30
+while [ "$(/usr/bin/plutil -extract token raw -o - "$updates/pending.json" 2>/dev/null || true)" != "$token" ]; do
+  [ -d "$handoff" ] || exit 0
+  if [ "$remaining" -eq 0 ]; then
+    "$lsregister" -u "$installer" >/dev/null 2>&1 || true
+    /bin/rm -rf "$handoff"
+    exit 1
+  fi
+  remaining=$((remaining - 1))
+  /bin/sleep 1
+done
+/bin/rm -f "$marker"
 trap finish EXIT
 trap 'exit 1' HUP INT TERM
 
@@ -146,9 +161,12 @@ enter_phase wait-old-gui
 wait_exit "$gui" 40
 if alive "$backend"; then
   enter_phase check-old-backend
-  owned_backend "$backend"
-  enter_phase stop-old-backend
-  /bin/kill -TERM "$backend"
+  if owned_backend "$backend"; then
+    enter_phase stop-old-backend
+    /bin/kill -TERM "$backend" || ! alive "$backend"
+  elif alive "$backend"; then
+    exit 1
+  fi
   enter_phase wait-old-backend
   wait_exit "$backend" 30
 fi
@@ -167,9 +185,8 @@ enter_phase backup-old-bundle
 backed_up=1
 enter_phase replace-bundle
 /bin/mv "$staged" "$live"
-export WORKBENCH_UPDATE_TOKEN="$token"
 enter_phase launch-new
-launch
+launch "$token"
 enter_phase wait-new-ready
 remaining=45
 while [ ! -s "$ready" ]; do

@@ -3,7 +3,7 @@ import test from 'node:test';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { copyFile, cp, mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,7 +14,6 @@ import { createWorkbenchService } from './workbench-service';
 import type { Snapshot } from '../shared/types';
 
 const run = promisify(execFile);
-const helper = fileURLToPath(new URL('../../bin/apply-app-update.sh', import.meta.url));
 const api = 'https://api.github.com/repos/MeloMei/ensemble/releases/latest';
 const base = 'https://github.com/MeloMei/ensemble/releases';
 const feed = `${base}/latest/download/ensemble-update.json`;
@@ -29,7 +28,7 @@ async function fixture() {
   const app = join(root, 'Ensemble.app'); const data = join(root, 'profile');
   await mkdir(join(app, 'Contents'), { recursive: true }); await mkdir(data);
   await writeFile(join(app, 'Contents', 'marker'), 'old'); await writeFile(join(data, 'state.json'), 'preserve user data');
-  const options: ApplicationUpdatesOptions = { currentVersion: '0.8.1', appPath: app, dataPath: data, arch: 'arm64', helperPath: helper,
+  const options: ApplicationUpdatesOptions = { currentVersion: '0.8.1', appPath: app, dataPath: data, arch: 'arm64',
     getAutoCheck: () => true, async setAutoCheck() {}, publish() {}, async prepareInstall() { throw new Error('Not expected'); }, async cancelInstall() {}, requestQuit() {} };
   return { root, app, data, options };
 }
@@ -271,50 +270,141 @@ test('unknown or different target data formats require manual migration before i
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
-test('the detached helper commits a healthy bundle and rolls back a failed new launch without changing profile data', { skip: process.platform !== 'darwin' }, async () => {
-  for (const healthy of [true, false]) {
-    const f = await fixture(); const stage = await mkdtemp(join(f.root, '.ensemble-update-')); const staged = join(stage, 'unpacked', 'Ensemble.app');
-    const token = randomUUID(); const updatesPath = join(f.data, 'updates');
-    await mkdir(updatesPath);
-    const fakeApp = async (path: string, marker: string, success: boolean) => {
-      await mkdir(join(path, 'Contents', 'MacOS'), { recursive: true });
-      await writeFile(join(path, 'Contents', 'marker'), marker);
-      const script = success ? '#!/bin/sh\nprintf "%s" "$$" > "$WORKBENCH_DATA_DIR/started.pid"\nif [ -n "${WORKBENCH_UPDATE_TOKEN:-}" ]; then printf "%s" "$$" > "$WORKBENCH_DATA_DIR/updates/ready-$WORKBENCH_UPDATE_TOKEN"; fi\nexec /bin/sleep 10\n' : '#!/bin/sh\nexit 1\n';
-      await writeFile(join(path, 'Contents', 'MacOS', 'Ensemble'), script, { mode: 0o755 });
-    };
-    await fakeApp(f.app, 'old', true); await fakeApp(staged, 'new', healthy);
-    const departed = spawn('/usr/bin/true'); await new Promise(resolveExit => departed.once('exit', resolveExit));
-    let processId: number | undefined;
-    try {
-      const child = spawn('/bin/sh', [helper, f.app, staged, join(stage, 'previous.app'), String(departed.pid), String(departed.pid), f.data, token, '0.8.2'], { stdio: 'pipe' });
-      let errors = ''; child.stderr.on('data', bytes => { errors += bytes; });
-      const code = await new Promise<number | null>(resolveExit => child.once('exit', resolveExit));
-      assert.equal(code, healthy ? 0 : 1, errors);
-      assert.equal(await readFile(join(f.app, 'Contents', 'marker'), 'utf8'), healthy ? 'new' : 'old');
-      const result = JSON.parse(await readFile(join(updatesPath, 'result.json'), 'utf8'));
-      assert.equal(result.status, healthy ? 'installed' : 'error');
-      assert.equal(result.token, token);
-      assert.equal(result.phase, healthy ? 'commit' : 'wait-new-ready');
-      assert.equal(result.exitCode, healthy ? 0 : 1);
-      assert.equal(await readFile(join(f.data, 'state.json'), 'utf8'), 'preserve user data');
-      assert.equal((await readdir(f.root)).some(name => name.startsWith('.ensemble-update-')), false);
-      for (let attempt = 0; attempt < 100; attempt++) {
-        try { processId = Number(await readFile(join(f.data, 'started.pid'), 'utf8')); break; }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-        await new Promise(resolveStarted => setTimeout(resolveStarted, 10));
-      }
-      assert.ok(processId);
-    } finally {
-      processId ??= Number(await readFile(join(f.data, 'started.pid'), 'utf8').catch(() => '0'));
-      if (processId) {
-        try { process.kill(processId, 'SIGTERM'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
-        for (let attempt = 0; attempt < 50; attempt++) {
-          const state = await run('/bin/ps', ['-p', String(processId), '-o', 'stat=']).then(result => result.stdout.trim(), () => '');
-          if (!state || state.startsWith('Z')) break;
-          await new Promise(resolveStopped => setTimeout(resolveStopped, 10));
-        }
-      }
-      await rm(f.root, { recursive: true, force: true });
+test('the installer waits for authorization, commits a healthy bundle and relaunches the old app through LaunchServices after failure', { skip: process.platform !== 'darwin' }, async () => {
+  const assets = await realpath(await mkdtemp(join(tmpdir(), 'ensemble-installer-fixtures-')));
+  const installerTemplate = join(assets, 'Ensemble Installer.app');
+  const executable = join(assets, 'Ensemble');
+  const source = join(assets, 'fixture.m');
+  const lsregister = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister';
+  const waitForFile = async (path: string) => {
+    for (let attempt = 0; attempt < 500; attempt++) {
+      const contents = await readFile(path, 'utf8').catch(error => {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        return undefined;
+      });
+      if (contents !== undefined) return contents;
+      await new Promise(resolveFile => setTimeout(resolveFile, 20));
     }
+    throw new Error(`Timed out waiting for ${path}`);
+  };
+  try {
+    const installerModule = fileURLToPath(new URL('../../scripts/build-mac-update-installer.mjs', import.meta.url));
+    const { buildMacUpdateInstaller } = await import(installerModule);
+    await buildMacUpdateInstaller({ destination: installerTemplate, appVersion: '0.8.2' });
+    await run('/usr/bin/codesign', ['--force', '--deep', '--sign', '-', installerTemplate]);
+    await writeFile(source, `#import <AppKit/AppKit.h>
+#include <unistd.h>
+@interface FixtureDelegate : NSObject <NSApplicationDelegate>
+@end
+@implementation FixtureDelegate
+- (void)applicationDidFinishLaunching:(NSNotification *)notification {
+    NSDictionary *environment = NSProcessInfo.processInfo.environment;
+    NSString *data = environment[@"WORKBENCH_DATA_DIR"];
+    if (!data.length) exit(2);
+    NSString *contents = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"Contents/Resources"];
+    NSString *marker = [NSString stringWithContentsOfFile:[contents stringByAppendingPathComponent:@"marker"] encoding:NSUTF8StringEncoding error:nil];
+    NSString *token = environment[@"WORKBENCH_UPDATE_TOKEN"] ?: @"";
+    NSDictionary *started = @{@"pid": @(getpid()), @"parentPid": @(getppid()), @"token": token, @"bundleId": NSBundle.mainBundle.bundleIdentifier};
+    NSData *receipt = [NSJSONSerialization dataWithJSONObject:started options:0 error:nil];
+    [receipt writeToFile:[data stringByAppendingPathComponent:[NSString stringWithFormat:@"started-%@.json", marker]] atomically:YES];
+    NSString *healthy = [NSString stringWithContentsOfFile:[contents stringByAppendingPathComponent:@"healthy"] encoding:NSUTF8StringEncoding error:nil];
+    if (![healthy isEqualToString:@"true"]) {
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{ exit(1); });
+      return;
+    }
+    if (token.length) {
+      NSString *ready = [data stringByAppendingPathComponent:[@"updates/ready-" stringByAppendingString:token]];
+      [[NSString stringWithFormat:@"%d", getpid()] writeToFile:ready atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ exit(0); });
+}
+@end
+int main(void) {
+  @autoreleasepool {
+    NSApplication *application = NSApplication.sharedApplication;
+    FixtureDelegate *delegate = [FixtureDelegate new];
+    application.delegate = delegate;
+    [application setActivationPolicy:NSApplicationActivationPolicyProhibited];
+    [application run];
   }
+  return 0;
+}
+`);
+    await run('/usr/bin/xcrun', ['clang', '-O2', '-fobjc-arc', '-framework', 'AppKit', source, '-o', executable]);
+    for (const healthy of [true, false]) {
+      const f = await fixture(); const stage = await mkdtemp(join(f.root, '.ensemble-update-')); const staged = join(stage, 'unpacked', 'Ensemble.app');
+      const token = randomUUID(); const bundleId = `local.ensemble.update-test.${randomUUID()}`;
+      const updatesPath = join(f.data, 'updates'); const installer = join(stage, token, 'Ensemble Installer.app');
+      let child: ReturnType<typeof spawn> | undefined;
+      try {
+        await mkdir(updatesPath);
+        await mkdir(join(stage, token));
+        await cp(installerTemplate, installer, { recursive: true });
+        const fakeApp = async (path: string, marker: string, success: boolean) => {
+          await mkdir(join(path, 'Contents', 'MacOS'), { recursive: true });
+          await mkdir(join(path, 'Contents', 'Resources'), { recursive: true });
+          await rm(join(path, 'Contents', 'marker'), { force: true });
+          await writeFile(join(path, 'Contents', 'Info.plist'), `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${bundleId}</string><key>CFBundleExecutable</key><string>Ensemble</string><key>CFBundleName</key><string>Ensemble Update Test</string><key>CFBundlePackageType</key><string>APPL</string><key>LSUIElement</key><true/></dict></plist>`);
+          await writeFile(join(path, 'Contents', 'Resources', 'marker'), marker);
+          await writeFile(join(path, 'Contents', 'Resources', 'healthy'), String(success));
+          await copyFile(executable, join(path, 'Contents', 'MacOS', 'Ensemble'));
+          await run('/usr/bin/codesign', ['--force', '--sign', '-', path]);
+        };
+        await fakeApp(f.app, 'old', true); await fakeApp(staged, 'new', healthy);
+        const departed = spawn('/usr/bin/true'); await new Promise(resolveExit => departed.once('exit', resolveExit));
+        await writeFile(join(updatesPath, 'pending.json'), JSON.stringify({ token: randomUUID(), version: '0.8.2' }));
+        const helper = join(installer, 'Contents', 'Resources', 'apply-app-update.sh');
+        child = spawn('/bin/sh', [helper, f.app, staged, join(stage, 'previous.app'), String(departed.pid), String(departed.pid), f.data, token, '0.8.2'], { stdio: 'pipe' });
+        let output = ''; child.stdout!.on('data', bytes => { output += bytes; }); child.stderr!.on('data', bytes => { output += bytes; });
+        const exited = new Promise<number | null>((resolveExit, rejectExit) => { child!.once('exit', resolveExit); child!.once('error', rejectExit); });
+        await waitForFile(join(stage, token, 'ready'));
+        await new Promise(resolveUnauthorized => setTimeout(resolveUnauthorized, 150));
+        assert.equal(await readFile(join(f.app, 'Contents', 'Resources', 'marker'), 'utf8'), 'old');
+        assert.equal(await readFile(join(staged, 'Contents', 'Resources', 'marker'), 'utf8'), 'new');
+        assert.equal((await readdir(stage)).includes('previous.app'), false);
+        assert.equal((await readdir(f.data)).some(name => name.startsWith('started-')), false);
+        await writeFile(join(updatesPath, 'pending.json'), JSON.stringify({ token, version: '0.8.2' }));
+        assert.equal(await exited, healthy ? 0 : 1, output);
+        assert.equal(await readFile(join(f.app, 'Contents', 'Resources', 'marker'), 'utf8'), healthy ? 'new' : 'old');
+        const result = JSON.parse(await readFile(join(updatesPath, 'result.json'), 'utf8'));
+        assert.equal(result.status, healthy ? 'installed' : 'error');
+        assert.equal(result.token, token);
+        assert.equal(result.phase, healthy ? 'commit' : 'wait-new-ready');
+        assert.equal(result.exitCode, healthy ? 0 : 1);
+        const newLaunch = JSON.parse(await waitForFile(join(f.data, 'started-new.json')));
+        assert.equal(newLaunch.bundleId, bundleId); assert.equal(newLaunch.token, token); assert.equal(newLaunch.parentPid, 1);
+        assert.match(output, new RegExp(`phase=launch-new launchedPid=${newLaunch.pid}(?:\\s|$)`));
+        let runningPid = newLaunch.pid;
+        if (!healthy) {
+          const oldLaunch = JSON.parse(await waitForFile(join(f.data, 'started-old.json')));
+          assert.equal(oldLaunch.bundleId, bundleId); assert.equal(oldLaunch.token, ''); assert.equal(oldLaunch.parentPid, 1);
+          assert.notEqual(oldLaunch.pid, newLaunch.pid);
+          assert.match(output, new RegExp(`phase=rollback-launch-old launchedPid=${oldLaunch.pid}(?:\\s|$)`));
+          runningPid = oldLaunch.pid;
+        }
+        const runningState = await run('/bin/ps', ['-p', String(runningPid), '-o', 'stat=']);
+        assert.ok(runningState.stdout.trim()); assert.doesNotMatch(runningState.stdout, /Z/);
+        assert.equal(await readFile(join(f.data, 'state.json'), 'utf8'), 'preserve user data');
+        assert.equal((await readdir(f.root)).some(name => name.startsWith('.ensemble-update-')), false);
+        assert.equal((await readdir(updatesPath)).includes('pending.json'), false);
+      } finally {
+        if (child && child.exitCode === null) {
+          child.kill('SIGTERM');
+          await new Promise(resolveExit => child!.once('exit', resolveExit));
+        }
+        for (const marker of ['new', 'old']) {
+          const launched = await readFile(join(f.data, `started-${marker}.json`), 'utf8').then(value => JSON.parse(value), () => undefined);
+          if (!launched) continue;
+          try { process.kill(launched.pid, 'SIGTERM'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
+          for (let attempt = 0; attempt < 50; attempt++) {
+            const state = await run('/bin/ps', ['-p', String(launched.pid), '-o', 'stat=']).then(result => result.stdout.trim(), () => '');
+            if (!state || state.startsWith('Z')) break;
+            await new Promise(resolveStopped => setTimeout(resolveStopped, 10));
+          }
+        }
+        for (const bundle of [f.app, staged, join(stage, 'previous.app'), installer]) await run(lsregister, ['-u', bundle]).catch(() => {});
+        await rm(f.root, { recursive: true, force: true });
+      }
+    }
+  } finally { await rm(assets, { recursive: true, force: true }); }
 });

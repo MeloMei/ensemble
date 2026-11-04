@@ -286,7 +286,7 @@ if (gotLock) void app.whenReady().then(async () => {
   backend.assertSnapshotStreaming();
   updates = new ApplicationUpdates({
     currentVersion: app.getVersion(), appPath: app.isPackaged && process.platform === 'darwin' ? await realpath(resolve(process.execPath, '../../..')) : undefined,
-    dataPath, arch: process.arch, helperPath: join(root, '../../bin/apply-app-update.sh'),
+    dataPath, arch: process.arch,
     getAutoCheck: () => preferences.autoCheckUpdates,
     setAutoCheck: enabled => preferences.setAutoCheckUpdates(enabled),
     publish: state => { if (window && !window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send('workbench:application-update-changed', state); },
