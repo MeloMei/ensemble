@@ -35,9 +35,21 @@
 .session-settings { color: var(--text); }
 .session-skills { margin-top: 16px; }
 .session-skills > span { font-size: 11px; color: var(--muted); }
-.skills-select { display: flex; flex-wrap: wrap; gap: 7px; max-height: 140px; overflow: auto; padding-top: 8px; }
-.skills-select label { display: inline-flex; align-items: center; gap: 7px; padding: 6px 9px; border-radius: var(--radius-control); font-size: 11px; color: var(--muted); background: var(--bg); cursor: pointer; }
-.skills-select label:has(input:checked) { color: var(--text); background: var(--selected); }
+.skills-select { display: grid; gap: 7px; max-height: 220px; overflow: auto; padding: 8px 2px 2px; }
+.session-skill-assignment { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; padding: 7px 9px; border-radius: var(--radius-control); font-size: 11px; color: var(--muted); background: var(--bg); }
+.session-skill-assignment[data-enabled=true] { color: var(--text); background: var(--selected); }
+.skills-select label { display: inline-flex; align-items: center; flex: 1; min-width: 0; gap: 7px; cursor: pointer; }
+.skills-select label:has(input:disabled) { cursor: default; }
+.skills-select label strong { font-weight: 500; overflow-wrap: anywhere; }
+.session-skill-agent { position: relative; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 24px; height: 24px; }
+.session-skill-badge { position: absolute; right: -2px; bottom: -2px; display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; border: 1px solid var(--border); border-radius: 50%; color: var(--muted); background: var(--surface); }
+.session-skill-status { max-width: 100%; color: var(--muted); line-height: 1.5; }
+.session-skill-assignment[data-enabled=true] .session-skill-badge { color: var(--accent); }
+.session-skill-assignment[data-state=failed] .session-skill-status,
+.session-skill-assignment[data-state=failed] .session-skill-badge { color: var(--danger); }
+.session-skill-retry { padding: 3px 5px; color: var(--accent); border-radius: 4px; }
+.session-skill-retry:hover:not(:disabled) { background: var(--selected); }
+.skills-select input:focus-visible, .session-skill-retry:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .skills-select input { width: 12px; height: 12px; margin: 0; padding: 0; accent-color: var(--accent); box-shadow: none; }
 .session-settings-footer { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 15px; padding-top: 11px; border-top: 1px solid var(--border); }
 .session-settings-footer > span { margin-right: auto; color: var(--dim); font-size: 11px; }

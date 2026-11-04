@@ -121,6 +121,21 @@ test('settings patches retain permission across rapid edits and explicitly reset
     engine.updateSession(id, { settings: { effort: 'high' } });
     engine.updateSession(id, { settings: { skillIds: ['selected-skill'] } });
     assert.deepEqual(engine.getSession(id).settings, { permission: 'read-only', effort: 'high', skillIds: ['selected-skill'] });
+    const firstAssignment = engine.updateSession(id, { skillAssignment: { skillId: 'first-skill', enabled: true } });
+    const secondAssignment = engine.updateSession(id, { skillAssignment: { skillId: 'second-skill', enabled: true } });
+    assert.deepEqual(firstAssignment.skillIds, ['selected-skill', 'first-skill']);
+    assert.deepEqual(secondAssignment, { skillIds: ['selected-skill', 'first-skill', 'second-skill'], updatedAt: engine.getSession(id).updatedAt });
+    assert.ok(secondAssignment.updatedAt > firstAssignment.updatedAt);
+    const removal = engine.updateSession(id, { skillAssignment: { skillId: 'first-skill', enabled: false } });
+    assert.deepEqual(removal, { skillIds: ['selected-skill', 'second-skill'], updatedAt: engine.getSession(id).updatedAt });
+    assert.deepEqual(engine.getSession(id).settings, { permission: 'read-only', effort: 'high', skillIds: removal.skillIds });
+    assert.deepEqual(firstAssignment.skillIds, ['selected-skill', 'first-skill']);
+    const beforeConflictingUpdate = structuredClone(engine.getSession(id));
+    assert.throws(() => engine.updateSession(id, {
+      settings: { skillIds: ['replacement-skill'] }, skillAssignment: { skillId: 'another-skill', enabled: true },
+    }), /不能同时/);
+    assert.deepEqual(engine.getSession(id), beforeConflictingUpdate);
+    engine.updateSession(id, { skillAssignment: { skillId: 'second-skill', enabled: false } });
     engine.updateSession(id, { modelId: 'balanced' });
     assert.equal(engine.getSession(id).modelId, 'balanced');
     assert.deepEqual(engine.getSession(id).settings, { permission: 'read-only', effort: 'high', skillIds: ['selected-skill'] });
