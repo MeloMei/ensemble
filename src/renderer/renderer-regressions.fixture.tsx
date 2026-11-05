@@ -29,7 +29,7 @@ import './vendor/open-claude-ui/cds-foundations.css';
 import './styles.css';
 
 interface Result { name: string; error?: string }
-interface FixtureWindow extends Window { runRendererRegressions(selected?: string[] | null): Promise<Result[]>; IS_REACT_ACT_ENVIRONMENT: boolean }
+interface FixtureWindow extends Window { rendererRegressionNames: string[]; runRendererRegressions(selected?: string[] | null): Promise<Result[]>; IS_REACT_ACT_ENVIRONMENT: boolean }
 const fixture = window as unknown as FixtureWindow;
 fixture.IS_REACT_ACT_ENVIRONMENT = true;
 const workspace: Workspace = { id: 'workspace', name: 'Workspace', cwd: '/fixture', pinned: false, tabs: [], activeTabId: null, createdAt: '2026-10-23', updatedAt: '2026-10-23' };
@@ -1499,6 +1499,7 @@ const cases: Record<string, () => Promise<void>> = {
     assert(Number(requests.length) === 3, 'Unmounted collaboration continued reading events');
   },
 };
+fixture.rendererRegressionNames = Object.keys(cases);
 fixture.runRendererRegressions = async selected => {
   await i18n.changeLanguage('en');
   const results: Result[] = [];

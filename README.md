@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/MeloMei/ensemble/releases/download/v0.8.1/Ensemble-0.8.1-macOS-arm64.dmg">Download for macOS</a> ·
+  <a href="https://github.com/MeloMei/ensemble/releases/latest">Download for macOS</a> ·
   <a href="docs/media/ensemble-overview-en.mp4">Watch in English · 30s</a> ·
   <a href="docs/first-collaboration.md">First collaboration</a> ·
   <a href="README.zh-CN.md">简体中文</a>
@@ -16,11 +16,13 @@
 
 ## Get started
 
-1. **[Download Ensemble for macOS (Apple Silicon)](https://github.com/MeloMei/ensemble/releases/download/v0.8.1/Ensemble-0.8.1-macOS-arm64.dmg).** Open the DMG and drag `Ensemble.app` into Applications. A [ZIP download and release notes](https://github.com/MeloMei/ensemble/releases/latest) are also available.
+1. **[Download Ensemble for macOS (Apple Silicon)](https://github.com/MeloMei/ensemble/releases/latest).** Download the DMG from the latest release, open it, and drag `Ensemble.app` into Applications. The release page also has a ZIP download and release notes.
 2. **Connect your agent runtime.** [Install and authenticate Codex, Claude Code, or another supported runtime](docs/runtimes.md#install-and-configure), then open Ensemble and choose **Runtimes & plugins → Refresh detection**. The desktop app does not require a separate Node.js installation; your chosen runtime may have its own requirements.
 3. **[Try your first collaboration](docs/first-collaboration.md).** Create a workspace for your project and choose **Collaboration → Implement and review**. Review and save the setup, then start when ready. One Codex or Claude Code installation can fill both roles.
 
 The current release is not notarized by Apple, so macOS may block the first launch. See the [release notes](https://github.com/MeloMei/ensemble/releases/latest) and [Apple's instructions](https://support.apple.com/102445) before opening it.
+
+If an older version cannot update in the app, quit Ensemble and stop its shared backend before manually replacing the app with the latest release. See [Application updates](docs/getting-started.md#application-updates) for details.
 
 ## Watch Ensemble in 30 seconds
 
