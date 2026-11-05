@@ -231,6 +231,10 @@ const cases: Record<string, () => Promise<void>> = {
     await render(<CollaborationViews snapshot={snapshot} initialCwd={workspace.cwd} perform={perform} pending={new Set()} openSession={() => {}} />);
     await graphReady(2);
     assert(document.querySelector('.collaboration-studio') && document.querySelector('.react-flow__edge[data-id="configured-implementation-review"]'), 'First entry did not display the two-Agent template and its relationship');
+    const implementer = document.querySelector<HTMLElement>('.react-flow__node[data-id="implementer"]')!;
+    const reviewer = document.querySelector<HTMLElement>('.react-flow__node[data-id="reviewer"]')!;
+    assert(implementer.getBoundingClientRect().bottom < reviewer.getBoundingClientRect().top, 'The implementer was not above the reviewer');
+    assert([implementer, reviewer].every(node => node.querySelector('.react-flow__handle.target.react-flow__handle-top') && node.querySelector('.react-flow__handle.source.react-flow__handle-bottom')), 'Graph handles did not follow the top-to-bottom direction');
     await change(labeledInput('collaboration:setup.goal'), 'Deliver a visual editor');
     await graphClick('node', 'implementer');
     await change(labeledInput('collaboration:field.displayName'), 'Builder');
@@ -287,6 +291,8 @@ const cases: Record<string, () => Promise<void>> = {
     await change(labeledInput('shell:common.title'), 'Review'); await change(labeledInput('shell:common.task'), 'Inspect the output');
     const added = [...document.querySelectorAll<HTMLElement>('.react-flow__node')].find(node => node.dataset.id !== a)!;
     const b = added.dataset.id!;
+    const initial = document.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(a)}"]`)!;
+    assert(initial.getBoundingClientRect().bottom < added.getBoundingClientRect().top, 'The added task overlaps the existing task');
     await waitFor(() => {
       const canvas = document.querySelector('.execution-graph')!.getBoundingClientRect();
       const bounds = added.getBoundingClientRect();
@@ -307,7 +313,10 @@ const cases: Record<string, () => Promise<void>> = {
     const reversed = JSON.stringify([b.slice(5), a.slice(5)]);
     await graphClick('edge', reversed); await click('shell:workflow.deleteDependency');
     assert(document.querySelectorAll('.react-flow__edge').length === 0, 'Deleting the selected edge left its dependency on the canvas');
-    await connect(b, a); await click('shell:workflow.save'); await settle();
+    await connect(b, a);
+    await click('collaboration:graph.relayout');
+    await waitFor(() => added.getBoundingClientRect().bottom < initial.getBoundingClientRect().top, 'Rearranging did not place the dependency source above its target', 200);
+    await click('shell:workflow.save'); await settle();
     assert(saved?.steps.find(step => step.id === a.slice(5))?.dependsOn.join() === b.slice(5) && saved.steps.find(step => step.id === b.slice(5))?.dependsOn.length === 0, 'Saved workflow dependencies did not match the edited direction');
     assert(Object.keys(readGraphView('workflow:workflow-studio-saved').positions).length === 2, 'Workflow draft layout did not carry over on save');
   },

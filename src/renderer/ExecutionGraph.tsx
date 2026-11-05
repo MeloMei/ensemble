@@ -36,7 +36,7 @@ function CollaborationNodeView({ data, selected, isConnectable }: NodeProps<Coll
   return <motion.div className={`collaboration-node node-${data.kind} ${selected ? 'selected' : ''}`} data-status={data.status} data-executing={executing}
     initial={reducedMotion ? false : { opacity: 0, scale: 0.96, y: 5 }} animate={{ opacity: 1, scale: 1, y: 0 }} transition={{ duration: 0.18 }}>
     {executionStarted && !reducedMotion && <span className="collaboration-node-status-feedback" aria-hidden="true" onAnimationEnd={() => setExecutionStarted(false)} />}
-    <Handle type="target" position={Position.Left} isConnectable={isConnectable} />
+    <Handle type="target" position={Position.Top} isConnectable={isConnectable} />
     <div className="collaboration-node-eyebrow">
       {data.recipientProviderId ? <AgentIcon providerId={data.recipientProviderId} size={12} />
         : data.kind === 'artifact' ? <FileText size={12} /> : data.kind === 'task' ? <GitBranch size={12} /> : <Network size={12} />}
@@ -52,7 +52,7 @@ function CollaborationNodeView({ data, selected, isConnectable }: NodeProps<Coll
     </div>
     <strong>{data.title}</strong>{data.detail && <p>{data.detail}</p>}
     <footer>{data.status && <Status value={data.status} />}{data.external && <span>{t('participant.externalConnection')}</span>}</footer>
-    <Handle type="source" position={Position.Right} isConnectable={isConnectable} />
+    <Handle type="source" position={Position.Bottom} isConnectable={isConnectable} />
   </motion.div>;
 }
 const nodeTypes = { collaboration: CollaborationNodeView };
@@ -65,7 +65,7 @@ function CollaborationEdgeView(props: EdgeProps<CollaborationEdge>) {
 }
 const edgeTypes = { collaboration: CollaborationEdgeView };
 export const edgeFor = (id: string, source: string, target: string, label: string, selection?: GraphSelection, configured = false, delivered = false): CollaborationEdge => ({ id, source, target, label, className: delivered ? 'collaboration-edge-delivered' : undefined, type: 'collaboration', markerEnd: { type: MarkerType.ArrowClosed, width: 15, height: 15, color: configured ? 'var(--dim)' : 'var(--muted)' }, style: { stroke: configured ? 'var(--dim)' : delivered ? 'var(--accent)' : 'var(--muted)', strokeWidth: configured ? 1 : 1.25, ...(configured ? { strokeDasharray: '6 5' } : {}) }, labelStyle: { fill: configured ? 'var(--muted)' : 'var(--text)', fontSize: 11 }, labelBgStyle: { fill: 'var(--surface)', fillOpacity: 1 }, labelBgBorderRadius: 3, labelBgPadding: [7, 5], data: { selection, configured } });
-export const graphNode = (id: string, data: GraphNodeData): CollaborationNode => ({ id, type: 'collaboration', position: { x: 0, y: 0 }, data, width: 228, height: 118 });
+export const graphNode = (id: string, data: GraphNodeData): CollaborationNode => ({ id, type: 'collaboration', position: { x: 0, y: 0 }, sourcePosition: Position.Bottom, targetPosition: Position.Top, data, width: 228, height: 118 });
 
 interface CanvasNodeView {
   position?: { x: number; y: number };
@@ -152,7 +152,7 @@ export function ExecutionGraph({ graph, view, storageKey, selection, connectable
     const elk = new ELK({ workerFactory: () => new ELKWorker() });
     void elk.layout({
       id: 'collaboration',
-      layoutOptions: { 'elk.algorithm': 'layered', 'elk.direction': 'RIGHT', 'elk.spacing.nodeNode': '44', 'elk.layered.spacing.nodeNodeBetweenLayers': '180' },
+      layoutOptions: { 'elk.algorithm': 'layered', 'elk.direction': 'DOWN', 'elk.spacing.nodeNode': '44', 'elk.layered.spacing.nodeNodeBetweenLayers': '88' },
       children: graph.nodes.map(node => ({ id: node.id, width: node.width ?? 228, height: node.height ?? 118 })),
       edges: graph.edges.map(edge => ({ id: edge.id, sources: [edge.source], targets: [edge.target] })),
     }).then(result => {
@@ -161,13 +161,13 @@ export function ExecutionGraph({ graph, view, storageKey, selection, connectable
         const rearrange = revision !== appliedRevision.current;
         appliedRevision.current = revision;
         const known = [...current.nodes.values()].filter(node => node.position);
-        let nextY = Math.max(0, ...known.map(node => node.position!.y)) + 162;
+        let nextY = Math.max(0, ...[...current.nodes].filter(([, node]) => node.position).map(([id, node]) => node.position!.y + (node.measured?.height ?? graph.nodes.find(item => item.id === id)?.height ?? 118))) + 44;
         const positions = new Map(result.children?.map(node => {
           const previous = current.nodes.get(node.id)?.position;
           const position = !rearrange && previous ? previous
             : !rearrange && known.length ? { x: Math.min(...known.map(item => item.position!.x)), y: nextY }
             : { x: node.x ?? 0, y: node.y ?? 0 };
-          if (!previous) nextY += 162;
+          if (!previous) nextY += (node.height ?? 118) + 44;
           return [node.id, position];
         }));
         const shouldFit = rearrange || !hasFitted.current;
