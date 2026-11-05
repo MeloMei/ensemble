@@ -3,11 +3,12 @@ import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, relative, sep } from 'node:path';
 import { z } from 'zod';
 import type {
-  AgentMail, ApprovalInput, CollaborationCaller, McpServerConfig, PromptInput, ProviderInfo,
+  AgentMail, ApprovalInput, CollaborationCaller, CreateSessionInput, McpServerConfig, PromptInput, ProviderInfo,
   Session, SessionAttempt, SessionCommandReceipt, SessionQueueItem, SessionSettings, SessionSkillAssignment, SessionSkillAssignmentReceipt, SessionStatus, SessionUpdate, Snapshot, TerminalInfo, Workflow,
   WorkflowInput, Workspace, WorkspaceTab,
 } from '../shared/types';
 import type { LoadedPromptAttachment, ProviderAdapter, ProviderEvent } from './providers/types';
+import { PROMPT_TEXT_LIMIT } from '../shared/types';
 import { validQuestionAnswers } from '../shared/question-answers';
 import { StateStore } from './store';
 import { moveSession } from './lifecycle';
@@ -269,8 +270,9 @@ export class WorkbenchEngine {
 
   commandReceipt(commandId: string): SessionCommandReceipt | undefined { return sessionCommandReceipt(this.store, commandId); }
 
-  async createSession(input: { title: string; providerId: string; cwd: string; modelId?: string; commandId?: string }): Promise<string> {
+  async createSession(input: CreateSessionInput): Promise<string> {
     this.assertOpen();
+    if (input.initialDraft !== undefined) z.string().max(PROMPT_TEXT_LIMIT).parse(input.initialDraft);
     const { commandId, ...payload } = input;
     const previous = previousSessionCommand<string>(this.store, 'create-session', commandId, payload);
     if (previous) return previous.result;
@@ -285,10 +287,11 @@ export class WorkbenchEngine {
     return accepted.result;
   }
 
-  private createSessionRecord(input: { title: string; providerId: string; cwd: string; modelId?: string }): string {
+  private createSessionRecord(input: Omit<CreateSessionInput, 'commandId'>): string {
     const { cwd, modelId } = input;
     const session: Session = { id: randomUUID(), title: input.title.trim() || '新会话', providerId: input.providerId, modelId, cwd,
       status: 'idle', messages: [], approvals: [], attempts: [], usage: [], createdAt: now(), updatedAt: now() };
+    if (input.initialDraft) session.draft = { text: input.initialDraft };
     this.store.state.sessions.unshift(session);
     const workspace = this.ensureWorkspace(cwd); workspace.updatedAt = now();
     const tab: WorkspaceTab = { id: randomUUID(), kind: 'agent', sessionId: session.id };

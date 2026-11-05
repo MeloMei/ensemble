@@ -44,9 +44,9 @@ export function EmptyState({ icon, title, children, action }: { icon: ReactNode;
   return <motion.div className="empty-state" initial={reduced ? false : { opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} transition={SPRING_SNAPPY}><div className="empty-icon">{icon}</div><h2>{title}</h2><p>{children}</p>{action}</motion.div>;
 }
 
-export function ProviderSelect({ providers, value, onChange }: { providers: ProviderInfo[]; value: string; onChange: (value: string) => void }) {
+export function ProviderSelect({ providers, value, onChange, disabled }: { providers: ProviderInfo[]; value: string; onChange: (value: string) => void; disabled?: boolean }) {
   const { t } = useTranslation('shell');
-  return <AppSelect label={t('common.agent')} value={value} onChange={onChange} required options={[
+  return <AppSelect label={t('common.agent')} value={value} onChange={onChange} disabled={disabled} required options={[
     { value: '', label: t('provider.choose'), disabled: true },
     ...providers.map(provider => ({ value: provider.id, label: `${provider.name}${provider.available ? '' : t('provider.notReadySuffix')}`, disabled: !provider.available })),
   ]} />;

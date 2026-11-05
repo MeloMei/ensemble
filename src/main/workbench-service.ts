@@ -18,6 +18,7 @@ import { loadPluginProviders } from './providers/plugins';
 import { TerminalManager } from './terminal-manager';
 import { WorkspaceFiles } from './workspace-files';
 import type { Snapshot } from '../shared/types';
+import { PROMPT_TEXT_LIMIT } from '../shared/types';
 import type { TerminalOutputEvent } from '../shared/backend';
 import { AttachmentService } from './attachment-service';
 import { RuntimeSettings, readDeepSeekBalance } from './runtime-settings';
@@ -35,7 +36,7 @@ import { ApplicationUpdateGuard } from './application-update-guard';
 
 const idSchema = z.string().min(1).max(200);
 const cwdSchema = z.string().min(1).max(4096);
-const promptSchema = z.string().trim().min(1).max(200_000);
+const promptSchema = z.string().trim().min(1).max(PROMPT_TEXT_LIMIT);
 const modelIdSchema = z.string().min(1).max(1000).optional();
 const settingsSchema = z.object({ effort: z.string().min(1).max(100).nullable().optional(), permission: z.enum(['review', 'read-only']).nullable().optional(), skillIds: z.array(idSchema).max(8).nullable().optional() }).strict();
 const sessionUpdateSchema = z.object({
@@ -45,14 +46,14 @@ const sessionUpdateSchema = z.object({
 }).strict();
 const attachmentSchema = z.object({ id: idSchema, name: z.string().min(1).max(300), kind: z.enum(['image', 'text']), mimeType: z.string().min(1).max(100), size: z.number().int().min(0).max(20_000_000), sha256: z.string().regex(/^[a-f0-9]{64}$/), ownedPath: cwdSchema }).strict();
 // Older oversized drafts stay editable until the user removes the excess files.
-const draftInputSchema = z.object({ text: z.string().max(200_000), attachments: z.array(attachmentSchema).max(8).optional() }).strict();
+const draftInputSchema = z.object({ text: z.string().max(PROMPT_TEXT_LIMIT), attachments: z.array(attachmentSchema).max(8).optional() }).strict();
 const promptInputSchema = draftInputSchema.refine(input => !attachmentLimitIssue(input.attachments ?? []), {
   path: ['attachments'], message: `每轮最多 ${ATTACHMENT_LIMITS.count} 个附件，总大小最多 ${ATTACHMENT_LIMITS.totalBytes / 1024 / 1024} MiB。`,
 });
 const commandIdSchema = z.string().min(1).max(200).optional();
 const pageLimitSchema = z.number().int().min(1).max(200).optional();
 const messageCursorSchema = z.string().min(1).max(4096);
-const sessionInputSchema = z.object({ title: z.string().max(200), providerId: idSchema, cwd: cwdSchema, modelId: modelIdSchema, commandId: commandIdSchema }).strict();
+const sessionInputSchema = z.object({ title: z.string().max(200), providerId: idSchema, cwd: cwdSchema, modelId: modelIdSchema, commandId: commandIdSchema, initialDraft: draftInputSchema.shape.text.optional() }).strict();
 const workflowSchema = z.object({
   name: z.string().trim().min(1).max(200), cwd: cwdSchema,
   steps: z.array(z.object({ id: idSchema, title: z.string().trim().min(1).max(200), providerId: idSchema, modelId: modelIdSchema, prompt: promptSchema, dependsOn: z.array(idSchema).max(50) }).strict()).min(1).max(50),

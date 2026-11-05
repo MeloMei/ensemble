@@ -162,7 +162,7 @@ function providerGuides(): Record<string, { install: string; configure: string; 
   },
 }; }
 
-function ProviderGuides({ provider }: { provider: ProviderInfo }) {
+export function ProviderGuides({ provider }: { provider: Pick<ProviderInfo, 'id' | 'name' | 'source'> }) {
   const { t } = useTranslation('shell');
   const guide = provider.source === 'builtin' ? providerGuides()[provider.id] : undefined;
   if (!guide) return null;

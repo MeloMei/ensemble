@@ -13,6 +13,12 @@ Ensemble is a macOS desktop workspace for local agent runtimes. It keeps agent s
 
 Use the [official installation and configuration guides](runtimes.md#install-and-configure) for your runtime. Ensemble does not bundle the Codex, Claude Code, OpenCode, or DeepSeek Harness CLIs. It can discover CLIs included in separately installed applications as well as command-line installations. Installation, authentication, and model access are separate checks.
 
+## Start your first task
+
+When there are no projects yet, Ensemble opens a start page. Choose a local project directory, an agent and its model, and optionally write your first task.
+
+Choose **Open conversation** to create the project and conversation and save your draft together. Review the draft in the conversation and send it when ready. If no agent is detected, use the installation and sign-in guides on the start page, then refresh detection. The directory checks show authentication and quota as unknown when they have not been confirmed.
+
 ## Run from source
 
 Run these commands in the repository root:
