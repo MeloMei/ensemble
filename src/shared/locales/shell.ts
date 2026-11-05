@@ -1,4 +1,14 @@
 export const en = {
+  "firstTask.title": "Start your first task",
+  "firstTask.description": "Choose a local project and an agent to open your first conversation.",
+  "firstTask.runtime": "Local runtime",
+  "firstTask.detectionNote": "Detecting a CLI does not confirm that you are signed in or have available quota.",
+  "firstTask.noRuntime": "No local runtime was detected. Install one and sign in using its official guide, then refresh detection.",
+  "firstTask.health": "View runtime checks for this directory",
+  "firstTask.draft": "First task draft",
+  "firstTask.draftHint": "What would you like to work on? You can also write this after opening the conversation.",
+  "firstTask.openNote": "Opening saves your draft. The agent starts only when you send it in the conversation.",
+  "firstTask.open": "Open conversation",
   "settings.general": "General",
   "settings.generalDescription": "Language, appearance, and application updates.",
   "settings.project": "Project",
@@ -274,6 +284,16 @@ export const en = {
 };
 
 export const zhCN: Record<keyof typeof en, string> = {
+  "firstTask.title": "从第一个任务开始",
+  "firstTask.description": "选择本地项目和 Agent，打开你的第一个会话。",
+  "firstTask.runtime": "本地 Runtime",
+  "firstTask.detectionNote": "检测到 CLI 不代表已经登录，也不代表有可用额度。",
+  "firstTask.noRuntime": "尚未检测到本地 Runtime。按官方指南安装并登录后，刷新检测。",
+  "firstTask.health": "查看此目录的 Runtime 检测结果",
+  "firstTask.draft": "第一条任务草稿",
+  "firstTask.draftHint": "你想做什么？也可以打开会话后再填写。",
+  "firstTask.openNote": "打开会话会保存草稿。你在会话里点击发送后，Agent 才会开始。",
+  "firstTask.open": "打开会话",
   "settings.general": "通用",
   "settings.generalDescription": "语言、外观与应用更新。",
   "settings.project": "项目设置",

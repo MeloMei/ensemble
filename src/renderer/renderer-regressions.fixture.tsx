@@ -18,6 +18,7 @@ import { ManagedWorktreePanel } from './ManagedWorktreePanel';
 import { FileReviewPanel } from './FileReviewPanel';
 import { SessionChat, SessionSettingsPanel } from './SessionChat';
 import { App } from './App';
+import { FirstTask } from './FirstTask';
 import { WorkspaceToolsPanel } from './WorkspaceTools';
 import { ApplicationUpdateNotice, ApplicationUpdateSettings, useApplicationUpdates } from './ApplicationUpdates';
 import type { AppUpdateState } from '../shared/application-updates';
@@ -110,6 +111,134 @@ function collaborationSnapshot(runs: CollaborationRun[], revision = 1): Snapshot
 }
 
 const cases: Record<string, () => Promise<void>> = {
+  'FIRST-RUN: missing runtimes show official guides and refresh preserves a cancelled directory choice and draft': async () => {
+    let providers: ProviderInfo[] = [];
+    let refreshes = 0;
+    const show = () => render(<FirstTask providers={providers} connected perform={perform} pending={new Set()} />);
+    window.workbench = {
+      chooseDirectory: async () => null,
+      providerHealth: async () => providers,
+      refreshProviders: async () => { refreshes++; providers = [provider]; await show(); },
+    } as unknown as Window['workbench'];
+    await show();
+    assert(document.querySelector('.first-task-setup a[href="https://learn.chatgpt.com/docs/codex/cli"]') && document.querySelector('.first-task-setup a[href="https://learn.chatgpt.com/docs/auth"]'), 'Missing official install and sign-in guides');
+    assert(button('shell:firstTask.open').disabled && document.querySelector('.first-task-runtime-note')?.textContent === translate('shell:firstTask.detectionNote'), 'No-runtime state allowed creating a session or implied sign-in');
+    await change(input('.first-task textarea'), 'Keep this first task');
+    await click('shell:common.choose'); await settle();
+    assert(input('.first-task .directory-field input').value === '', 'Cancelling directory selection changed the field');
+    await change(input('.first-task .directory-field input'), '/first-project');
+    await click('shell:common.choose'); await settle();
+    assert(input('.first-task .directory-field input').value === '/first-project', 'Cancelling directory selection discarded the existing directory');
+    await click('shell:provider.refresh'); await settle();
+    assert(refreshes === 1 && !document.querySelector('.first-task-setup') && !button('shell:firstTask.open').disabled, 'Refresh did not make the detected runtime selectable');
+    assert(input('.first-task textarea').value === 'Keep this first task', 'Runtime refresh discarded the task draft');
+    assert(document.querySelector('.runtime-health-check[data-stage="authentication"]')?.getAttribute('data-status') === 'unknown', 'Missing authentication evidence was shown as ready');
+  },
+  'FIRST-RUN: invalid models block creation and failed double-clicked commands retry without losing the form': async () => {
+    const commands: Parameters<Window['workbench']['createSession']>[0][] = [];
+    const gate = deferred<string>();
+    const modelProvider = { ...provider, models: [{ id: 'first-model', name: 'First model', free: true }], defaultModelId: 'first-model' };
+    let providers: ProviderInfo[] = [modelProvider];
+    const show = () => render(<FirstTask providers={providers} connected perform={perform} pending={new Set()} />);
+    window.workbench = {
+      providerHealth: async () => providers,
+      createSession: async (value: typeof commands[number]) => { commands.push(value); if (commands.length === 1) return gate.promise; return 'first-created'; },
+      commandReceipt: async () => undefined,
+    } as unknown as Window['workbench'];
+    await show(); await change(input('.first-task .directory-field input'), '/first-project'); await change(input('.first-task textarea'), '  Keep this draft\n');
+    providers = [{ ...modelProvider, models: [{ id: 'second-model', name: 'Second model', free: true }] }];
+    await show();
+    assert(button('shell:firstTask.open').disabled, 'A removed model stayed valid');
+    const modelSelect = [...document.querySelectorAll<HTMLButtonElement>('.first-task [role=combobox]')].find(item => item.getAttribute('aria-label') === translate('shell:provider.model'))!;
+    await chooseOption(modelSelect, 'second-model');
+    await act(async () => { button('shell:firstTask.open').click(); button('shell:firstTask.open').click(); await tick(); });
+    await waitFor(() => commands.length === 1, 'Double click did not issue a single creation');
+    gate.reject(new Error('creation response lost'));
+    await waitFor(() => !button('shell:firstTask.open').disabled && Boolean(document.querySelector('.first-task-error')), 'Failure did not preserve a retryable form');
+    assert(input('.first-task textarea').value === '  Keep this draft\n' && input('.first-task .directory-field input').value === '/first-project', 'Creation failure discarded form contents');
+    await click('shell:firstTask.open'); await waitFor(() => commands.length === 2 && button('shell:firstTask.open').disabled, 'Retry did not wait for the new workspace snapshot');
+    assert(commands[0].commandId === commands[1].commandId && commands[1].initialDraft === '  Keep this draft\n' && commands[1].modelId === 'second-model', 'Retry changed the command or lost its exact draft/model');
+  },
+  'FIRST-RUN: loading does not flash onboarding and existing workspaces retain the normal layout': async () => {
+    const loading = deferred<Snapshot>();
+    let publish!: (value: Snapshot) => void;
+    const existing: Snapshot = { version: 1, sessions: [], workspaces: [workspace], providers: [provider], workflows: [], terminals: [], pluginErrors: [], pluginPath: '/plugins', dataPath: '/data' };
+    window.workbench = {
+      ...applicationUpdateApi, snapshot: async () => loading.promise,
+      subscribe: (listener: typeof publish) => { publish = listener; return () => {}; },
+      getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {}, watchSessions: async () => {},
+      listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {},
+    } as unknown as Window['workbench'];
+    await render(<App />);
+    assert(document.querySelector('.loading-view') && !document.querySelector('.first-task'), 'Unloaded snapshot flashed onboarding');
+    await act(async () => { loading.resolve(existing); await tick(); });
+    await waitFor(() => Boolean(document.querySelector('.workspace-columns')), 'An existing workspace did not load');
+    assert(!document.querySelector('.first-task') && document.querySelector('.sidebar-navigation')?.textContent?.includes(translate('shell:app.history')), 'Existing users lost the normal workspace or navigation');
+    await act(async () => { publish({ ...existing, workspaces: [], providers: [] }); await tick(); });
+    await waitFor(() => Boolean(document.querySelector('.first-task')), 'A loaded empty snapshot did not show onboarding');
+  },
+  'FIRST-RUN: opening the first conversation lands on its saved draft without sending it': async () => {
+    let snapshot: Snapshot = { version: 1, sessions: [], workspaces: [], providers: [provider], workflows: [], terminals: [], pluginErrors: [], pluginPath: '/plugins', dataPath: '/data' };
+    const initialSnapshot = snapshot;
+    let snapshotReads = 0, publish!: (value: Snapshot) => void;
+    const commands: Parameters<Window['workbench']['createSession']>[0][] = [];
+    window.workbench = {
+      ...applicationUpdateApi, snapshot: async () => { snapshotReads++; return initialSnapshot; }, subscribe: (listener: typeof publish) => { publish = listener; return () => {}; },
+      getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {}, watchSessions: async () => {},
+      listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {}, providerHealth: async () => [provider],
+      createWorkspace: async () => { throw new Error('First-task creation must use createSession alone'); },
+      sendPrompt: async () => { throw new Error('Opening a conversation must not send a prompt'); },
+      createSession: async (value: typeof commands[number]) => {
+        commands.push(value);
+        const created = { ...session, id: 'first-task-session', title: value.title, cwd: value.cwd, historyLoaded: true, draft: { text: value.initialDraft ?? '' } };
+        snapshot = { ...snapshot, sessions: [created], workspaces: [{ ...workspace, id: 'first-task-workspace', name: value.title, cwd: value.cwd,
+          tabs: [{ kind: 'agent', id: 'first-task-tab', sessionId: created.id }], activeTabId: 'first-task-tab' }] };
+        return created.id;
+      },
+    } as unknown as Window['workbench'];
+    await render(<App />); await waitFor(() => Boolean(document.querySelector('.first-task')), 'Empty app did not show first-task form');
+    await change(input('.first-task .directory-field input'), '/first-project'); await change(input('.first-task textarea'), '  Review this project\n');
+    await click('shell:firstTask.open'); await waitFor(() => commands.length === 1, 'First conversation was not created');
+    assert(document.querySelector('.first-task') && button('shell:firstTask.open').disabled && snapshotReads === 1, 'A delayed subscription caused another snapshot read or unlocked duplicate creation');
+    await click('shell:firstTask.open'); assert(commands.length === 1, 'A successful command created a duplicate before its snapshot arrived');
+    await act(async () => { publish(snapshot); await tick(); });
+    await waitFor(() => Boolean(document.querySelector('.composer textarea')), 'Subscribed conversation did not open');
+    assert(commands.length === 1 && commands[0].initialDraft === '  Review this project\n' && input('.composer textarea').value === '  Review this project\n', 'First conversation lost the persisted draft');
+    assert(snapshot.sessions[0].status === 'idle' && snapshot.sessions[0].messages.length === 0 && !document.querySelector('.first-task') && snapshotReads === 1, 'Opening started a task, retained onboarding, or fetched a second snapshot');
+  },
+  'FIRST-RUN: delayed creation responses and subscriptions preserve navigation to history': async () => {
+    const initial: Snapshot = { version: 1, sessions: [], workspaces: [], providers: [provider], workflows: [], terminals: [], pluginErrors: [], pluginPath: '/plugins', dataPath: '/data' };
+    for (const order of ['response-first', 'subscription-first']) {
+      const gate = deferred<string>();
+      let publish!: (value: Snapshot) => void, created!: Snapshot;
+      let snapshotReads = 0;
+      const commands: Parameters<Window['workbench']['createSession']>[0][] = [];
+      window.workbench = {
+        ...applicationUpdateApi, snapshot: async () => { snapshotReads++; return initial; }, subscribe: (listener: typeof publish) => { publish = listener; return () => {}; },
+        getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {}, watchSessions: async () => {},
+        providerHealth: async () => [provider],
+        createSession: async (value: typeof commands[number]) => {
+          commands.push(value);
+          const saved = { ...session, id: `first-history-${order}`, cwd: value.cwd, draft: { text: value.initialDraft ?? '' } };
+          created = { ...initial, sessions: [saved], workspaces: [{ ...workspace, cwd: value.cwd, tabs: [{ kind: 'agent', id: 'first-history-tab', sessionId: saved.id }], activeTabId: 'first-history-tab' }] };
+          return gate.promise;
+        },
+      } as unknown as Window['workbench'];
+      await render(<App key={order} />); await waitFor(() => Boolean(document.querySelector('.first-task')), 'First-task form did not load');
+      await change(input('.first-task .directory-field input'), '/first-history'); await change(input('.first-task textarea'), 'Do this later');
+      await click('shell:firstTask.open'); await waitFor(() => commands.length === 1, 'Creation did not start'); await click('shell:app.history');
+      const assertHistory = () => assert(document.querySelector('.sidebar-navigation button[aria-current="page"]')?.textContent?.includes(translate('shell:app.history')) && !document.querySelector('.first-task') && !document.querySelector('.workspace-columns'), 'A delayed creation completion took the user away from history');
+      assertHistory();
+      if (order === 'response-first') {
+        await act(async () => { gate.resolve(created.sessions[0].id); await tick(); }); assertHistory();
+        await act(async () => { publish(created); await tick(); });
+      } else {
+        await act(async () => { publish(created); await tick(); }); assertHistory();
+        await act(async () => { gate.resolve(created.sessions[0].id); await tick(); });
+      }
+      assertHistory(); assert(snapshotReads === 1 && commands.length === 1, 'Completing creation fetched stale state or repeated the command');
+    }
+  },
   'MOTION-SKILL-ASSIGNMENT: recipient feedback follows the saved session selection': async () => {
     const skillList = ['review', 'build', 'docs'].map(id => ({ id, name: id, description: id, path: '/' + id, scope: 'project', editable: true }));
     const writes: { skillId: string; enabled: boolean }[] = [];
@@ -1145,19 +1274,20 @@ const cases: Record<string, () => Promise<void>> = {
       subscribe: () => () => {}, snapshot: async () => ({ version: 1, sessions: [], workspaces: [], providers: [], workflows: [], terminals: [], pluginErrors: [], pluginPath: '/plugins', dataPath: '/data' }),
       ...applicationUpdateApi,
       getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {}, watchSessions: async () => {},
+      providerHealth: async () => [],
       createWorkspace: async (input: Record<string, unknown>) => { creations.push(input); if (creations.length === 1) throw new Error('creation response lost'); return 'created-workspace'; },
     } as unknown as Window['workbench'];
     await render(<App />); await click('shell:app.addProject');
     const mode = document.querySelector<HTMLButtonElement>('dialog [role=combobox]')!;
     assert(mode.textContent?.includes(translate('shell:app.currentDirectory')), 'Creating a workspace silently defaults to a new worktree');
-    await change(input('.directory-field input'), '/fixture'); await chooseOption(mode, 'worktree');
+    await change(input('dialog .directory-field input'), '/fixture'); await chooseOption(mode, 'worktree');
     await change(input(`input[placeholder="${translate('shell:app.worktreeBranchDefault')}"]`), 'codex/isolated');
     await click('shell:app.createWorkspace');
     await waitFor(() => creations.length === 1 && !button('shell:app.createWorkspace').disabled, 'Failed creation did not leave the editable dialog');
     await click('shell:app.createWorkspace'); await waitFor(() => creations.length === 2, 'Creation retry did not start');
     await waitFor(() => !document.querySelector('dialog'), 'Successful workspace creation did not close the dialog');
     assert(creations[0].commandId && creations[0].commandId === creations[1].commandId && creations[1].mode === 'worktree' && creations[1].branch === 'codex/isolated' && creations[1].cwd === '/fixture', 'Workspace retry changed its intent or lost the isolation choice');
-    await click('shell:app.addProject'); await change(input('.directory-field input'), '/fixture'); await click('shell:app.createWorkspace');
+    await click('shell:app.addProject'); await change(input('dialog .directory-field input'), '/fixture'); await click('shell:app.createWorkspace');
     await waitFor(() => creations.length === 3, 'The next creation did not start');
     assert(creations[2].mode === 'directory' && creations[2].commandId !== creations[1].commandId, 'An independent creation reused the completed intent');
   },

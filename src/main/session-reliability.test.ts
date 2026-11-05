@@ -7,6 +7,8 @@ import { WorkbenchEngine } from './engine';
 import { StateStore } from './store';
 import { DiagnosticJournal, withProviderDiagnostics } from './diagnostics';
 import type { ProviderAdapter, TurnContext } from './providers/types';
+import { PROMPT_TEXT_LIMIT, type CreateSessionInput } from '../shared/types';
+import { commandHash } from './session-commands';
 
 async function until(predicate: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt++) {
@@ -21,6 +23,56 @@ function adapter(run: (context: TurnContext) => Promise<void>, id = 'test'): Pro
     capabilities: { resume: true, approvals: true, effort: true, permissions: true },
     defaultModelId: 'm1', models: [{ id: 'm1', name: 'm1', free: true, efforts: ['low'] }, { id: 'm2', name: 'm2', free: true }] }, run };
 }
+
+test('first-task creation atomically saves a draft without starting a provider and replays after restart', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'ensemble-first-task-'));
+  const store = new StateStore(join(directory, 'state.json'));
+  const engine = new WorkbenchEngine(store, '', () => {});
+  let calls = 0;
+  engine.setProviders([adapter(async () => { calls++; })], [], []);
+  let reopened: WorkbenchEngine | undefined;
+  const input = { title: 'first', providerId: 'test', cwd: directory, commandId: 'first-task', initialDraft: '  Keep my draft\n' };
+  try {
+    const atomic = store.atomic.bind(store);
+    store.atomic = operation => atomic((state, transaction) => operation(state, {
+      ...transaction, putReceipt: () => { throw new Error('draft transaction failed'); },
+    }));
+    await assert.rejects(engine.createSession(input), /draft transaction failed/);
+    assert.equal(store.state.sessions.length, 0); assert.equal(store.state.workspaces.length, 0);
+    assert.equal(engine.commandReceipt(input.commandId), undefined); assert.equal(calls, 0);
+    store.atomic = atomic;
+    const [id, replay] = await Promise.all([engine.createSession(input), engine.createSession(input)]);
+    assert.equal(replay, id); assert.equal(store.state.sessions.length, 1);
+    assert.equal(store.state.workspaces.length, 1); assert.equal(store.state.workspaces[0].tabs.length, 1);
+    assert.deepEqual(engine.getSession(id).draft, { text: input.initialDraft });
+    assert.equal(engine.getSession(id).status, 'idle'); assert.equal(calls, 0);
+    await assert.rejects(engine.createSession({ ...input, initialDraft: 'different' }), /commandId/);
+    await engine.shutdown();
+    const restored = new StateStore(store.path); await restored.load();
+    reopened = new WorkbenchEngine(restored, '', () => {});
+    assert.equal(await reopened.createSession(input), id);
+    assert.deepEqual(reopened.getSession(id).draft, { text: input.initialDraft });
+    assert.equal(restored.state.workspaces[0].tabs.length, 1); assert.equal(calls, 0);
+  } finally { await reopened?.shutdown(); await engine.shutdown(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('first-task draft rejects invalid text and models while legacy create-session fingerprints stay unchanged', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'ensemble-first-task-validation-'));
+  const store = new StateStore(join(directory, 'state.json'));
+  const engine = new WorkbenchEngine(store, '', () => {});
+  engine.setProviders([adapter(async () => { assert.fail('Creating a session must not run a provider'); })], [], []);
+  const input = { title: 'legacy', providerId: 'test', cwd: directory };
+  try {
+    await assert.rejects(engine.createSession({ ...input, initialDraft: 'x'.repeat(PROMPT_TEXT_LIMIT + 1) }));
+    await assert.rejects(engine.createSession({ ...input, initialDraft: { text: 'draft', attachments: [] } } as unknown as CreateSessionInput));
+    await assert.rejects(engine.createSession({ ...input, modelId: 'invalid', initialDraft: 'Keep this' }), /模型/);
+    assert.equal(store.state.sessions.length, 0); assert.equal(store.state.workspaces.length, 0);
+    const id = await engine.createSession({ ...input, commandId: 'legacy-create' });
+    assert.equal(engine.getSession(id).draft, undefined);
+    assert.equal(store.receipt('command:legacy-create')?.hash, commandHash('create-session', input));
+    assert.equal(await engine.createSession({ ...input, commandId: 'legacy-create' }), id);
+  } finally { await engine.shutdown(); await rm(directory, { recursive: true, force: true }); }
+});
 
 test('ordinary command receipts survive response loss, restart and identical text sent twice', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'ensemble-command-'));

@@ -250,7 +250,7 @@ export interface WorkbenchAPI {
   subscribe(listener: (snapshot: Snapshot) => void): () => void;
   refreshProviders(): Promise<void>;
   chooseDirectory(): Promise<string | null>;
-  createSession(input: { title: string; providerId: string; cwd: string; modelId?: string; commandId?: string }): Promise<string>;
+  createSession(input: CreateSessionInput): Promise<string>;
   sendMessage(sessionId: string, prompt: string, commandId?: string): Promise<void>;
   cancelSession(sessionId: string, commandId?: string, expectedAttemptId?: string): Promise<void>;
   decideApproval(approvalId: string, choiceId: string, commandId?: string): Promise<void>;
@@ -306,7 +306,9 @@ export interface PromptAttachment {
   id: string; name: string; kind: 'image' | 'text'; mimeType: string;
   size: number; sha256: string; ownedPath: string;
 }
+export const PROMPT_TEXT_LIMIT = 200_000;
 export interface PromptInput { text: string; attachments?: PromptAttachment[] }
+export interface CreateSessionInput { title: string; providerId: string; cwd: string; modelId?: string; commandId?: string; initialDraft?: PromptInput['text'] }
 export interface CurrencyBalance { currency: string; total: string; granted: string; toppedUp: string }
 export interface DeepSeekBalance extends CurrencyBalance { balances: CurrencyBalance[]; checkedAt: string }
 export interface SessionSettings { effort?: string; permission?: 'review' | 'read-only'; skillIds?: string[] }
