@@ -1,18 +1,19 @@
 import { CollaborationViews } from './CollaborationViews';
+import { readGraphView, writeGraphView } from './graph-view-state';
 import type { CollaborationRun, CollaborationEvent, CollaborationParticipant, CollaborationTask } from '../shared/collaboration';
 import React, { act, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { I18nextProvider } from 'react-i18next';
 import { MotionConfig } from 'framer-motion';
 import { i18n, translate } from '../shared/i18n';
-import type { DiagnosticEntry, FileContent, McpSettingsView, Message, PromptInput, ProviderInfo, Session, Snapshot, UnsavedFileSummary, Workflow, Workspace } from '../shared/types';
+import type { DiagnosticEntry, FileContent, McpSettingsView, Message, PromptInput, ProviderInfo, Session, Snapshot, UnsavedFileSummary, Workflow, WorkflowInput, Workspace } from '../shared/types';
 import type { BackendConnectionState, SessionHistoryWindow } from '../shared/backend';
 import { SettingsDialog } from './SettingsDialog';
 import { LanguageProvider } from './language';
 import { OverlayProvider } from './overlays';
 import { TooltipProvider } from './Tooltip';
 import { IconButton } from './ui';
-import { ProvidersContent, WorkflowView } from './WorkflowViews';
+import { ProvidersContent, WorkflowEditor, WorkflowView } from './WorkflowViews';
 import { DiagnosticsPanel } from './DiagnosticsPanel';
 import { ManagedWorktreePanel } from './ManagedWorktreePanel';
 import { FileReviewPanel } from './FileReviewPanel';
@@ -108,6 +109,24 @@ function collaborationRun(id: string, updatedAt: string): CollaborationRun {
 function collaborationSnapshot(runs: CollaborationRun[], revision = 1): Snapshot {
   return { version: 1, sessions: [], workspaces: [], providers: [], workflows: [], terminals: [], pluginErrors: [], pluginPath: '/plugins', dataPath: '/data', collaborationEventSeq: revision,
     collaboration: { definitions: runs.map(run => run.definitionSnapshot), runs, tasks: [], messages: [], artifacts: [], identities: [], grants: [] } };
+}
+
+function labeledInput(key: string, scope: ParentNode = document): HTMLInputElement | HTMLTextAreaElement {
+  const label = [...scope.querySelectorAll('label')].find(item => item.firstChild?.textContent?.trim() === translate(key));
+  const control = label?.querySelector<HTMLInputElement | HTMLTextAreaElement>('input, textarea');
+  assert(control, `Missing labeled input ${key}`); return control;
+}
+async function graphClick(kind: 'node' | 'edge', id: string) {
+  const selector = `.react-flow__${kind}[data-id="${CSS.escape(id)}"]`;
+  await waitFor(() => Boolean(document.querySelector(selector)), `Missing graph ${kind} ${id}`, 200);
+  await act(async () => { document.querySelector(selector)!.dispatchEvent(new MouseEvent('click', { bubbles: true })); await tick(); });
+}
+async function graphReady(count: number) {
+  await waitFor(() => {
+    const nodes = [...document.querySelectorAll<HTMLElement>('.react-flow__node')];
+    return nodes.length === count && nodes.every(node => node.getBoundingClientRect().width > 0 && node.style.transform !== 'translate(0px, 0px)');
+  }, `The ${count} graph nodes did not complete layout`, 250);
+  await frames();
 }
 
 const cases: Record<string, () => Promise<void>> = {
@@ -327,6 +346,181 @@ const cases: Record<string, () => Promise<void>> = {
     await click('MCP'); connectionGate.resolve({ status: 'connected', tools: [] }); await settle();
     assert(!document.querySelector('.tools-connection-result') && !button('workspace:tools.testConnection').disabled, 'An old project connection result leaked into the new project');
   },
+  'GRAPH-STUDIO-1: the first collaboration opens as an editable graph and saves a draft with its layout': async () => {
+    type Draft = CollaborationRun['definitionSnapshot'] & { start: boolean };
+    let saved: Draft | undefined;
+    window.workbench = {
+      chooseDirectory: async () => workspace.cwd,
+      collaborationCall: async (operation: string, value: Draft) => {
+        if (operation === 'create_run') { saved = value; return { runId: 'studio-saved' }; }
+        return { tasks: [] };
+      },
+    } as unknown as Window['workbench'];
+    const snapshot = { ...collaborationSnapshot([]), providers: [provider] };
+    await render(<CollaborationViews snapshot={snapshot} initialCwd={workspace.cwd} perform={perform} pending={new Set()} openSession={() => {}} />);
+    await graphReady(2);
+    assert(document.querySelector('.collaboration-studio') && document.querySelector('.react-flow__edge[data-id="configured-implementation-review"]'), 'First entry did not display the two-Agent template and its relationship');
+    const implementer = document.querySelector<HTMLElement>('.react-flow__node[data-id="implementer"]')!;
+    const reviewer = document.querySelector<HTMLElement>('.react-flow__node[data-id="reviewer"]')!;
+    assert(implementer.getBoundingClientRect().bottom < reviewer.getBoundingClientRect().top, 'The implementer was not above the reviewer');
+    assert([implementer, reviewer].every(node => node.querySelector('.react-flow__handle.target.react-flow__handle-top') && node.querySelector('.react-flow__handle.source.react-flow__handle-bottom')), 'Graph handles did not follow the top-to-bottom direction');
+    await change(labeledInput('collaboration:setup.goal'), 'Deliver a visual editor');
+    await graphClick('node', 'implementer');
+    await change(labeledInput('collaboration:field.displayName'), 'Builder');
+    await change(labeledInput('collaboration:field.roles'), 'implementation, validation');
+    await change(labeledInput('collaboration:field.instructions'), 'Own the complete implementation');
+    await act(async () => { document.querySelector<HTMLButtonElement>('.execution-edge-label')!.click(); await tick(); });
+    assert(document.querySelector('.collaboration-studio-relation'), 'Clicking the visible relationship label did not open its inspector');
+    await click('collaboration:studio.reverseDirection');
+    await change(labeledInput('collaboration:studio.relationshipLabel'), 'Review findings');
+    const before = Object.fromEntries([...document.querySelectorAll<HTMLElement>('.react-flow__node')].map(node => [node.dataset.id!, node.style.transform]));
+    await click('collaboration:studio.saveDraft'); await settle();
+    assert(saved?.start === false && saved.participants.length === 2 && saved.steps?.length === 2, 'Saving the visual template must create a draft without starting providers');
+    const builder = saved.participants.find(item => item.id === 'implementer')!;
+    assert(builder.name === 'Builder' && builder.roles.join('|') === 'implementation|validation' && builder.instructions === 'Own the complete implementation', 'The Agent inspector edits did not reach the saved definition');
+    assert(saved.relationships[0].from === 'reviewer' && saved.relationships[0].to === 'implementer' && saved.relationships[0].label === 'Review findings', 'The selected relationship edits were lost in the payload');
+    assert(saved.steps?.every(step => step.prompt.includes('Deliver a visual editor')), 'The saved preset tasks lost the goal');
+    const layout = readGraphView('collaboration:studio-saved:relationships');
+    assert(Object.keys(layout.positions).length === 2 && Object.entries(layout.positions).every(([id, point]) => before[id] === `translate(${point.x}px, ${point.y}px)`), 'Saving the draft did not preserve the visible graph positions');
+  },
+  'GRAPH-STUDIO-2: removing an Agent cleans relationships, dependent tasks and permission targets': async () => {
+    const run = collaborationRun('Studio cleanup', '2026-11-05T00:00:00Z');
+    const participant = (id: string): CollaborationParticipant => ({ id, name: id, mode: 'managed', providerId: provider.id, roles: [], permissions: { submitTasks: false, sendMessages: false, publishArtifacts: false, configureRun: false, allowedTargets: ['remove'], workspace: { cwd: workspace.cwd, access: 'read-only' } } });
+    run.definitionSnapshot.participants = ['keep', 'remove'].map(participant);
+    run.definitionSnapshot.relationships = [{ id: 'cleanup', from: 'keep', to: 'remove', kind: 'reports-to' }];
+    run.definitionSnapshot.steps = [
+      { id: 'removed-task', title: 'Removed task', participantId: 'remove', prompt: 'Remove me', dependsOn: [], artifactIds: [] },
+      { id: 'remaining-task', title: 'Remaining task', participantId: 'keep', prompt: 'Keep me', dependsOn: ['removed-task'], artifactIds: [] },
+    ];
+    let saved: Partial<CollaborationRun['definitionSnapshot']> | undefined;
+    window.workbench = { queryCollaborationEvents: async () => [], collaborationCall: async (operation: string, value: typeof saved) => { if (operation === 'update_run') { saved = value; return { runId: run.id }; } return { tasks: [] }; } } as unknown as Window['workbench'];
+    await render(<CollaborationViews snapshot={{ ...collaborationSnapshot([run]), providers: [provider] }} perform={perform} pending={new Set()} openSession={() => {}} />);
+    await click('collaboration:run.editSetup'); await graphReady(2);
+    await click('collaboration:studio.addAgent'); await graphReady(3);
+    const added = [...document.querySelectorAll<HTMLElement>('.react-flow__node')].find(node => !['keep', 'remove'].includes(node.dataset.id!))!;
+    assert(added.querySelector('strong')?.textContent === 'Agent 3', 'Adding an Agent did not put it directly on the canvas');
+    await graphClick('node', 'remove');
+    await click(translate('collaboration:participant.delete', { name: 'remove' }));
+    await graphReady(2);
+    assert(!document.querySelector('.react-flow__edge[data-id="configured-cleanup"]'), 'The removed Agent left a dangling relationship');
+    await click('collaboration:action.saveVersion'); await settle();
+    assert(saved?.participants?.length === 2 && !saved.participants.some(item => item.id === 'remove') && saved.participants.every(item => !item.permissions.allowedTargets?.includes('remove')), 'Removing an Agent left invalid permission targets');
+    assert(saved.relationships?.length === 0 && saved.steps?.length === 1 && saved.steps[0].id === 'remaining-task' && saved.steps[0].dependsOn.length === 0, 'Removing an Agent left its task or a dangling dependency');
+  },
+  'GRAPH-STUDIO-3: workflow graph connections reject invalid edges and save the edited dependency direction': async () => {
+    let saved: WorkflowInput | undefined;
+    window.workbench = { chooseDirectory: async () => workspace.cwd, createWorkflow: async (value: WorkflowInput) => { saved = value; return 'workflow-studio-saved'; } } as unknown as Window['workbench'];
+    await render(<WorkflowEditor providers={[provider]} perform={perform} pending={new Set()} onClose={() => {}} onCreated={() => {}} />);
+    await graphReady(1);
+    await change(labeledInput('shell:workflow.name'), 'Visual workflow');
+    await click('shell:common.choose'); await settle();
+    await change(labeledInput('shell:common.title'), 'Build'); await change(labeledInput('shell:common.task'), 'Implement');
+    const a = document.querySelector<HTMLElement>('.react-flow__node')!.dataset.id!;
+    await click('shell:workflow.addStep'); await graphReady(2);
+    await change(labeledInput('shell:common.title'), 'Review'); await change(labeledInput('shell:common.task'), 'Inspect the output');
+    const added = [...document.querySelectorAll<HTMLElement>('.react-flow__node')].find(node => node.dataset.id !== a)!;
+    const b = added.dataset.id!;
+    const initial = document.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(a)}"]`)!;
+    assert(initial.getBoundingClientRect().bottom < added.getBoundingClientRect().top, 'The added task overlaps the existing task');
+    await waitFor(() => {
+      const canvas = document.querySelector('.execution-graph')!.getBoundingClientRect();
+      const bounds = added.getBoundingClientRect();
+      return bounds.left >= canvas.left && bounds.right <= canvas.right && bounds.top >= canvas.top && bounds.bottom <= canvas.bottom;
+    }, () => `The newly added selected task was not revealed inside the visible canvas: ${JSON.stringify({ node: added.getBoundingClientRect().toJSON(), canvas: document.querySelector('.execution-graph')!.getBoundingClientRect().toJSON() })}`, 200);
+    const connect = async (source: string, target: string) => { await click('shell:workflow.connectSteps'); await graphClick('node', source); await graphClick('node', target); };
+    await connect(a, b);
+    const original = JSON.stringify([a.slice(5), b.slice(5)]);
+    await act(async () => { document.querySelector<HTMLButtonElement>('.execution-edge-label')!.click(); await tick(); });
+    assert(document.querySelector('.workflow-inspector')?.textContent?.includes(translate('shell:workflow.dependency')), 'Selecting the visible edge did not open its dependency inspector');
+    await connect(a, b);
+    assert(document.querySelector('[role=alert]')?.textContent === translate('shell:workflow.dependencyError.duplicate') && document.querySelectorAll('.react-flow__edge').length === 1, 'Duplicate dependency was accepted');
+    await click('shell:common.cancel'); await connect(a, a);
+    assert(document.querySelector('[role=alert]')?.textContent === translate('shell:workflow.dependencyError.self'), 'A task was allowed to depend on itself');
+    await click('shell:common.cancel'); await connect(b, a);
+    assert(document.querySelector('[role=alert]')?.textContent === translate('shell:workflow.dependencyError.cycle'), 'A dependency cycle was accepted');
+    await click('shell:common.cancel'); await graphClick('edge', original); await click('shell:workflow.reverseDependency');
+    const reversed = JSON.stringify([b.slice(5), a.slice(5)]);
+    await graphClick('edge', reversed); await click('shell:workflow.deleteDependency');
+    assert(document.querySelectorAll('.react-flow__edge').length === 0, 'Deleting the selected edge left its dependency on the canvas');
+    await connect(b, a);
+    await click('collaboration:graph.relayout');
+    await waitFor(() => added.getBoundingClientRect().bottom < initial.getBoundingClientRect().top, 'Rearranging did not place the dependency source above its target', 200);
+    await click('shell:workflow.save'); await settle();
+    assert(saved?.steps.find(step => step.id === a.slice(5))?.dependsOn.join() === b.slice(5) && saved.steps.find(step => step.id === b.slice(5))?.dependsOn.length === 0, 'Saved workflow dependencies did not match the edited direction');
+    assert(Object.keys(readGraphView('workflow:workflow-studio-saved').positions).length === 2, 'Workflow draft layout did not carry over on save');
+  },
+  'GRAPH-STUDIO-4: workflow runtime graph shows actual approval state and keeps recovery confirmation scoped': async () => {
+    const running: Workflow = { id: 'studio-runtime', name: 'Runtime graph', cwd: workspace.cwd, status: 'running', createdAt: '2026-11-05', updatedAt: 'v1', steps: [
+      { id: 'build', title: 'Build', providerId: provider.id, prompt: 'Build', dependsOn: [], status: 'completed' },
+      { id: 'review', title: 'Review', providerId: provider.id, prompt: 'Review', dependsOn: ['build'], status: 'running', sessionId: session.id },
+    ] };
+    let resumes = 0;
+    window.workbench = { resumeWorkflow: async () => { resumes++; } } as unknown as Window['workbench'];
+    const show = (value: Workflow) => render(<WorkflowView workflow={value} providers={[provider]} sessions={[{ ...session, status: 'waiting_approval' }]} perform={perform} pending={new Set()} openSession={() => {}} />);
+    const cachedViewport = { x: -2500, y: -800, zoom: 0.7 };
+    writeGraphView('workflow:' + running.id, { positions: { 'task-build': { x: 90, y: 100 }, 'task-review': { x: 450, y: 100 } }, viewport: cachedViewport });
+    await show(running); await graphReady(2); await frames(12);
+    assert(JSON.stringify(readGraphView('workflow:' + running.id).viewport) === JSON.stringify(cachedViewport), 'Opening the workflow moved its restored viewport to the default first-step selection');
+    await graphClick('node', 'task-review');
+    await waitFor(() => {
+      const canvas = document.querySelector('.execution-graph')!.getBoundingClientRect();
+      const bounds = document.querySelector('.react-flow__node[data-id="task-review"]')!.getBoundingClientRect();
+      return bounds.left >= canvas.left && bounds.right <= canvas.right && bounds.top >= canvas.top && bounds.bottom <= canvas.bottom;
+    }, 'An explicit task selection after restoring the graph did not move the selected node into the visible canvas', 200);
+    assert(document.querySelector('.react-flow__node[data-id="task-review"] [data-status="waiting_approval"]'), 'The graph hid the current session approval state');
+    assert(!document.querySelector('.react-flow__handle.connectable') && !document.querySelector('.workflow-inspector input, .workflow-inspector textarea'), 'The running workflow graph exposed draft editing controls');
+    await graphClick('edge', JSON.stringify(['build', 'review']));
+    assert(document.querySelector('.workflow-dependency-summary')?.textContent === 'BuildReview', 'Runtime dependency selection did not show the real source and target');
+    const failed: Workflow = { ...running, status: 'failed', updatedAt: 'v2', steps: running.steps.map(step => step.id === 'review' ? { ...step, status: 'failed' } : step) };
+    await show(failed);
+    assert(button('shell:workflow.resume').disabled, 'Recovery was enabled without explicit confirmation');
+    await change(input('.workflow-recovery input[type=checkbox]'), true);
+    assert(!button('shell:workflow.resume').disabled, 'Recovery confirmation did not enable resume');
+    await show({ ...failed, updatedAt: 'v3' });
+    assert(button('shell:workflow.resume').disabled, 'A newer recovery snapshot retained the old confirmation');
+    await change(input('.workflow-recovery input[type=checkbox]'), true); await click('shell:workflow.resume'); await settle();
+    assert(resumes === 1 && button('shell:workflow.resume').disabled, 'Confirmed recovery did not resume exactly once and reset the confirmation');
+  },
+  'GRAPH-STUDIO-6: workflow motion follows only new executing attempts and ignores old session status': async () => {
+    const oldAttempt = { id: 'attempt-old', sessionId: 'active-session', status: 'running' as const, startedAt: '2026-11-05T00:00:00Z' };
+    const workflow: Workflow = { id: 'studio-attempt-motion', name: 'Attempt motion', cwd: workspace.cwd, status: 'running', createdAt: oldAttempt.startedAt, updatedAt: 'v1', steps: [
+      { id: 'source', title: 'Completed source', providerId: provider.id, prompt: 'Build', dependsOn: [], status: 'completed' },
+      { id: 'target', title: 'Executing target', providerId: provider.id, prompt: 'Review', dependsOn: ['source'], status: 'running', sessionId: oldAttempt.sessionId, attempts: [oldAttempt] },
+      { id: 'stale', title: 'Task with old session', providerId: provider.id, prompt: 'Wait', dependsOn: [], status: 'running', sessionId: 'old-completed-session' },
+    ] };
+    const show = (value: Workflow, status: Session['status']) => render(<WorkflowView workflow={value} providers={[provider]} sessions={[{ ...session, id: oldAttempt.sessionId, status }, { ...session, id: 'old-completed-session', status: 'completed' }]} perform={perform} pending={new Set()} openSession={() => {}} />, 'user');
+    const node = (id: string) => document.querySelector<HTMLElement>(`.react-flow__node[data-id="task-${id}"] .collaboration-node`)!;
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    await show(workflow, 'waiting_approval'); await graphReady(3);
+    assert(node('target').dataset.status === 'waiting_approval' && node('target').dataset.executing === 'false' && !document.querySelector('.collaboration-edge-handoff, .collaboration-node-status-feedback'), 'Opening an existing approval wait played historical execution activity');
+    await show(workflow, 'running');
+    assert(node('target').dataset.executing === 'true' && !document.querySelector('.collaboration-edge-handoff, .collaboration-node-status-feedback'), 'An existing attempt first opened during approval replayed a handoff or pulse when it resumed');
+    assert(node('stale').dataset.status === 'running' && node('stale').dataset.executing === 'false', 'A running step inherited completed status or execution glow from an old completed session');
+    await show(workflow, 'waiting_approval');
+    assert(node('target').dataset.status === 'waiting_approval' && node('target').dataset.executing === 'false', 'Waiting for approval retained execution glow');
+    await show(workflow, 'running');
+    assert(node('target').dataset.executing === 'true' && !document.querySelector('.collaboration-edge-handoff, .collaboration-node-status-feedback'), 'Returning to the same running attempt replayed its handoff or pulse');
+    const retry: Workflow = { ...workflow, updatedAt: 'v2', steps: workflow.steps.map(step => step.id === 'target' ? { ...step, attempts: [...step.attempts!, { ...oldAttempt, id: 'attempt-new' }] } : step) };
+    await show(retry, 'queued');
+    assert(node('target').dataset.executing === 'false' && !document.querySelector('.collaboration-edge-handoff, .collaboration-node-status-feedback'), 'A newly queued attempt played execution activity before the provider ran');
+    await show(retry, 'running');
+    assert(node('target').dataset.executing === 'true', 'The genuinely running new attempt did not expose execution state');
+    assert(reduced ? !document.querySelector('.collaboration-edge-handoff, .collaboration-node-status-feedback') : node('target').querySelector('.collaboration-node-status-feedback') && document.querySelector('.collaboration-edge-handoff'), 'A new running attempt did not follow the motion preference for handoff and node pulse');
+    await waitFor(() => !document.querySelector('.collaboration-edge-handoff, .collaboration-node-status-feedback'), 'New execution feedback did not finish', 150);
+    await show(retry, 'running');
+    assert(!document.querySelector('.collaboration-edge-handoff, .collaboration-node-status-feedback'), 'An unchanged new attempt replayed finished execution feedback');
+  },
+  'GRAPH-STUDIO-5: blank collaboration and legacy empty workflows remain usable with reduced motion': async () => {
+    window.workbench = { chooseDirectory: async () => workspace.cwd } as unknown as Window['workbench'];
+    await render(<CollaborationViews snapshot={{ ...collaborationSnapshot([]), providers: [provider] }} initialCwd={workspace.cwd} perform={perform} pending={new Set()} openSession={() => {}} />);
+    await click('collaboration:studio.blank');
+    assert(document.querySelector('.collaboration-studio-empty') && document.querySelectorAll('.react-flow__node').length === 0 && button('collaboration:studio.saveDraft').disabled, 'A blank draft did not expose an empty canvas with guarded save');
+    await click('collaboration:studio.addAgent'); await graphReady(1);
+    assert(document.querySelector('.collaboration-studio-inspector') && !document.querySelector('.collaboration-node-status-feedback, .collaboration-edge-handoff'), 'Adding an Agent to a blank reduced-motion draft failed or showed runtime activity');
+    await render(<WorkflowView workflow={{ id: 'legacy-empty', name: 'Legacy workflow', cwd: workspace.cwd, status: 'draft', steps: [], createdAt: '2026-11-05', updatedAt: 'v1' }} providers={[provider]} sessions={[]} perform={perform} pending={new Set()} openSession={() => {}} />);
+    assert(document.querySelector('.collaboration-canvas-empty') && document.querySelector('.workflow-inspector') && !document.querySelector('[role=alert]'), 'An old empty workflow crashed or failed to show a usable empty graph');
+  },
+
   'MOTION-COLLABORATION: only new deliveries animate and details retain focus and scroll': async () => {
     const a: CollaborationParticipant = { id: 'worker', name: 'Worker', mode: 'managed', providerId: 'codex', roles: ['implementation'], permissions: { submitTasks: false, sendMessages: false, configureRun: false, publishArtifacts: false } };
     const b: CollaborationParticipant = { ...a, id: 'reviewer', name: 'Reviewer', roles: ['review'] };
@@ -350,6 +544,7 @@ const cases: Record<string, () => Promise<void>> = {
     const taskNode = () => document.querySelector<HTMLElement>('.react-flow__node[data-id="task-review"]')!;
     const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
     await show();
+    await click('collaboration:run.dataFlow');
     await waitFor(() => document.querySelectorAll('.react-flow__edge').length > 0, 'The actual graph did not render its artifact edge', 150);
     assert(!document.querySelector('.collaboration-edge-handoff'), 'Initial history played as a live delivery');
     snapshot = { ...snapshot, collaboration: { ...snapshot.collaboration!, tasks: [{ ...task, sessionId: session.id }] } }; await show();
