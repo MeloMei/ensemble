@@ -7,13 +7,14 @@ import { promisify } from 'node:util';
 import test from 'node:test';
 import { build } from 'esbuild';
 import { createRequire } from 'node:module';
+import { createInterface } from 'node:readline';
 
 const electronPath = createRequire(import.meta.url)('electron') as string;
 const selectedCases = process.env.ENSEMBLE_RENDERER_CASES?.split(',').filter(Boolean);
 
 interface Result { name: string; error?: string }
 
-test('actual renderer components preserve approval, draft, recovery and settings boundaries', { timeout: 30_000 }, async context => {
+test('actual renderer components preserve approval, draft, recovery and settings boundaries', { timeout: 120_000 }, async context => {
   const directory = await mkdtemp(path.join(tmpdir(), 'ensemble-renderer-'));
   try {
     await build({
@@ -40,13 +41,49 @@ test('actual renderer components preserve approval, draft, recovery and settings
           window.webContents.debugger.attach('1.3');
           await window.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', {features: [{name: 'prefers-reduced-motion', value: 'reduce'}]});
         }
-        const results = await window.webContents.executeJavaScript(${JSON.stringify(`window.runRendererRegressions(${JSON.stringify(selectedCases ?? null)})`)});
+        const prefixes = ${JSON.stringify(selectedCases ?? null)};
+        const names = await window.webContents.executeJavaScript('window.rendererRegressionNames');
+        const results = [];
+        for (const name of names) {
+          if (prefixes && !prefixes.some(prefix => name.startsWith(prefix))) continue;
+          console.log('RENDERER_CASE=' + name);
+          const result = await window.webContents.executeJavaScript('window.runRendererRegressions(' + JSON.stringify([name]) + ')');
+          if (result.length !== 1 || result[0].name !== name) throw new Error('Unexpected renderer result for ' + name);
+          results.push(result[0]);
+        }
         console.log('RENDERER_RESULTS=' + JSON.stringify(results));
         window.destroy(); app.quit();
       }).catch(error => { console.error(error); app.exit(1); });
     `);
     const environment = { ...process.env }; delete environment.ELECTRON_RUN_AS_NODE;
-    const { stdout } = await promisify(execFile)(electronPath, [path.join(directory, 'main.cjs')], { env: environment, timeout: 25_000 });
+    const controller = new AbortController();
+    const signal = AbortSignal.any([controller.signal, context.signal]);
+    let phase = 'Electron startup';
+    let timeoutError: Error | undefined;
+    const expire = () => {
+      timeoutError = new Error(`Renderer timed out during ${phase}`);
+      controller.abort();
+    };
+    let timer = setTimeout(expire, 25_000);
+    const execution = promisify(execFile)(electronPath, [path.join(directory, 'main.cjs')], { env: environment, signal });
+    const closed = new Promise<void>(resolve => execution.child.once('close', () => resolve()));
+    const lines = createInterface({ input: execution.child.stdout! });
+    lines.on('line', line => {
+      if (!line.startsWith('RENDERER_CASE=')) return;
+      phase = line.slice('RENDERER_CASE='.length);
+      clearTimeout(timer);
+      timer = setTimeout(expire, 15_000);
+    });
+    let stdout: string;
+    try { ({ stdout } = await execution); }
+    catch (error) { throw timeoutError ?? error; }
+    finally {
+      clearTimeout(timer); lines.close();
+      const forceStop = signal.aborted ? setTimeout(() => execution.child.kill('SIGKILL'), 2000) : undefined;
+      await closed;
+      clearTimeout(forceStop);
+    }
+    if (timeoutError) throw timeoutError;
     const line = stdout.split('\n').find(value => value.startsWith('RENDERER_RESULTS='));
     assert.ok(line, 'Electron did not return the component assertions');
     const results = JSON.parse(line.slice('RENDERER_RESULTS='.length)) as Result[];

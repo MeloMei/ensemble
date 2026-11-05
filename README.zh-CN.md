@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/MeloMei/ensemble/releases/download/v0.8.1/Ensemble-0.8.1-macOS-arm64.dmg">下载 macOS 安装包</a> ·
+  <a href="https://github.com/MeloMei/ensemble/releases/latest">下载 macOS 安装包</a> ·
   <a href="docs/media/ensemble-overview-zh-CN.mp4">观看中文视频 · 30 秒</a> ·
   <a href="docs/first-collaboration.zh-CN.md">第一次协作</a> ·
   <a href="README.md">English</a>
@@ -16,11 +16,13 @@
 
 ## 开始使用
 
-1. **[下载 macOS 安装包（Apple Silicon）](https://github.com/MeloMei/ensemble/releases/download/v0.8.1/Ensemble-0.8.1-macOS-arm64.dmg)。** 打开 DMG，将 `Ensemble.app` 拖入“应用程序”。也可以查看 [ZIP 下载和发布说明](https://github.com/MeloMei/ensemble/releases/latest)。
+1. **[下载 macOS 安装包（Apple Silicon）](https://github.com/MeloMei/ensemble/releases/latest)。** 从最新发行版下载 DMG，打开后将 `Ensemble.app` 拖入“应用程序”。发行版页面也提供 ZIP 下载和发布说明。
 2. **接入你使用的 Agent 运行时。** [单独安装 Codex、Claude Code 或其他受支持的运行时并完成认证](docs/runtimes.zh-CN.md#安装与配置)，然后打开 Ensemble，在 **接入与插件** 中点击 **刷新检测**。安装包中的桌面应用不要求另装 Node.js；所选运行时的环境要求仍需单独满足。
 3. **[动手完成第一次协作](docs/first-collaboration.zh-CN.md)。** 为项目创建工作区，选择 **协作 → 实现与审阅**。检查并保存配置，准备好后再开始协作。同一套 Codex 或 Claude Code 安装就可以分别承担两个角色。
 
 当前版本尚未通过 Apple 公证，macOS 可能拦截首次启动。请先查看[发布说明](https://github.com/MeloMei/ensemble/releases/latest)，再参照 [Apple 官方说明](https://support.apple.com/102445)处理系统提示。
+
+如果旧版本无法在应用内更新，请先退出 Ensemble 并停止共享后台，再用最新发行版手动覆盖安装。具体方法见[应用更新](docs/getting-started.zh-CN.md#应用更新)。
 
 ## 用 30 秒了解 Ensemble
 
