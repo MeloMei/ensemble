@@ -1274,19 +1274,20 @@ const cases: Record<string, () => Promise<void>> = {
       subscribe: () => () => {}, snapshot: async () => ({ version: 1, sessions: [], workspaces: [], providers: [], workflows: [], terminals: [], pluginErrors: [], pluginPath: '/plugins', dataPath: '/data' }),
       ...applicationUpdateApi,
       getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {}, watchSessions: async () => {},
+      providerHealth: async () => [],
       createWorkspace: async (input: Record<string, unknown>) => { creations.push(input); if (creations.length === 1) throw new Error('creation response lost'); return 'created-workspace'; },
     } as unknown as Window['workbench'];
     await render(<App />); await click('shell:app.addProject');
     const mode = document.querySelector<HTMLButtonElement>('dialog [role=combobox]')!;
     assert(mode.textContent?.includes(translate('shell:app.currentDirectory')), 'Creating a workspace silently defaults to a new worktree');
-    await change(input('.directory-field input'), '/fixture'); await chooseOption(mode, 'worktree');
+    await change(input('dialog .directory-field input'), '/fixture'); await chooseOption(mode, 'worktree');
     await change(input(`input[placeholder="${translate('shell:app.worktreeBranchDefault')}"]`), 'codex/isolated');
     await click('shell:app.createWorkspace');
     await waitFor(() => creations.length === 1 && !button('shell:app.createWorkspace').disabled, 'Failed creation did not leave the editable dialog');
     await click('shell:app.createWorkspace'); await waitFor(() => creations.length === 2, 'Creation retry did not start');
     await waitFor(() => !document.querySelector('dialog'), 'Successful workspace creation did not close the dialog');
     assert(creations[0].commandId && creations[0].commandId === creations[1].commandId && creations[1].mode === 'worktree' && creations[1].branch === 'codex/isolated' && creations[1].cwd === '/fixture', 'Workspace retry changed its intent or lost the isolation choice');
-    await click('shell:app.addProject'); await change(input('.directory-field input'), '/fixture'); await click('shell:app.createWorkspace');
+    await click('shell:app.addProject'); await change(input('dialog .directory-field input'), '/fixture'); await click('shell:app.createWorkspace');
     await waitFor(() => creations.length === 3, 'The next creation did not start');
     assert(creations[2].mode === 'directory' && creations[2].commandId !== creations[1].commandId, 'An independent creation reused the completed intent');
   },
