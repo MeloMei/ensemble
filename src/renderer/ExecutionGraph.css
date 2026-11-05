@@ -1,0 +1,50 @@
+.execution-graph {
+  --collaboration-feedback-duration: calc(var(--duration-normal) * 1.5);
+  isolation: isolate;
+  background: radial-gradient(ellipse at 45% 38%, color-mix(in srgb, var(--accent) 5%, transparent), transparent 65%), var(--bg);
+}
+.execution-graph .react-flow__node-collaboration { transition: filter 160ms ease; }
+.execution-graph .collaboration-node {
+  border-radius: 15px;
+  border-color: color-mix(in srgb, var(--border-strong) 80%, transparent);
+  background: var(--surface);
+  box-shadow: 0 3px 12px #00000009, 0 1px 3px #00000008;
+  transition: border-color 160ms ease, box-shadow 180ms ease, background 180ms ease;
+}
+.execution-graph .collaboration-node:hover {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  box-shadow: 0 6px 22px #00000012;
+}
+.execution-graph .collaboration-node.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent), 0 8px 24px #00000010;
+}
+.execution-graph .collaboration-node[data-executing="true"] {
+  border-color: var(--accent);
+  animation: execution-node-live 2.8s ease-in-out infinite;
+}
+.execution-graph .collaboration-node[data-status="completed"] { border-color: color-mix(in srgb, var(--success) 55%, var(--border)); }
+.execution-graph .collaboration-node[data-status="failed"] { border-color: color-mix(in srgb, var(--danger) 65%, var(--border)); }
+.execution-graph .react-flow__handle { width: 9px; height: 9px; border: 2px solid var(--surface); background: var(--muted); transition: scale 140ms ease, background 140ms ease; }
+.execution-graph .react-flow__handle:hover, .execution-graph .react-flow__handle.connecting { background: var(--accent); scale: 1.35; }
+.execution-graph .react-flow__edge .react-flow__edge-path { transition: stroke 160ms ease, stroke-width 160ms ease; }
+.execution-graph .react-flow__edge:hover .react-flow__edge-path,
+.execution-graph .react-flow__edge.selected .react-flow__edge-path { stroke: var(--accent); stroke-width: 2; }
+.execution-graph .react-flow__edge-textbg { rx: 7px; ry: 7px; }
+.execution-edge-label { position: absolute; max-width: 166px; overflow: hidden; padding: 5px 9px; border: 1px solid var(--border); border-radius: 20px; background: var(--surface); color: var(--muted); font-size: 11px; line-height: 1.5; white-space: nowrap; text-overflow: ellipsis; pointer-events: all; cursor: pointer; transition: color 160ms ease, border-color 160ms ease; }
+.execution-edge-label:hover, .execution-edge-label[data-selected="true"] { color: var(--accent); border-color: var(--accent); }
+.execution-edge-label:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.execution-graph .react-flow__controls {
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  overflow: hidden;
+  box-shadow: 0 3px 12px #0000000a;
+}
+.execution-graph .collaboration-canvas-tools .button { border-radius: 9px; background: var(--surface); }
+@keyframes execution-node-live {
+  0%, 100% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 7%, transparent), 0 4px 14px #0000000a; }
+  50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 12%, transparent), 0 4px 20px color-mix(in srgb, var(--accent) 10%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .execution-graph *, .execution-graph *::before, .execution-graph *::after { animation: none !important; transition: none !important; }
+}

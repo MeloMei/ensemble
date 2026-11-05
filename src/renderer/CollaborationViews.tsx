@@ -4,15 +4,15 @@ import { Tooltip } from './Tooltip';
 import { useTranslation } from 'react-i18next';
 import { translate, formatDate, formatNumber } from '../shared/i18n';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { useReducedMotion } from 'framer-motion';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { ArrowUpRight, Check, ChevronRight, CircleHelp, Clock3, Copy, FileCheck2, FileText, GitBranch, KeyRound, LoaderCircle, Maximize, MessageSquare, Minus, Network, PanelRight, Pause, Play, Plus, RefreshCw, Settings2, Square, Trash2, X } from 'lucide-react';
-import { Background, ControlButton, Controls, Handle, MarkerType, Position, ReactFlow, SmoothStepEdge, getSmoothStepPath, useNodes, useNodesInitialized, useReactFlow, useStore, type Connection, type Edge, type EdgeChange, type EdgeProps, type Node, type NodeChange, type NodeProps } from '@xyflow/react';
-import ELK from 'elkjs/lib/elk-api.js';
-import ELKWorker from 'elkjs/lib/elk-worker.min.js?worker';
+import type { Connection } from '@xyflow/react';
+import { copyGraphView } from './graph-view-state';
+import { validateWorkflowDependency } from './workflow-graph';
+import { ExecutionGraph, edgeFor, graphNode, type CollaborationNode, type CollaborationEdge, type GraphSelection } from './ExecutionGraph';
 import type { CollaborationArtifactVersion, CollaborationDefinition, CollaborationEvent, CollaborationMessage, CollaborationParticipant, CollaborationRun, CollaborationTask, CollaborationTaskTemplate } from '../shared/collaboration';
 import type { McpServerConfig, ProviderInfo, PublicCollaborationState, Session, Snapshot } from '../shared/types';
 import { DirectoryField, EmptyState, IconButton, Modal, ModelField, ProviderSelect, Status, defaultModelId, modelName, pathName, relativeTime, validModelSelection, type Perform } from './ui';
-import { useAppearance } from './appearance';
 import { createImplementationReviewDraft, participantPermissionIssue, withCollaborationGoal } from './collaboration-template';
 import { projectResourceDelivery, type ResourceDeliveryCount } from './collaboration-resource-delivery';
 import '@xyflow/react/dist/style.css';
@@ -20,6 +20,8 @@ import './CollaborationViews.css';
 
 const call = (operation: string, input: unknown) => window.workbench.collaborationCall(operation, input);
 const requestId = () => crypto.randomUUID();
+const relationshipKinds = ['reports-to', 'supervises', 'collaborates-with'];
+const relationshipLabel = (kind: string) => relationshipKinds.includes(kind) ? translate(`collaboration:studio.kind.${kind}`) : kind;
 const splitValues = (text: string) => [...new Set(text.split(/[,，\n]/).map(value => value.trim()).filter(Boolean))];
 const splitRoots = (text: string) => [...new Set(text.split(/\r?\n/).map(value => value.trim()).filter(Boolean))];
 const dateLabel = (value: string) => formatDate(value, { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -36,8 +38,8 @@ function taskDisplayStatus(task: CollaborationTask, sessions: Session[]) {
   }
   return task.status;
 }
-function runningExecution(task?: CollaborationTask) {
-  if (task?.status === 'running') return JSON.stringify([task.id, task.attemptId]);
+function taskExecutionId(task?: CollaborationTask) {
+  if (task?.attemptId) return JSON.stringify([task.id, task.attemptId]);
 }
 function eventStatus(event: CollaborationEvent) {
   if (event.type === 'task.wait_requested' || event.type === 'task.waiting') return 'waiting_children';
@@ -62,14 +64,6 @@ function SetupSteps({ current }: { current: 1 | 2 | 3 }) {
   return <ol className="collaboration-setup-steps" aria-label={t('setup.steps')}>{[t('setup.describe'), t('setup.review'), t('action.start')].map((label, index) => <li key={label} className={index + 1 === current ? 'current' : index + 1 < current ? 'complete' : ''} aria-current={index + 1 === current ? 'step' : undefined}><span>{index + 1 < current ? <Check size={12} /> : index + 1}</span>{label}</li>)}</ol>;
 }
 
-function CollaborationStart({ onTemplate, onCustom }: { onTemplate: () => void; onCustom: () => void }) {
-  const { t } = useTranslation('collaboration');
-  return <section className="collaboration-start"><div className="collaboration-start-intro"><Network size={24} /><h1>{t('start.title')}</h1><p>{t('start.description')}</p></div><div className="collaboration-start-options">
-    <button className="collaboration-start-option" onClick={onTemplate}><GitBranch size={20} /><span><strong>{t('template.name')}</strong><small>{t('start.templateDescription')}</small><em>{t('setup.describe')} <ChevronRight size={13} /></em></span></button>
-    <button className="collaboration-start-option" onClick={onCustom}><Settings2 size={20} /><span><strong>{t('start.custom')}</strong><small>{t('start.customDescription')}</small><em>{t('start.openConfiguration')} <ChevronRight size={13} /></em></span></button>
-  </div><p className="collaboration-start-note">{t('start.note')}</p></section>;
-}
-
 function implementationReviewDefaults(providers: ProviderInfo[], cwd: string) {
   const implementer = providers.find(provider => provider.available);
   const reviewers = providers.filter(provider => provider.available && provider.capabilities.permissions);
@@ -83,7 +77,7 @@ export function CollaborationViews({ snapshot, perform, pending, openSession, in
   const { t } = useTranslation('collaboration');
   const state = snapshot.collaboration;
   const [selectedId, setSelectedId] = useState<string>();
-  const [editing, setEditing] = useState<'new' | string>();
+  const [editing, setEditing] = useState<string>();
   const [connections, setConnections] = useState(false);
   const runs = [...(state?.runs ?? [])].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   const run = runs.find(item => item.id === selectedId) ?? runs[0];
@@ -94,19 +88,45 @@ export function CollaborationViews({ snapshot, perform, pending, openSession, in
       <div className="collaboration-run-list">{runs.map(item => <button className={`collaboration-run-item ${run?.id === item.id && !editing ? 'selected' : ''}`} key={item.id} aria-current={run?.id === item.id && !editing ? 'page' : undefined} onClick={() => { setSelectedId(item.id); setEditing(undefined); }}><strong>{item.definitionSnapshot.name}</strong><small>{pathName(item.definitionSnapshot.cwd)} · v{item.definitionVersion}</small><span><Status value={item.status} /><time>{relativeTime(item.updatedAt)}</time></span></button>)}{!runs.length && <p className="collaboration-list-empty">{t('page.emptyRuns')}</p>}</div>
       <button className="button primary" onClick={() => setEditing('new')}><Plus size={14} />{t('action.create')}</button><button className="button subtle" onClick={() => setConnections(true)}><KeyRound size={14} />{t('connection.title')}</button>
     </aside>
-    {!state ? <EmptyState icon={<Network size={28} />} title={t('page.unavailable')}>{t('page.reconnect')}</EmptyState> : editing ? <CollaborationEditor key={editing} starter={editing === 'new-template' ? 'template' : editing === 'new-custom' ? 'custom' : 'choose'} providers={snapshot.providers} identities={state.identities} initialCwd={initialCwd} run={editorRun} pending={pending} perform={perform} openProviderSettings={openProviderSettings} onClose={() => setEditing(undefined)} onSaved={id => { setSelectedId(id); setEditing(undefined); }} /> : run ? <CollaborationRunView key={run.id} run={run} state={state} stateVersion={snapshot.collaborationEventSeq} providers={snapshot.providers} sessions={snapshot.sessions} perform={perform} pending={pending} openSession={openSession} onEdit={() => setEditing(run.id)} /> : <CollaborationStart onTemplate={() => setEditing('new-template')} onCustom={() => setEditing('new-custom')} />}
+    {!state ? <EmptyState icon={<Network size={28} />} title={t('page.unavailable')}>{t('page.reconnect')}</EmptyState> : editing ? <CollaborationEditor key={editing} providers={snapshot.providers} identities={state.identities} initialCwd={initialCwd} run={editorRun} runTasks={state.tasks.filter(task => task.runId === editorRun?.id)} pending={pending} perform={perform} openProviderSettings={openProviderSettings} onClose={() => setEditing(undefined)} onSaved={id => { setSelectedId(id); setEditing(undefined); }} /> : run ? <CollaborationRunView key={run.id} run={run} state={state} stateVersion={snapshot.collaborationEventSeq} providers={snapshot.providers} sessions={snapshot.sessions} perform={perform} pending={pending} openSession={openSession} onEdit={() => setEditing(run.id)} /> : <CollaborationEditor key="first-draft" providers={snapshot.providers} identities={state.identities} initialCwd={initialCwd} pending={pending} perform={perform} openProviderSettings={openProviderSettings} onClose={() => setEditing(undefined)} onSaved={id => { setSelectedId(id); setEditing(undefined); }} />}
     {connections && <ConnectionDialog providers={snapshot.providers} state={state} initialCwd={run?.definitionSnapshot.cwd ?? initialCwd} perform={perform} pending={pending} onClose={() => setConnections(false)} />}
   </div>;
 }
 
-function CollaborationEditor({ providers, identities, initialCwd, run, perform, pending, onClose, onSaved, starter, openProviderSettings }: {
-  providers: ProviderInfo[]; identities: PublicCollaborationState['identities']; initialCwd: string; run?: CollaborationRun; perform: Perform; pending: Set<string>; onClose: () => void; onSaved: (id: string) => void; starter: 'choose' | 'template' | 'custom'; openProviderSettings?: () => void;
+function CollaborationEditor({ providers, identities, initialCwd, run, perform, pending, onClose, onSaved, runTasks = [], openProviderSettings }: {
+  providers: ProviderInfo[]; identities: PublicCollaborationState['identities']; initialCwd: string; run?: CollaborationRun; perform: Perform; pending: Set<string>; onClose: () => void; onSaved: (id: string) => void; runTasks?: CollaborationTask[]; openProviderSettings?: () => void;
 }) {
-  const { t } = useTranslation('collaboration');
-  const initial = run?.definitionSnapshot ?? (starter === 'template' ? implementationReviewDefaults(providers, initialCwd) : undefined);
-  const [stage, setStage] = useState<'choose' | 'template' | 'details'>(run || starter === 'custom' ? 'details' : starter === 'template' ? 'template' : 'choose');
-  const [templated, setTemplated] = useState(starter === 'template');
+  const { t, i18n } = useTranslation('collaboration');
+  const reducedMotion = useReducedMotion();
+  const [initial] = useState(() => run?.definitionSnapshot ?? implementationReviewDefaults(providers, initialCwd));
+  const [draftKey] = useState(() => {
+    const id = `collaboration:draft:${requestId()}`;
+    if (run) {
+      copyGraphView(`collaboration:${run.id}:relationships`, `${id}:relationships`);
+      const taskIds = Object.fromEntries(runTasks.filter(task => task.templateId).map(task => [`task-${task.id}`, `task-${task.templateId}`]));
+      copyGraphView(`collaboration:${run.id}:data`, `${id}:data`, taskIds);
+    }
+    return id;
+  });
+  const [templated, setTemplated] = useState(!run);
   const [goal, setGoal] = useState('');
+  const goalField = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const element = goalField.current;
+    if (!element) return;
+    const resize = () => {
+      element.style.height = '0px';
+      element.style.height = `${goal ? Math.min(Math.max(element.scrollHeight + 2, 32), 112) : 32}px`;
+    };
+    resize();
+    let width = element.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (element.clientWidth === width) return;
+      width = element.clientWidth; resize();
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [goal]);
   const [name, setName] = useState(initial?.name ?? '');
   const [cwd, setCwd] = useState(initial?.cwd ?? initialCwd);
   const [participants, setParticipants] = useState<CollaborationParticipant[]>(initial?.participants ?? []);
@@ -114,9 +134,15 @@ function CollaborationEditor({ providers, identities, initialCwd, run, perform, 
   const [steps, setSteps] = useState<CollaborationTaskTemplate[]>(initial?.steps ?? []);
   const [limits, setLimits] = useState(initial?.limits ?? {});
   const [completion, setCompletion] = useState(initial?.completion ?? 'manual');
+  const [view, setView] = useState<'relationships' | 'data'>('relationships');
+  const [selection, setSelection] = useState<GraphSelection>();
+  const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [graphError, setGraphError] = useState('');
   const key = run ? `collaboration-update-${run.id}` : 'collaboration-create';
   const busy = pending.has(key);
-  const update = (id: string, patch: Partial<CollaborationParticipant>) => setParticipants(items => items.map(item => item.id === id ? { ...item, ...patch } : item));
+  const select = (value?: GraphSelection) => { setSelection(value); setInspectorOpen(true); };
+  const update = (id: string, patch: Partial<CollaborationParticipant>) => !busy && setParticipants(items => items.map(item => item.id === id ? { ...item, ...patch } : item));
+  const updateRelationship = (id: string, patch: Partial<CollaborationDefinition['relationships'][number]>) => !busy && setRelationships(items => items.map(item => item.id === id ? { ...item, ...patch } : item));
   const setAccess = (participant: CollaborationParticipant, access: 'read-only' | 'read-write') => update(participant.id, { permissions: { ...participant.permissions, workspace: { cwd: participant.permissions.workspace?.cwd ?? participant.cwd ?? cwd, access } }, settings: { ...participant.settings, permission: access === 'read-only' ? 'read-only' : providers.find(provider => provider.id === participant.providerId)?.capabilities.permissions ? 'review' : undefined } });
   const setProvider = (participant: CollaborationParticipant, providerId: string) => {
     const provider = providers.find(item => item.id === providerId);
@@ -124,115 +150,115 @@ function CollaborationEditor({ providers, identities, initialCwd, run, perform, 
   };
   const permissionIssues = participants.flatMap(participant => { const issue = participantPermissionIssue(participant, providers.find(provider => provider.id === participant.providerId)); return issue ? [{ id: participant.id, message: issue }] : []; });
   const selectionsValid = participants.every(item => item.mode === 'external' || validModelSelection(providers.find(provider => provider.id === item.providerId), item.modelId));
-  const setupValid = Boolean(goal.trim() && cwd.trim() && participants.length && selectionsValid && !permissionIssues.length);
-  const valid = Boolean(name.trim() && cwd.trim() && (!templated || goal.trim()) && participants.length && !permissionIssues.length && selectionsValid && participants.every(item => item.name.trim()) && steps.every(step => step.title.trim() && step.prompt.trim() && participants.some(item => item.id === step.participantId)));
+  const valid = Boolean(name.trim() && cwd.trim() && (!templated || goal.trim()) && (!goal.trim() || steps.length > 0) && participants.length && !permissionIssues.length && selectionsValid && participants.every(item => item.name.trim()) && relationships.every(relation => relation.kind.trim() && relation.from !== relation.to) && steps.every(step => step.title.trim() && step.prompt.trim() && participants.some(item => item.id === step.participantId)));
   const save = (event: FormEvent) => {
     event.preventDefault(); if (!valid || busy) return;
     void perform(key, async () => {
-      const definition = withCollaborationGoal({ name: name.trim(), cwd: cwd.trim(), participants: participants.map(item => ({ ...item, name: item.name.trim(), cwd: item.cwd?.trim() || cwd.trim(), permissions: { ...item.permissions, workspace: { cwd: item.cwd?.trim() || cwd.trim(), access: item.permissions.workspace?.access ?? 'read-only' } } })), relationships, steps, limits, completion }, templated ? goal : '');
+      const definition = withCollaborationGoal({ name: name.trim(), cwd: cwd.trim(), participants: participants.map(item => ({ ...item, name: item.name.trim(), cwd: item.cwd?.trim() || cwd.trim(), permissions: { ...item.permissions, workspace: { cwd: item.cwd?.trim() || cwd.trim(), access: item.permissions.workspace?.access ?? 'read-only' } } })), relationships, steps, limits, completion }, goal);
       const { cwd: _immutableCwd, ...versionInput } = definition;
       const result = await call(run ? 'update_run' : 'create_run', run
         ? { requestId: requestId(), ...versionInput, runId: run.id, expectedVersion: run.definitionVersion }
         : { requestId: requestId(), ...definition, start: false }) as { runId: string };
-      onSaved(result.runId ?? run!.id);
+      const savedId = result.runId ?? run!.id;
+      copyGraphView(`${draftKey}:relationships`, `collaboration:${savedId}:relationships`);
+      try {
+        const saved = await call('get_run', { runId: savedId }) as { tasks: CollaborationTask[] };
+        const taskIds = Object.fromEntries(saved.tasks.filter(task => task.templateId).map(task => [`task-${task.templateId}`, `task-${task.id}`]));
+        copyGraphView(`${draftKey}:data`, `collaboration:${savedId}:data`, taskIds);
+      } catch { /* The saved draft remains available if its optional layout readback fails. */ }
+      onSaved(savedId);
     });
   };
+  const removeStep = (id: string) => setSteps(items => items.filter(item => item.id !== id).map(item => ({ ...item, dependsOn: item.dependsOn.filter(dependency => dependency !== id) })));
+  const removeParticipant = (id: string) => {
+    const removedSteps = new Set(steps.filter(step => step.participantId === id).map(step => step.id));
+    setParticipants(items => items.filter(item => item.id !== id).map(item => ({ ...item, permissions: { ...item.permissions, ...(item.permissions.allowedTargets ? { allowedTargets: item.permissions.allowedTargets.filter(target => target !== id) } : {}) } })));
+    setRelationships(items => items.filter(item => item.from !== id && item.to !== id));
+    setSteps(items => items.filter(item => !removedSteps.has(item.id)).map(item => ({ ...item, dependsOn: item.dependsOn.filter(dependency => !removedSteps.has(dependency)) })));
+    setSelection(undefined); setInspectorOpen(false);
+  };
   const addParticipant = () => {
-    const provider = providers.find(item => item.available);
-    setParticipants(items => [...items, { id: requestId(), name: `Agent ${items.length + 1}`, mode: 'managed', roles: [], providerId: provider?.id, modelId: defaultModelId(provider), permissions: { submitTasks: false, sendMessages: false, configureRun: false, publishArtifacts: false, workspace: { cwd, access: 'read-only' } } }]);
+    const provider = providers.find(item => item.available && item.capabilities.permissions) ?? providers.find(item => item.available);
+    const participant: CollaborationParticipant = { id: requestId(), name: `Agent ${participants.length + 1}`, mode: 'managed', roles: [], providerId: provider?.id, modelId: defaultModelId(provider), settings: provider?.capabilities.permissions ? { permission: 'read-only' } : {}, permissions: { submitTasks: false, sendMessages: false, configureRun: false, publishArtifacts: false, workspace: { cwd, access: 'read-only' } } };
+    setParticipants(items => [...items, participant]); setView('relationships'); select({ kind: 'participant', id: participant.id });
   };
   const chooseTemplate = () => {
     const template = implementationReviewDefaults(providers, cwd);
     setName(template.name); setParticipants(template.participants); setRelationships(template.relationships); setSteps(template.steps); setLimits(template.limits); setCompletion(template.completion ?? 'all-tasks');
-    setTemplated(true); setStage('template');
+    setTemplated(true); setSelection(undefined); setView('relationships'); setGraphError('');
   };
-  if (stage === 'choose') return <CollaborationStart onTemplate={chooseTemplate} onCustom={() => setStage('details')} />;
-  if (stage === 'template') return <section className="collaboration-editor"><div className="detail-heading"><div><h1>{t('template.name')}</h1><p>{t('setup.description')}</p></div><IconButton label={t('setup.close')} onClick={onClose}><X size={18} /></IconButton></div><form className="collaboration-editor-body collaboration-template-form" onSubmit={event => { event.preventDefault(); if (setupValid) setStage('details'); }}>
-    <SetupSteps current={1} />
-    <label>{t('setup.goal')}<textarea rows={4} required autoFocus maxLength={100000} value={goal} onChange={event => setGoal(event.target.value)} placeholder={t('setup.goalPlaceholder')} /><small>{t('setup.goalHelp')}</small></label>
-    <label>{t('field.projectDirectory')}<DirectoryField value={cwd} onChange={setCwd} perform={perform} /></label>
-    <div className="collaboration-template-roles">{participants.map(participant => <section className="collaboration-template-role" key={participant.id}><div><strong>{participant.name || t('participant.unnamed')}</strong><span>{participant.permissions.workspace?.access === 'read-only' ? t('setup.readOnlyRole') : t('setup.writeRole')}</span></div>{participant.mode === 'managed' ? <><label>{t('field.runtime')}<ProviderSelect providers={participant.permissions.workspace?.access === 'read-only' ? providers.filter(provider => provider.capabilities.permissions) : providers} value={participant.providerId ?? ''} onChange={providerId => setProvider(participant, providerId)} /></label><ModelField provider={providers.find(provider => provider.id === participant.providerId)} value={participant.modelId} onChange={modelId => update(participant.id, { modelId: modelId || undefined })} /></> : <p className="collaboration-observation-note">{t('setup.externalRole')}</p>}{permissionIssues.filter(issue => issue.id === participant.id).map(issue => <p className="collaboration-field-error" role="alert" key={issue.id}>{issue.message}</p>)}</section>)}</div>
-    {participants.some(participant => participant.mode === 'managed' && participant.permissions.workspace?.access === 'read-only') && !providers.some(provider => provider.available && provider.capabilities.permissions) && <div className="collaboration-setup-notice" role="status"><p>{t('setup.readOnlyRequired')}</p></div>}
-    <p className="collaboration-start-note">{t('setup.runtimeNote')}</p>
-    {openProviderSettings && <button className="text-button" type="button" onClick={openProviderSettings}>{t('setup.connectionHelp')} <ArrowUpRight size={13} /></button>}
-    <div className="editor-actions"><button className="button" type="button" onClick={onClose}>{t('action.cancel')}</button><button className="button primary" disabled={!setupValid}>{t('setup.review')} <ChevronRight size={14} /></button></div>
-  </form></section>;
-  return <section className="collaboration-editor"><div className="detail-heading"><div><h1>{run ? t('setup.edit') : t('action.create')}</h1><p>{run ? t('setup.versionNote', { version: run.definitionVersion }) : t('setup.saveFirst')}</p></div><IconButton label={t('setup.close')} disabled={busy} onClick={onClose}><X size={18} /></IconButton></div>
-    <form className="collaboration-editor-body" onSubmit={save}>
-      {!run && <SetupSteps current={2} />}
-      {templated && <div className="collaboration-goal-summary"><div><strong>{t('setup.sharedGoal')}</strong><button className="text-button" type="button" onClick={() => setStage('template')}>{t('setup.back')}</button></div><p>{goal}</p><small>{t('setup.goalSummary')}</small></div>}
-      <div className="collaboration-form-grid"><label>{t('field.name')}<input value={name} maxLength={200} required autoFocus onChange={event => setName(event.target.value)} placeholder={t('field.namePlaceholder')} /></label><label>{t('field.projectDirectory')}{run ? <input value={cwd} readOnly /> : <DirectoryField value={cwd} onChange={setCwd} perform={perform} />}</label></div>
-      <div className="collaboration-section-heading"><div><h2>{t('participants.title')}</h2><p>{t('participants.description')}</p></div><button className="button small" type="button" disabled={busy} onClick={addParticipant}><Plus size={14} />{t('participant.add')}</button></div>
-      {!participants.length && <div className="collaboration-form-empty">{t('participants.empty')}</div>}
-      {participants.map(participant => <article className="participant-editor" key={participant.id}>
-        <div className="participant-editor-heading"><strong>{participant.name || t('participant.unnamed')}</strong><IconButton label={t('participant.delete', { name: participant.name })} disabled={busy} onClick={() => { setParticipants(items => items.filter(item => item.id !== participant.id).map(item => ({ ...item, permissions: { ...item.permissions, ...(item.permissions.allowedTargets ? { allowedTargets: item.permissions.allowedTargets.filter(id => id !== participant.id) } : {}) } }))); setRelationships(items => items.filter(item => item.from !== participant.id && item.to !== participant.id)); setSteps(items => items.filter(item => item.participantId !== participant.id).map(item => ({ ...item, dependsOn: item.dependsOn.filter(id => !steps.some(step => step.id === id && step.participantId === participant.id)) }))); }}><Trash2 size={14} /></IconButton></div>
-        <div className="collaboration-form-grid"><label>{t('field.displayName')}<input value={participant.name} required onChange={event => update(participant.id, { name: event.target.value })} /></label><label>{t('field.connectionMode')}<AppSelect label={t('field.connectionMode')} value={participant.mode} onChange={value => update(participant.id, { mode: value as 'managed' | 'external' })} options={[{ value: 'managed', label: t('participant.managedOption') }, { value: 'external', label: t('participant.externalOption') }]} /></label></div>
+  const blank = () => { setName(''); setParticipants([]); setRelationships([]); setSteps([]); setLimits({}); setCompletion('manual'); setTemplated(false); setGoal(''); setSelection(undefined); setInspectorOpen(false); setGraphError(''); };
+  const addRelationship = (source = participants[0]?.id, target = participants[1]?.id) => {
+    if (!source || !target || source === target) return;
+    const relation = { id: requestId(), from: source, to: target, kind: 'reports-to' };
+    setRelationships(items => [...items, relation]); select({ kind: 'relationship', id: relation.id });
+  };
+  const updateDependency = (source: string, target: string, enabled: boolean) => {
+    const error = validateWorkflowDependency(steps, source, target);
+    if (enabled && (error === 'self' || error === 'cycle')) { setGraphError(t('studio.dependencyCycle')); return; }
+    setGraphError('');
+    setSteps(items => items.map(item => item.id === target ? { ...item, dependsOn: enabled ? [...new Set([...item.dependsOn, source])] : item.dependsOn.filter(id => id !== source) } : item));
+  };
+  const connect = (connection: Connection) => {
+    if (busy || !connection.source || !connection.target || connection.source === connection.target) return;
+    if (view === 'relationships') {
+      if (participants.some(item => item.id === connection.source) && participants.some(item => item.id === connection.target)) addRelationship(connection.source, connection.target);
+    } else {
+      const source = connection.source.replace(/^task-/, ''), target = connection.target.replace(/^task-/, '');
+      if (steps.some(item => item.id === source) && steps.some(item => item.id === target)) { updateDependency(source, target, true); select({ kind: 'task', id: target }); }
+    }
+  };
+  const graph = useMemo(() => view === 'relationships' ? {
+    nodes: participants.map(participant => graphNode(participant.id, { kind: 'participant', title: participant.name || t('participant.unnamed'), subtitle: participant.roles.join(' · ') || t('participant.noRoles'), detail: participant.mode === 'external' ? t('participant.externalConnection') : [providers.find(provider => provider.id === participant.providerId)?.name ?? participant.providerId, participant.modelId].filter(Boolean).join(' · '), external: participant.mode === 'external', recipientProviderId: participant.providerId })),
+    edges: relationships.map(relation => edgeFor(`configured-${relation.id}`, relation.from, relation.to, relation.label || relationshipLabel(relation.kind), { kind: 'relationship', id: relation.id }, true)),
+  } : {
+    nodes: steps.map(step => graphNode(`task-${step.id}`, { kind: 'task', title: step.title || t('task.unnamed'), subtitle: participants.find(item => item.id === step.participantId)?.name ?? '', detail: step.prompt.slice(0, 100) })),
+    edges: steps.flatMap(step => step.dependsOn.map(dependency => edgeFor(`dependency-${dependency}-${step.id}`, `task-${dependency}`, `task-${step.id}`, t('graph.waitForCompletion'), { kind: 'task', id: step.id }, true))),
+  }, [view, participants, relationships, steps, providers, i18n.resolvedLanguage]);
+  const selectedStep = selection?.kind === 'task' ? steps.find(step => step.id === selection.id) : undefined;
+  const participant = selection?.kind === 'participant' ? participants.find(item => item.id === selection.id) : selectedStep ? participants.find(item => item.id === selectedStep.participantId) : undefined;
+  const relation = selection?.kind === 'relationship' ? relationships.find(item => item.id === selection.id) : undefined;
+  const participantSteps = selectedStep ? [selectedStep] : participant ? steps.filter(step => step.participantId === participant.id) : [];
+  const storageKey = `${draftKey}:${view}`;
+  return <section className="collaboration-editor collaboration-studio">
+    <form onSubmit={save} className="collaboration-studio-form">
+      <header className="collaboration-studio-heading"><div><div className="collaboration-heading-kicker"><Network size={12} />{t('studio.title')}</div><h1>{run ? t('setup.edit') : t('action.create')}</h1></div><div className="collaboration-studio-actions"><button className="button small" type="button" disabled={busy} onClick={onClose}>{t('action.cancel')}</button><button className="button primary small" disabled={!valid || busy}>{busy ? <LoaderCircle className="spin" size={14} /> : <Check size={14} />}{run ? t('action.saveVersion') : t('studio.saveDraft')}</button></div></header>
+      <fieldset disabled={busy} className="collaboration-studio-fields">
+        <div className="collaboration-studio-overview"><label>{t('field.name')}<input value={name} maxLength={200} required onChange={event => setName(event.target.value)} placeholder={t('field.namePlaceholder')} /></label><label>{t('field.projectDirectory')}{run ? <input value={cwd} readOnly /> : <DirectoryField value={cwd} onChange={setCwd} perform={perform} />}</label><label className="collaboration-studio-goal">{t('setup.goal')}<textarea ref={goalField} rows={1} maxLength={100000} value={goal} required={templated} onChange={event => setGoal(event.target.value)} placeholder={run ? t('studio.goalUpdate') : t('setup.goalPlaceholder')} />{goal.trim() && !steps.length && <small role="status">{t('studio.goalNeedsTasks')}</small>}</label></div>
+        <div className="collaboration-toolbar"><div className="collaboration-view-switch" role="tablist" aria-label={t('run.views')}><button type="button" role="tab" aria-selected={view === 'relationships'} className={view === 'relationships' ? 'active' : ''} onClick={() => setView('relationships')}><Network size={14} />{t('run.relationships')}</button><button type="button" role="tab" aria-selected={view === 'data'} className={view === 'data' ? 'active' : ''} onClick={() => setView('data')}><GitBranch size={14} />{t('studio.executionOrder')}</button></div><div className="collaboration-toolbar-actions"><button className="button small" type="button" onClick={addParticipant}><Plus size={13} />{t('studio.addAgent')}</button><button className="button small" type="button" disabled={participants.length < 2} onClick={() => { setView('relationships'); addRelationship(); }}><GitBranch size={13} />{t('relationship.add')}</button><IconButton label={t('studio.overview')} onClick={() => select()}><Settings2 size={15} /></IconButton><IconButton label={inspectorOpen ? t('detail.collapse') : t('detail.expand')} aria-expanded={inspectorOpen} onClick={() => setInspectorOpen(value => !value)}><PanelRight size={15} /></IconButton></div></div>
+        <div className="collaboration-studio-hint"><span>{view === 'relationships' ? t('studio.relationshipHint') : t('studio.executionHint')}</span>{!run && <div><button className="text-button" type="button" onClick={chooseTemplate}>{t('template.name')}</button><button className="text-button" type="button" onClick={blank}>{t('studio.blank')}</button></div>}</div>
+        {graphError && <p className="collaboration-inline-error" role="alert">{graphError}</p>}
+        <div className="collaboration-studio-workspace"><ExecutionGraph key={storageKey} storageKey={storageKey} graph={graph} view={view} selection={selection} connectable={!busy} onSelect={select} onConnect={connect} onPaneClick={() => setInspectorOpen(false)}>{!graph.nodes.length && <div className="collaboration-studio-empty"><Network size={28} /><strong>{view === 'relationships' ? t('studio.emptyTitle') : t('studio.emptyTasks')}</strong><p>{view === 'relationships' ? t('studio.emptyDescription') : t('studio.emptyTasksDescription')}</p><button className="button primary small" type="button" disabled={busy} onClick={addParticipant}><Plus size={14} />{t('studio.addAgent')}</button></div>}</ExecutionGraph>
+          <AnimatePresence initial={false}>{inspectorOpen && <motion.aside key="inspector" className="collaboration-studio-inspector collaboration-editor-body" initial={reducedMotion ? false : { opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={reducedMotion ? undefined : { opacity: 0, x: 12 }} transition={{ duration: 0.16 }} aria-label={t('studio.inspector')}><div className="collaboration-studio-inspector-heading"><strong>{selectedStep ? t('studio.taskDetails') : participant ? t('studio.agentDetails') : relation ? t('studio.relationshipDetails') : t('studio.overview')}</strong><IconButton label={t('detail.collapse')} onClick={() => setInspectorOpen(false)}><X size={15} /></IconButton></div>
+          {participant ? <div key={selectedStep?.id ?? participant.id}>
+        {!selectedStep && <><div className="participant-editor-heading"><strong>{participant.name || t('participant.unnamed')}</strong><IconButton label={t('participant.delete', { name: participant.name })} disabled={busy} onClick={() => removeParticipant(participant.id)}><Trash2 size={14} /></IconButton></div>
+        <div className="collaboration-form-grid"><label>{t('field.displayName')}<input value={participant.name} required onChange={event => update(participant.id, { name: event.target.value })} /></label></div>
         <label>{t('field.roles')}<ListInput values={participant.roles} onChange={roles => update(participant.id, { roles })} placeholder={t('field.rolesPlaceholder')} /></label>
         <label>{t('field.instructions')}<textarea rows={2} value={participant.instructions ?? ''} onChange={event => update(participant.id, { instructions: event.target.value })} placeholder={t('field.instructionsPlaceholder')} /></label>
-        {participant.mode === 'managed' ? <div className="collaboration-form-grid"><label>{t('field.runtime')}<ProviderSelect providers={providers} value={participant.providerId ?? ''} onChange={providerId => setProvider(participant, providerId)} /></label><ModelField provider={providers.find(item => item.id === participant.providerId)} value={participant.modelId} disabled={busy} onChange={modelId => update(participant.id, { modelId: modelId || undefined })} /></div> : <label>{t('field.identity')}<AppSelect label={t('field.identity')} value={participant.binding?.identityId ?? ''} onChange={value => update(participant.id, { binding: value ? { identityId: value } : undefined })} options={[{ value: '', label: t('field.identityLater') }, ...identities.filter(item => !item.revokedAt).map(item => ({ value: item.id, label: item.name }))]} /></label>}
-        <div className="collaboration-form-grid"><label>{t('field.executionDirectory')} <span className="optional">{t('field.defaultProjectDirectory')}</span><input value={participant.cwd ?? ''} placeholder={cwd} onChange={event => update(participant.id, { cwd: event.target.value })} /></label><label>{participant.mode === 'external' ? t('permission.platformFiles') : t('permission.files')}<AppSelect label={participant.mode === 'external' ? t('permission.platformFiles') : t('permission.files')} value={participant.permissions.workspace?.access ?? 'read-only'} aria-invalid={permissionIssues.some(issue => issue.id === participant.id)} aria-describedby={permissionIssues.some(issue => issue.id === participant.id) ? `permission-issue-${participant.id}` : undefined} onChange={value => setAccess(participant, value as 'read-only' | 'read-write')} options={[{ value: 'read-only', label: t('permission.readOnly'), disabled: participant.mode === 'managed' && !providers.find(provider => provider.id === participant.providerId)?.capabilities.permissions }, { value: 'read-write', label: t('permission.readWriteRoots') }]} /></label></div>
+        {participant.mode === 'managed' ? <div className="collaboration-form-grid"><label>{t('field.runtime')}<ProviderSelect providers={providers} value={participant.providerId ?? ''} onChange={providerId => setProvider(participant, providerId)} /></label><ModelField provider={providers.find(item => item.id === participant.providerId)} value={participant.modelId} disabled={busy} onChange={modelId => update(participant.id, { modelId: modelId || undefined })} /></div> : <label>{t('field.identity')}<AppSelect disabled={busy} label={t('field.identity')} value={participant.binding?.identityId ?? ''} onChange={value => update(participant.id, { binding: value ? { identityId: value } : undefined })} options={[{ value: '', label: t('field.identityLater') }, ...identities.filter(item => !item.revokedAt).map(item => ({ value: item.id, label: item.name }))]} /></label>}
+        <details className="collaboration-advanced"><summary>{t('studio.agentAdvanced')}</summary><label>{t('field.connectionMode')}<AppSelect disabled={busy} label={t('field.connectionMode')} value={participant.mode} onChange={value => update(participant.id, { mode: value as 'managed' | 'external' })} options={[{ value: 'managed', label: t('participant.managedOption') }, { value: 'external', label: t('participant.externalOption') }]} /></label>
+        <div className="collaboration-form-grid"><label>{t('field.executionDirectory')} <span className="optional">{t('field.defaultProjectDirectory')}</span><input value={participant.cwd ?? ''} placeholder={cwd} onChange={event => update(participant.id, { cwd: event.target.value })} /></label><label>{participant.mode === 'external' ? t('permission.platformFiles') : t('permission.files')}<AppSelect disabled={busy} label={participant.mode === 'external' ? t('permission.platformFiles') : t('permission.files')} value={participant.permissions.workspace?.access ?? 'read-only'} aria-invalid={permissionIssues.some(issue => issue.id === participant.id)} aria-describedby={permissionIssues.some(issue => issue.id === participant.id) ? `permission-issue-${participant.id}` : undefined} onChange={value => setAccess(participant, value as 'read-only' | 'read-write')} options={[{ value: 'read-only', label: t('permission.readOnly'), disabled: participant.mode === 'managed' && !providers.find(provider => provider.id === participant.providerId)?.capabilities.permissions }, { value: 'read-write', label: t('permission.readWriteRoots') }]} /></label></div>
         {permissionIssues.filter(issue => issue.id === participant.id).map(issue => <p className="collaboration-field-error" id={`permission-issue-${participant.id}`} role="alert" key={issue.id}>{issue.message}</p>)}
         {participant.mode === 'managed' && !providers.find(provider => provider.id === participant.providerId)?.capabilities.permissions && participant.permissions.workspace?.access === 'read-write' && <p className="collaboration-observation-note">{t('permission.runtimeNote')}</p>}
         {participant.mode === 'external' && <p className="collaboration-observation-note">{t('permission.externalNote')}</p>}
         <fieldset className="collaboration-permissions"><legend>{t('permission.collaboration')}</legend>{([{ key: 'submitTasks', label: t('action.submitTask') }, { key: 'sendMessages', label: t('action.sendMessage') }, { key: 'publishArtifacts', label: t('action.publishArtifact') }, { key: 'configureRun', label: t('permission.configureRun') }] as const).map(permission => <label key={permission.key}><input type="checkbox" checked={participant.permissions[permission.key]} onChange={event => update(participant.id, { permissions: { ...participant.permissions, [permission.key]: event.target.checked } })} />{permission.label}</label>)}</fieldset>
-        <details className="collaboration-advanced"><summary>{t('permission.scope')}</summary><label className="collaboration-checkbox"><input type="checkbox" checked={participant.permissions.allowedTargets !== undefined} onChange={event => update(participant.id, { permissions: { ...participant.permissions, allowedTargets: event.target.checked ? [] : undefined } })} />{t('permission.limitTargets')}</label>{participant.permissions.allowedTargets && <div className="collaboration-check-list">{participants.filter(item => item.id !== participant.id).map(target => <label key={target.id}><input type="checkbox" checked={participant.permissions.allowedTargets!.includes(target.id)} onChange={event => update(participant.id, { permissions: { ...participant.permissions, allowedTargets: event.target.checked ? [...participant.permissions.allowedTargets!, target.id] : participant.permissions.allowedTargets!.filter(id => id !== target.id) } })} />{target.name}</label>)}</div>}{participant.mode === 'managed' && Boolean(providers.find(item => item.id === participant.providerId)?.efforts?.length) && <label>{t('field.effort')}<AppSelect label={t('field.effort')} value={participant.settings?.effort ?? ''} onChange={value => update(participant.id, { settings: { ...participant.settings, effort: value || undefined } })} options={[{ value: '', label: t('field.runtimeDefault') }, ...(providers.find(item => item.id === participant.providerId)?.efforts?.map(effort => ({ value: effort, label: effort })) ?? [])]} /></label>}<p>{t('permission.toolsNote')}</p></details>
-      </article>)}
-      <div className="collaboration-section-heading"><div><h2>{t('relationships.title')}</h2><p>{t('relationships.description')}</p></div><button className="button small" type="button" disabled={participants.length < 2 || busy} onClick={() => setRelationships(items => [...items, { id: requestId(), from: participants[0].id, to: participants[1].id, kind: '', label: '' }])}><Plus size={14} />{t('relationship.add')}</button></div>
-      {relationships.map(relation => <div className="relationship-editor" key={relation.id}><AppSelect label={t('relationship.from')} value={relation.from} onChange={value => setRelationships(items => items.map(item => item.id === relation.id ? { ...item, from: value } : item))} options={participants.map(item => ({ value: item.id, label: item.name }))} /><ChevronRight size={14} /><AppSelect label={t('relationship.to')} value={relation.to} onChange={value => setRelationships(items => items.map(item => item.id === relation.id ? { ...item, to: value } : item))} options={participants.map(item => ({ value: item.id, label: item.name }))} /><input aria-label={t('relationship.description')} value={relation.kind} onChange={event => setRelationships(items => items.map(item => item.id === relation.id ? { ...item, kind: event.target.value } : item))} placeholder={t('relationship.placeholder')} required /><IconButton label={t('relationship.delete')} onClick={() => setRelationships(items => items.filter(item => item.id !== relation.id))}><Trash2 size={14} /></IconButton></div>)}
-      <div className="collaboration-section-heading"><div><h2>{t('tasks.preset')} <span className="optional">{t('field.optional')}</span></h2><p>{t('tasks.presetDescription')}</p></div><button className="button small" type="button" disabled={!participants.length || busy} onClick={() => setSteps(items => [...items, { id: requestId(), title: '', participantId: participants[0].id, prompt: '', dependsOn: [], artifactIds: [] }])}><Plus size={14} />{t('task.add')}</button></div>
-      {steps.map(step => <article className="participant-editor" key={step.id}><div className="collaboration-form-grid"><label>{t('task.name')}<input value={step.title} required onChange={event => setSteps(items => items.map(item => item.id === step.id ? { ...item, title: event.target.value } : item))} /></label><label>{t('task.assignee')}<AppSelect label={t('task.assignee')} value={step.participantId} onChange={value => setSteps(items => items.map(item => item.id === step.id ? { ...item, participantId: value } : item))} options={participants.map(item => ({ value: item.id, label: item.name }))} /></label></div><label>{t('task.requirements')}<textarea rows={3} value={step.prompt} required onChange={event => setSteps(items => items.map(item => item.id === step.id ? { ...item, prompt: event.target.value } : item))} /></label><div className="collaboration-check-list"><span>{t('task.dependencies')}</span>{steps.filter(item => item.id !== step.id).map(target => <label key={target.id}><input type="checkbox" checked={step.dependsOn.includes(target.id)} onChange={event => setSteps(items => items.map(item => item.id === step.id ? { ...item, dependsOn: event.target.checked ? [...item.dependsOn, target.id] : item.dependsOn.filter(id => id !== target.id) } : item))} />{target.title || t('task.unnamed')}</label>)}<IconButton label={t('task.deletePreset')} onClick={() => setSteps(items => items.filter(item => item.id !== step.id).map(item => ({ ...item, dependsOn: item.dependsOn.filter(id => id !== step.id) })))}><Trash2 size={14} /></IconButton></div></article>)}
-      <label>{t('field.completion')}<AppSelect label={t('field.completion')} value={completion} onChange={value => setCompletion(value as 'manual' | 'all-tasks')} options={[{ value: 'manual', label: t('completion.manual') }, { value: 'all-tasks', label: t('completion.allTasks') }]} /></label>
+        <details className="collaboration-advanced"><summary>{t('permission.scope')}</summary><label className="collaboration-checkbox"><input type="checkbox" checked={participant.permissions.allowedTargets !== undefined} onChange={event => update(participant.id, { permissions: { ...participant.permissions, allowedTargets: event.target.checked ? [] : undefined } })} />{t('permission.limitTargets')}</label>{participant.permissions.allowedTargets && <div className="collaboration-check-list">{participants.filter(item => item.id !== participant.id).map(target => <label key={target.id}><input type="checkbox" checked={participant.permissions.allowedTargets!.includes(target.id)} onChange={event => update(participant.id, { permissions: { ...participant.permissions, allowedTargets: event.target.checked ? [...participant.permissions.allowedTargets!, target.id] : participant.permissions.allowedTargets!.filter(id => id !== target.id) } })} />{target.name}</label>)}</div>}{participant.mode === 'managed' && Boolean(providers.find(item => item.id === participant.providerId)?.efforts?.length) && <label>{t('field.effort')}<AppSelect disabled={busy} label={t('field.effort')} value={participant.settings?.effort ?? ''} onChange={value => update(participant.id, { settings: { ...participant.settings, effort: value || undefined } })} options={[{ value: '', label: t('field.runtimeDefault') }, ...(providers.find(item => item.id === participant.providerId)?.efforts?.map(effort => ({ value: effort, label: effort })) ?? [])]} /></label>}<p>{t('permission.toolsNote')}</p></details></details></>}
+          <div className="collaboration-section-heading"><h2>{selectedStep ? t('studio.taskDetails') : t('tasks.preset')}</h2>{!selectedStep && <button className="button small" type="button" onClick={() => setSteps(items => [...items, { id: requestId(), title: '', participantId: participant.id, prompt: '', dependsOn: [], artifactIds: [] }])}><Plus size={13} />{t('task.add')}</button>}</div><p className="collaboration-studio-explanation">{t('studio.taskHint')}</p>
+{participantSteps.map(step => <article className="participant-editor" key={step.id}><div className="collaboration-form-grid"><label>{t('task.name')}<input value={step.title} required onChange={event => setSteps(items => items.map(item => item.id === step.id ? { ...item, title: event.target.value } : item))} /></label><label>{t('task.assignee')}<AppSelect disabled={busy} label={t('task.assignee')} value={step.participantId} onChange={value => setSteps(items => items.map(item => item.id === step.id ? { ...item, participantId: value } : item))} options={participants.map(item => ({ value: item.id, label: item.name }))} /></label></div><label>{t('task.requirements')}<textarea rows={3} value={step.prompt} required onChange={event => setSteps(items => items.map(item => item.id === step.id ? { ...item, prompt: event.target.value } : item))} /></label><div className="collaboration-check-list"><span>{t('task.dependencies')}</span>{steps.filter(item => item.id !== step.id).map(target => <label key={target.id}><input type="checkbox" checked={step.dependsOn.includes(target.id)} disabled={!step.dependsOn.includes(target.id) && validateWorkflowDependency(steps, target.id, step.id) === 'cycle'} onChange={event => updateDependency(target.id, step.id, event.target.checked)} />{target.title || t('task.unnamed')}</label>)}<IconButton label={t('task.deletePreset')} onClick={() => removeStep(step.id)}><Trash2 size={14} /></IconButton></div></article>)}
+          </div> : relation ? <div key={relation.id} className="collaboration-studio-relation"><label>{t('relationship.from')}<AppSelect disabled={busy} label={t('relationship.from')} value={relation.from} onChange={from => updateRelationship(relation.id, { from })} options={participants.map(item => ({ value: item.id, label: item.name, disabled: item.id === relation.to }))} /></label><button className="button small" type="button" onClick={() => updateRelationship(relation.id, { from: relation.to, to: relation.from })}><RefreshCw size={13} />{t('studio.reverseDirection')}</button><label>{t('relationship.to')}<AppSelect disabled={busy} label={t('relationship.to')} value={relation.to} onChange={to => updateRelationship(relation.id, { to })} options={participants.map(item => ({ value: item.id, label: item.name, disabled: item.id === relation.from }))} /></label><label>{t('studio.relationshipType')}<AppSelect disabled={busy} label={t('studio.relationshipType')} value={relationshipKinds.includes(relation.kind) ? relation.kind : 'custom'} onChange={kind => updateRelationship(relation.id, { kind: kind === 'custom' ? '' : kind, label: undefined })} options={[...relationshipKinds.map(kind => ({ value: kind, label: relationshipLabel(kind) })), { value: 'custom', label: t('studio.customType') }]} /></label><label>{t('studio.relationshipLabel')}<input value={relation.label ?? ''} onChange={event => updateRelationship(relation.id, { label: event.target.value || undefined })} placeholder={relationshipLabel(relation.kind)} /></label><p className="collaboration-studio-explanation">{t('studio.relationshipSemantics')}</p><details className="collaboration-advanced" open={!relationshipKinds.includes(relation.kind)}><summary>{t('studio.customType')}</summary><label>{t('relationship.description')}<input value={relation.kind} required onChange={event => updateRelationship(relation.id, { kind: event.target.value })} /></label></details><button className="button small danger" type="button" onClick={() => { setRelationships(items => items.filter(item => item.id !== relation.id)); setSelection(undefined); setInspectorOpen(false); }}><Trash2 size={13} />{t('relationship.delete')}</button></div> : <div><p className="collaboration-studio-explanation">{run ? t('setup.versionNote', { version: run.definitionVersion }) : t('studio.saveFirst')}</p>
+      <label>{t('field.completion')}<AppSelect disabled={busy} label={t('field.completion')} value={completion} onChange={value => setCompletion(value as 'manual' | 'all-tasks')} options={[{ value: 'manual', label: t('completion.manual') }, { value: 'all-tasks', label: t('completion.allTasks') }]} /></label>
       <details className="collaboration-advanced"><summary>{t('limits.title')} <span className="optional">{t('limits.help')}</span></summary><div className="collaboration-form-grid">{([{ key: 'maxConcurrentTasks', label: t('limits.concurrent') }, { key: 'maxTasks', label: t('limits.tasks') }, { key: 'maxAttemptsPerTask', label: t('limits.attempts') }, { key: 'maxTaskTurns', label: t('limits.turns') }] as const).map(item => <label key={item.key}>{item.label}<input type="number" min={1} step={1} value={limits[item.key] ?? ''} onChange={event => setLimits(current => ({ ...current, [item.key]: event.target.value ? Number(event.target.value) : undefined }))} /></label>)}</div><p>{t('limits.note')}</p></details>
-      <div className="editor-actions"><button className="button" type="button" disabled={busy} onClick={onClose}>{t('action.cancel')}</button><button className="button primary" disabled={!valid || busy}>{busy ? <LoaderCircle className="spin" size={14} /> : <Check size={14} />}{run ? t('action.saveVersion') : t('action.saveAndView')}</button></div>
+          {openProviderSettings && <button className="text-button" type="button" onClick={openProviderSettings}>{t('setup.connectionHelp')}</button>}
+          {permissionIssues.map(issue => <button className="collaboration-studio-issue" type="button" key={issue.id} onClick={() => select({ kind: 'participant', id: issue.id })}>{issue.message}</button>)}
+          </div>}
+          </motion.aside>}</AnimatePresence>
+        </div>
+      </fieldset>
+      <footer className="collaboration-studio-footer"><span>{t('studio.selectionHint')}</span><span>{t('studio.summary', { agents: participants.length, tasks: steps.length, relations: relationships.length })}</span>{permissionIssues.length > 0 && <button className="text-button" type="button" onClick={() => select({ kind: 'participant', id: permissionIssues[0].id })}>{t('studio.permissionIssues', { count: permissionIssues.length })}</button>}</footer>
     </form>
   </section>;
 }
 
-interface GraphNodeData extends Record<string, unknown> { title: string; subtitle: string; detail?: string; kind: 'participant' | 'task' | 'artifact'; status?: string; external?: boolean; recipientProviderId?: string; executionId?: string; resourceDelivery?: ResourceDeliveryCount[] }
-type CollaborationNode = Node<GraphNodeData, 'collaboration'>;
-type GraphSelection = { kind: 'participant' | 'task' | 'artifact' | 'event' | 'message' | 'relationship'; id: string } | { kind: 'events'; ids: string[] };
-interface GraphEdgeData extends Record<string, unknown> { selection?: GraphSelection; configured?: boolean; historicalResourceInput?: boolean; handoffSeqs?: number[]; onHandoffEnd?: (seq: number) => void }
-type CollaborationEdge = Edge<GraphEdgeData>;
-const resourceDeliveryIcons = { queued: Clock3, failed: X, injected: FileCheck2, reported: ArrowUpRight, unconfirmed: CircleHelp };
-function CollaborationNodeView({ data, selected, isConnectable }: NodeProps<CollaborationNode>) {
-  const { t } = useTranslation('collaboration');
-  const reducedMotion = useReducedMotion();
-  const previousExecution = useRef(data.executionId);
-  const [executionStarted, setExecutionStarted] = useState(false);
-  useEffect(() => {
-    const started = Boolean(data.executionId) && data.executionId !== previousExecution.current;
-    previousExecution.current = data.executionId;
-    setExecutionStarted(started && data.status === 'running' && !reducedMotion);
-  }, [data.executionId, data.status, reducedMotion]);
-  return <div className={`collaboration-node node-${data.kind} ${selected ? 'selected' : ''}`} data-status={data.status}>
-    {executionStarted && !reducedMotion && <span className="collaboration-node-status-feedback" aria-hidden="true" onAnimationEnd={() => setExecutionStarted(false)} />}
-    <Handle type="target" position={Position.Left} isConnectable={isConnectable} />
-    <div className="collaboration-node-eyebrow">
-      {data.recipientProviderId ? <AgentIcon providerId={data.recipientProviderId} size={12} />
-        : data.kind === 'artifact' ? <FileText size={12} /> : data.kind === 'task' ? <GitBranch size={12} /> : <Network size={12} />}
-      <span title={data.subtitle}>{data.subtitle}</span>
-      {!!data.resourceDelivery?.length && <div className="collaboration-resource-deliveries" role="group" aria-label={t('resource.deliverySummary')}>
-        {data.resourceDelivery.map(item => {
-          const Icon = resourceDeliveryIcons[item.status];
-          const total = item.tasks + item.messages;
-          const label = [t(`resource.delivery.${item.status}`), item.tasks ? t('resource.taskCount', { count: item.tasks }) : '', item.messages ? t('resource.messageCount', { count: item.messages }) : ''].filter(Boolean).join(' · ');
-          return <Tooltip key={item.status} label={label}><span className="collaboration-resource-delivery" role="img" tabIndex={0} aria-label={label} data-resource-delivery={item.status} data-resource-tasks={item.tasks} data-resource-messages={item.messages}><Icon size={10} aria-hidden="true" /><span aria-hidden="true">{total > 99 ? '99+' : total}</span></span></Tooltip>;
-        })}
-      </div>}
-    </div>
-    <strong>{data.title}</strong>{data.detail && <p>{data.detail}</p>}
-    <footer>{data.status && <Status value={data.status} />}{data.external && <span>{t('participant.externalConnection')}</span>}</footer>
-    <Handle type="source" position={Position.Right} isConnectable={isConnectable} />
-  </div>;
-}
-const nodeTypes = { collaboration: CollaborationNodeView };
-function CollaborationEdgeView(props: EdgeProps<CollaborationEdge>) {
-  const [path] = getSmoothStepPath(props);
-  return <><SmoothStepEdge {...props} />{!props.data?.configured && props.data?.handoffSeqs?.map(seq => <path key={seq} className="collaboration-edge-handoff" data-event-seq={seq} d={path} pathLength={1} aria-hidden="true" onAnimationEnd={() => props.data?.onHandoffEnd?.(seq)} />)}</>;
-}
-const edgeTypes = { collaboration: CollaborationEdgeView };
-const edgeFor = (id: string, source: string, target: string, label: string, selection?: GraphSelection, configured = false, delivered = false): CollaborationEdge => ({ id, source, target, label, className: delivered ? 'collaboration-edge-delivered' : undefined, type: 'collaboration', markerEnd: { type: MarkerType.ArrowClosed, width: 15, height: 15, color: configured ? 'var(--dim)' : 'var(--muted)' }, style: { stroke: configured ? 'var(--dim)' : delivered ? 'var(--accent)' : 'var(--muted)', strokeWidth: configured ? 1 : 1.25, ...(configured ? { strokeDasharray: '6 5' } : {}) }, labelStyle: { fill: configured ? 'var(--muted)' : 'var(--text)', fontSize: 11 }, labelBgStyle: { fill: 'var(--surface)', fillOpacity: 1 }, labelBgBorderRadius: 3, labelBgPadding: [7, 5], data: { selection, configured } });
-const graphNode = (id: string, data: GraphNodeData): CollaborationNode => ({ id, type: 'collaboration', position: { x: 0, y: 0 }, data, width: 228, height: 118 });
 
 function handoffEdgeId(event: CollaborationEvent, view: 'relationships' | 'data') {
   if (!['message.injected', 'message.reported', 'artifact.injected'].includes(event.type)) return;
@@ -249,11 +275,11 @@ function buildGraph(run: CollaborationRun, participants: CollaborationParticipan
       const active = tasks.filter(task => task.participantId === participant.id);
       const current = run.definitionSnapshot.participants.some(item => item.id === participant.id);
       const currentTask = active.find(task => task.status === 'running') ?? active.find(task => ['waiting', 'queued'].includes(task.status));
-      nodes.push(graphNode(participant.id, { kind: 'participant', title: participant.name, subtitle: participant.roles.join(' · ') || translate('collaboration:participant.noRoles'), detail: !current ? translate('collaboration:participant.historical') : participant.mode === 'managed' ? [participant.providerId, participant.modelId].filter(Boolean).join(' · ') : translate('collaboration:participant.platformRecordsOnly'), external: participant.mode === 'external', status: currentTask ? taskDisplayStatus(currentTask, sessions) : undefined, recipientProviderId: participant.providerId, executionId: runningExecution(currentTask), resourceDelivery: resourceDelivery.participantCounts.get(participant.id) }));
+      nodes.push(graphNode(participant.id, { kind: 'participant', title: participant.name, subtitle: participant.roles.join(' · ') || translate('collaboration:participant.noRoles'), detail: !current ? translate('collaboration:participant.historical') : participant.mode === 'managed' ? [participant.providerId, participant.modelId].filter(Boolean).join(' · ') : translate('collaboration:participant.platformRecordsOnly'), external: participant.mode === 'external', status: currentTask ? taskDisplayStatus(currentTask, sessions) : undefined, recipientProviderId: participant.providerId, executionId: taskExecutionId(currentTask), executionActive: currentTask?.status === 'running', resourceDelivery: resourceDelivery.participantCounts.get(participant.id) }));
     }
     if (events.some(event => event.participantId === 'user' || event.targetParticipantId === 'user')) nodes.push(graphNode('user', { kind: 'participant', title: translate('collaboration:actor.user'), subtitle: translate('collaboration:participant.actionSource'), detail: translate('collaboration:participant.platformActions') }));
     const ids = new Set(nodes.map(node => node.id));
-    for (const relation of run.definitionSnapshot.relationships) if (ids.has(relation.from) && ids.has(relation.to)) edges.push(edgeFor(`configured-${relation.id}`, relation.from, relation.to, relation.label || relation.kind, { kind: 'relationship', id: relation.id }, true));
+    for (const relation of run.definitionSnapshot.relationships) if (ids.has(relation.from) && ids.has(relation.to)) edges.push(edgeFor(`configured-${relation.id}`, relation.from, relation.to, relation.label || relationshipLabel(relation.kind), { kind: 'relationship', id: relation.id }, true));
     const groups = new Map<string, { from: string; to: string; type: string; ids: string[] }>();
     for (const event of events) {
       if (!event.participantId || !event.targetParticipantId || !ids.has(event.participantId) || !ids.has(event.targetParticipantId)) continue;
@@ -263,7 +289,7 @@ function buildGraph(run: CollaborationRun, participants: CollaborationParticipan
     }
     for (const [key, group] of groups) edges.push(edgeFor(`observed-${key}`, group.from, group.to, `${eventLabel(group.type)}${group.ids.length > 1 ? ` ×${group.ids.length}` : ''}`, { kind: 'events', ids: group.ids }));
   } else {
-    for (const task of tasks) nodes.push(graphNode(`task-${task.id}`, { kind: 'task', title: task.title, subtitle: task.participantSnapshot.name, detail: translate('collaboration:graph.taskDetail', { count: task.attempts.length, version: task.definitionVersion }), status: taskDisplayStatus(task, sessions), recipientProviderId: task.participantSnapshot.providerId, executionId: runningExecution(task), resourceDelivery: resourceDelivery.taskCounts.get(task.id) }));
+    for (const task of tasks) nodes.push(graphNode(`task-${task.id}`, { kind: 'task', title: task.title, subtitle: task.participantSnapshot.name, detail: translate('collaboration:graph.taskDetail', { count: task.attempts.length, version: task.definitionVersion }), status: taskDisplayStatus(task, sessions), recipientProviderId: task.participantSnapshot.providerId, executionId: taskExecutionId(task), executionActive: task.status === 'running', resourceDelivery: resourceDelivery.taskCounts.get(task.id) }));
     for (const artifact of artifacts) nodes.push(graphNode(`artifact-${artifact.id}`, { kind: 'artifact', title: artifact.name, subtitle: translate('collaboration:graph.artifactVersion', { version: artifact.version, kind: artifact.kind }), detail: artifact.sha256.slice(0, 16) }));
     const taskIds = new Set(tasks.map(task => task.id)), artifactIds = new Set(artifacts.map(artifact => artifact.id));
     for (const task of tasks) {
@@ -283,138 +309,12 @@ function buildGraph(run: CollaborationRun, participants: CollaborationParticipan
   return { nodes, edges };
 }
 
-interface CanvasNodeView {
-  position?: { x: number; y: number };
-  measured?: { width?: number; height?: number };
-  selected?: boolean;
-  dragging?: boolean;
-}
-interface CompletedLayout { id: number; key: string; positions: Map<string, { x: number; y: number }> }
-interface CanvasView {
-  nodes: Map<string, CanvasNodeView>;
-  selectedEdgeId?: string;
-  layout?: CompletedLayout;
-  error: string;
-}
-function FitCompletedLayout({ layout }: { layout?: CompletedLayout }) {
-  const reducedMotion = useReducedMotion();
-  const nodes = useNodes<CollaborationNode>();
-  const initialized = useNodesInitialized();
-  const { fitView, viewportInitialized } = useReactFlow<CollaborationNode, CollaborationEdge>();
-  const fitted = useRef<number | undefined>(undefined);
-  useEffect(() => {
-    if (!layout || fitted.current === layout.id || !initialized || !viewportInitialized) return;
-    const committed = nodes.length === layout.positions.size && nodes.every(node => {
-      const position = layout.positions.get(node.id);
-      return position?.x === node.position.x && position.y === node.position.y;
-    });
-    if (!committed) return;
-    fitted.current = layout.id;
-    void fitView({ padding: 0.25, duration: reducedMotion ? 0 : 160 });
-  }, [layout, nodes, initialized, viewportInitialized, fitView, reducedMotion]);
-  return null;
-}
-
-function CollaborationCanvas({ graph, view, onSelect, onConnect }: { graph: ReturnType<typeof buildGraph>; view: string; onSelect: (selection: GraphSelection) => void; onConnect: (connection: Connection) => void }) {
-  const { t } = useTranslation('collaboration');
-  const { theme } = useAppearance();
-  const [canvas, setCanvas] = useState<CanvasView>(() => ({ nodes: new Map(), error: '' }));
-  const [revision, setRevision] = useState(0);
-  const layoutId = useRef(0);
-  const layoutKey = JSON.stringify([view, revision, graph.nodes.map(node => node.id), graph.edges.map(edge => [edge.id, edge.source, edge.target])]);
-  const nodes = useMemo(() => graph.nodes.map(node => {
-    const display = canvas.nodes.get(node.id);
-    return { ...node, ...display, position: display?.position ?? node.position };
-  }), [graph.nodes, canvas.nodes]);
-  const edges = useMemo(() => graph.edges.map(edge => ({ ...edge, selected: edge.id === canvas.selectedEdgeId })), [graph.edges, canvas.selectedEdgeId]);
-  const onNodesChange = (changes: NodeChange<CollaborationNode>[]) => setCanvas(current => {
-    const display = new Map(current.nodes);
-    for (const change of changes) {
-      if (change.type === 'position') display.set(change.id, { ...display.get(change.id),
-        ...(change.position ? { position: change.position } : {}), ...(change.dragging !== undefined ? { dragging: change.dragging } : {}) });
-      else if (change.type === 'dimensions' && change.dimensions) display.set(change.id, { ...display.get(change.id), measured: change.dimensions });
-      else if (change.type === 'select') display.set(change.id, { ...display.get(change.id), selected: change.selected });
-    }
-    return { ...current, nodes: display };
-  });
-  const onEdgesChange = (changes: EdgeChange<CollaborationEdge>[]) => setCanvas(current => {
-    let selectedEdgeId = current.selectedEdgeId;
-    for (const change of changes) if (change.type === 'select') {
-      if (change.selected) selectedEdgeId = change.id;
-      else if (selectedEdgeId === change.id) selectedEdgeId = undefined;
-    }
-    return { ...current, selectedEdgeId };
-  });
-  useEffect(() => {
-    let active = true;
-    setCanvas(current => ({ ...current, error: '' }));
-    if (!graph.nodes.length) return;
-    const elk = new ELK({ workerFactory: () => new ELKWorker() });
-    void elk.layout({
-      id: 'collaboration',
-      layoutOptions: { 'elk.algorithm': 'layered', 'elk.direction': 'RIGHT', 'elk.spacing.nodeNode': '44', 'elk.layered.spacing.nodeNodeBetweenLayers': '84' },
-      children: graph.nodes.map(node => ({ id: node.id, width: node.width ?? 228, height: node.height ?? 118 })),
-      edges: graph.edges.map(edge => ({ id: edge.id, sources: [edge.source], targets: [edge.target] })),
-    }).then(result => {
-      if (!active) return;
-      const positions = new Map(result.children?.map(node => [node.id, { x: node.x ?? 0, y: node.y ?? 0 }]));
-      const completed: CompletedLayout = { id: ++layoutId.current, key: layoutKey, positions };
-      setCanvas(current => ({
-        ...current, error: '', layout: completed,
-        nodes: new Map([...positions].map(([id, position]) => [id, { ...current.nodes.get(id), position }])),
-      }));
-    }).catch(reason => { if (active) setCanvas(current => ({ ...current, error: reason instanceof Error ? reason.message : String(reason) })); });
-    return () => { active = false; elk.terminateWorker(); };
-  }, [layoutKey]);
-  return <div className="collaboration-canvas">
-    <ReactFlow<CollaborationNode, CollaborationEdge> nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
-      onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
-      onNodeClick={(_, node) => onSelect({ kind: node.data.kind, id: node.data.kind === 'participant' ? node.id : node.id.replace(/^(task|artifact)-/, '') })}
-      onEdgeClick={(_, edge) => edge.data?.selection && onSelect(edge.data.selection)}
-      onConnect={onConnect} nodesConnectable={view === 'relationships'} deleteKeyCode={null}
-      minZoom={0.05} maxZoom={1.8} colorMode={theme}
-      ariaLabelConfig={{
-        'node.a11yDescription.default': t('graph.nodeDescription'),
-        'node.a11yDescription.keyboardDisabled': t('graph.nodeDescription'),
-        'node.a11yDescription.ariaLiveMessage': ({ direction, x, y }) => t('graph.nodeMoved', { direction: t(`graph.direction.${direction}`, { defaultValue: direction }), x: formatNumber(x), y: formatNumber(y) }),
-        'edge.a11yDescription.default': t('graph.edgeDescription'),
-        'controls.ariaLabel': t('graph.controls'),
-        'controls.zoomIn.ariaLabel': t('graph.zoomIn'),
-        'controls.zoomOut.ariaLabel': t('graph.zoomOut'),
-        'controls.fitView.ariaLabel': t('graph.fitView'),
-        'controls.interactive.ariaLabel': t('graph.interactive'),
-        'minimap.ariaLabel': t('graph.minimap'),
-        'handle.ariaLabel': t('graph.handle'),
-      }} aria-label={view === 'relationships' ? t('graph.relationshipsLabel') : t('graph.dataLabel')}>
-      <FitCompletedLayout layout={canvas.layout?.key === layoutKey ? canvas.layout : undefined} />
-      <Background color="var(--border-strong)" gap={24} size={1} /><CanvasControls />
-    </ReactFlow>
-    <div className="collaboration-canvas-tools"><button className="button small" onClick={() => setRevision(value => value + 1)}><RefreshCw size={12} />{t('graph.relayout')}</button></div>
-    {!graph.nodes.length && <div className="collaboration-canvas-empty">{t('graph.empty')}</div>}
-    {canvas.error && <div className="collaboration-graph-error" role="alert">{t('graph.layoutError', { error: canvas.error })}</div>}
-  </div>;
-}
-
-function CanvasControls() {
-  const { t } = useTranslation('collaboration');
-  const { zoomIn, zoomOut, fitView } = useReactFlow();
-  const minZoomReached = useStore(state => state.transform[2] <= state.minZoom);
-  const maxZoomReached = useStore(state => state.transform[2] >= state.maxZoom);
-  return <Controls showZoom={false} showFitView={false} showInteractive={false} aria-label={t('graph.controls')}>
-    <Tooltip label={t('graph.zoomIn')}><ControlButton className="react-flow__controls-zoomin" aria-label={t('graph.zoomIn')}
-      disabled={maxZoomReached} onClick={() => void zoomIn()}><Plus size={14} /></ControlButton></Tooltip>
-    <Tooltip label={t('graph.zoomOut')}><ControlButton className="react-flow__controls-zoomout" aria-label={t('graph.zoomOut')}
-      disabled={minZoomReached} onClick={() => void zoomOut()}><Minus size={14} /></ControlButton></Tooltip>
-    <Tooltip label={t('graph.fitView')}><ControlButton className="react-flow__controls-fitview" aria-label={t('graph.fitView')}
-      onClick={() => void fitView()}><Maximize size={14} /></ControlButton></Tooltip>
-  </Controls>;
-}
 
 function CollaborationRunView({ run, state, stateVersion, providers, sessions, perform, pending, openSession, onEdit }: { run: CollaborationRun; state: PublicCollaborationState; stateVersion?: number; providers: ProviderInfo[]; sessions: Session[]; perform: Perform; pending: Set<string>; openSession: (id: string) => void; onEdit: () => void }) {
   const { t, i18n } = useTranslation('collaboration');
   const reducedMotion = useReducedMotion();
   const tasks = state.tasks.filter(item => item.runId === run.id), messages = state.messages.filter(item => item.runId === run.id), artifacts = state.artifacts.filter(item => item.runId === run.id);
-  const [view, setView] = useState<'relationships' | 'data'>(run.definitionSnapshot.steps?.length ? 'data' : 'relationships');
+  const [view, setView] = useState<'relationships' | 'data'>('relationships');
   const [handoffs, setHandoffs] = useState<{ view: typeof view; events: CollaborationEvent[] }>({ view, events: [] });
   const feedbackContext = useRef({ view, afterSeq: stateVersion ?? 0, reducedMotion });
   feedbackContext.current.reducedMotion = reducedMotion;
@@ -513,7 +413,7 @@ function CollaborationRunView({ run, state, stateVersion, providers, sessions, p
     <div className="collaboration-toolbar"><div className="collaboration-view-switch" role="tablist" aria-label={t('run.views')}><button role="tab" aria-selected={view === 'relationships'} className={view === 'relationships' ? 'active' : ''} onClick={() => changeView('relationships')}><Network size={14} />{t('run.relationships')}</button><button role="tab" aria-selected={view === 'data'} className={view === 'data' ? 'active' : ''} onClick={() => changeView('data')}><GitBranch size={14} />{t('run.dataFlow')}</button></div><div className="collaboration-toolbar-actions"><button className="button small" onClick={() => setComposer('task')}><Plus size={13} />{t('action.submitTask')}</button><button className="button small" onClick={() => setComposer('artifact')}><FileText size={13} />{t('action.publishMaterial')}</button><IconButton label={t('action.sendCollaborationMessage')} onClick={() => setComposer('message')}><MessageSquare size={15} /></IconButton><IconButton label={selectionOpen ? t('detail.collapse') : t('detail.expand')} disabled={!selection} aria-expanded={selectionOpen} onClick={() => setSelectionOpen(value => !value)}><PanelRight size={15} /></IconButton></div></div>
     <div className="collaboration-legend"><span><i className="configured" />{t('graph.configuredLegend')}</span><span><i />{t('graph.observedLegend')}</span><span>{t('graph.taskCount', { count: tasks.length })} · {t('graph.artifactCount', { count: artifacts.length })}</span>{view === 'relationships' && <small>{t('graph.connectHint')}</small>}</div>
     {run.error && <div className="collaboration-inline-error">{run.error}</div>}
-    <div className={`collaboration-graph-body ${selectionOpen ? 'with-selection' : ''}`}><CollaborationCanvas graph={graph} view={view} onSelect={selectRecord} onConnect={value => { if (value.source !== value.target && run.definitionSnapshot.participants.some(item => item.id === value.source) && run.definitionSnapshot.participants.some(item => item.id === value.target)) setConnection(value); }} />{selection && <SelectionPanel selection={selection} open={selectionOpen} sessions={sessions} run={run} participants={participants} tasks={tasks} messages={messages} artifacts={artifacts} events={events} providers={providers} openSession={openSession} perform={perform} pending={pending} onSelect={selectRecord} onClose={() => setSelectionOpen(false)} />}</div>
+    <div className={`collaboration-graph-body ${selectionOpen ? 'with-selection' : ''}`}><ExecutionGraph key={`collaboration:${run.id}:${view}`} storageKey={`collaboration:${run.id}:${view}`} graph={graph} view={view} selection={selectionOpen ? selection : undefined} onSelect={selectRecord} onConnect={value => { if (value.source !== value.target && run.definitionSnapshot.participants.some(item => item.id === value.source) && run.definitionSnapshot.participants.some(item => item.id === value.target)) setConnection(value); }} />{selection && <SelectionPanel selection={selection} open={selectionOpen} sessions={sessions} run={run} participants={participants} tasks={tasks} messages={messages} artifacts={artifacts} events={events} providers={providers} openSession={openSession} perform={perform} pending={pending} onSelect={selectRecord} onClose={() => setSelectionOpen(false)} />}</div>
     <div className={`collaboration-timeline ${timeline ? 'expanded' : ''}`}>
       <button className="collaboration-timeline-heading" onClick={() => setTimeline(value => !value)} aria-expanded={timeline} aria-controls={`collaboration-events-${run.id}`}><ChevronRight size={13} /><strong>{t('timeline.title')}</strong><span>{t('timeline.count', { count: events.length })}</span></button>
       <div className="collaboration-timeline-content" data-open={timeline} aria-hidden={!timeline} inert={!timeline} id={`collaboration-events-${run.id}`}><div className="collaboration-timeline-clip"><div className="collaboration-timeline-events">
@@ -564,7 +464,7 @@ function SelectionPanel({ selection, open, sessions, run, participants, tasks, m
     {artifact && <><DetailField label={t('artifact.version')}>v{artifact.version} · {artifact.kind}</DetailField><DetailField label={t('artifact.publisher')}>{participantName(run, artifact.participantId)}</DetailField><DetailField label={t('artifact.versionId')}><code>{artifact.id}</code></DetailField><DetailField label="SHA256"><code>{artifact.sha256}</code></DetailField>{artifact.revision && <DetailField label={t('artifact.revision')}><code>{artifact.revision}</code></DetailField>}<DetailField label={t('artifact.publishedAt')}>{dateLabel(artifact.createdAt)}</DetailField>{artifact.taskId && <button className="collaboration-detail-link" onClick={() => onSelect({ kind: 'task', id: artifact.taskId! })}><GitBranch size={12} />{t('artifact.producer')}<ArrowUpRight size={12} /></button>}{artifact.path && <DetailField label={t('artifact.importFile')}><code>{artifact.path}</code></DetailField>}{artifact.content !== undefined && <DetailField label={t('artifact.content')}><pre>{artifact.content}</pre></DetailField>}<DetailField label={t('artifact.consumers')}>{tasks.filter(item => item.artifactIds.includes(artifact.id) || item.attempts.some(attempt => attempt.inputArtifactIds.includes(artifact.id))).map(item => <button className="collaboration-detail-link" key={item.id} onClick={() => onSelect({ kind: 'task', id: item.id })}>{item.title}<ArrowUpRight size={12} /></button>)}</DetailField></>}
     {artifact?.path && artifact.content === undefined && <ArtifactFileContent key={artifact.id} artifact={artifact} perform={perform} pending={pending} />}
     {message && <><DetailField label={t('message.direction')}>{participantName(run, message.fromParticipantId)} → {participantName(run, message.toParticipantId)}</DetailField><DetailField label={t('message.delivery')}>{deliveryLabel(message.delivery)}{message.source === 'external' ? t('message.externalSuffix') : ''}</DetailField><DetailField label={t('message.content')}><pre>{message.text}</pre></DetailField>{message.artifactIds.map(artifactLink)}{message.error && <p className="collaboration-inline-error">{message.error}</p>}</>}
-    {relation && <><DetailField label={t('relationship.userSetup')}>{participantName(run, relation.from)} → {participantName(run, relation.to)}</DetailField><DetailField label={t('relationship.description')}>{relation.label || relation.kind}</DetailField><p className="collaboration-observation-note">{t('relationship.note')}</p><button className="button small" disabled={pending.has(`collaboration-relation-${relation.id}`)} onClick={() => void perform(`collaboration-relation-${relation.id}`, async () => { await call('update_run', { requestId: requestId(), runId: run.id, expectedVersion: run.definitionVersion, relationships: run.definitionSnapshot.relationships.filter(item => item.id !== relation.id) }); onClose(); })}><Trash2 size={12} />{t('relationship.remove')}</button></>}
+    {relation && <><DetailField label={t('relationship.userSetup')}>{participantName(run, relation.from)} → {participantName(run, relation.to)}</DetailField><DetailField label={t('relationship.description')}>{relation.label || relationshipLabel(relation.kind)}</DetailField><p className="collaboration-observation-note">{t('relationship.note')}</p><button className="button small" disabled={pending.has(`collaboration-relation-${relation.id}`)} onClick={() => void perform(`collaboration-relation-${relation.id}`, async () => { await call('update_run', { requestId: requestId(), runId: run.id, expectedVersion: run.definitionVersion, relationships: run.definitionSnapshot.relationships.filter(item => item.id !== relation.id) }); onClose(); })}><Trash2 size={12} />{t('relationship.remove')}</button></>}
     {selectedEvents.map(event => <article className="collaboration-event-detail" key={event.id}><h3>#{event.seq} {eventLabel(event.type)}</h3><time>{dateLabel(event.createdAt)}</time><DetailField label={t('event.source')}>{participantName(run, event.participantId)}{event.targetParticipantId ? ` → ${participantName(run, event.targetParticipantId)}` : ''} · {event.source === 'external' ? t('source.external') : event.source === 'managed' ? t('source.managed') : t('source.platform')}</DetailField>{event.taskId && <button className="collaboration-detail-link" onClick={() => onSelect({ kind: 'task', id: event.taskId! })}>{t('event.viewTask')}<ArrowUpRight size={12} /></button>}{event.messageId && <button className="collaboration-detail-link" onClick={() => onSelect({ kind: 'message', id: event.messageId! })}>{t('event.viewMessage')}<ArrowUpRight size={12} /></button>}{event.artifactVersionId && artifactLink(event.artifactVersionId)}{event.cause && <DetailField label={t('event.cause')}><code>{event.cause}</code></DetailField>}<DetailField label={t('event.data')}><pre>{JSON.stringify(event.data, null, 2)}</pre></DetailField></article>)}
     {selection.kind === 'participant' && selection.id === 'user' && <p className="collaboration-observation-note">{t('participant.userNote')}</p>}
   </div></aside>;

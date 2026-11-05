@@ -4,7 +4,7 @@ English | [简体中文](first-collaboration.zh-CN.md)
 
 Use two participants to fix a small search function and review the change. You can assign Codex to both roles; each gets its own session and permissions.
 
-The application guides you through **Describe the goal → Review the setup → Start collaboration**. [Watch the 30-second English overview](media/ensemble-overview-en.mp4), then follow the steps below to try it yourself.
+Create the team directly on an editable graph, save a draft, then start the collaboration. The [30-second English overview](media/ensemble-overview-en.mp4) introduces the example; follow the graph-editor steps below for the current interface.
 
 These instructions use English. Open **Preferences** (偏好设置) and select **English** before creating the collaboration. You can also choose **简体中文** or **Follow system**; the first launch follows your system language, and your choice is saved locally. Existing conversations, task text, code, and runtime diagnostics keep their original language. The task and role names below belong to a newly created English template.
 
@@ -79,7 +79,7 @@ Git may ask you to configure your own author name and email if you have not done
 
 ## 2. Describe the goal
 
-In Ensemble, choose **New workspace** and select the example directory. Open **Collaboration**, then choose **Implement and review**.
+In Ensemble, choose **New workspace** and select the example directory. Open **Collaboration**. The first collaboration opens directly as an editable **Implement and review** graph. If you already have saved collaborations, choose **New collaboration** to open a new graph. Check the **Project directory** above the canvas.
 
 Paste this into **Task goal**:
 
@@ -102,13 +102,17 @@ Do not modify files. Reuse passed checks unless a specific concern requires
 further verification.
 ```
 
-Select the runtime and model for **Implementer** and **Reviewer**. The same Codex installation can serve both roles. The reviewer list only offers runtimes that support read-only execution; DeepSeek Harness cannot fill that role.
+Click the **Implementer** node. In the panel on the right, select its **Runtime** and model, then check **Responsibilities and deliverables**. Do the same for **Reviewer**. The same Codex installation can serve both roles. The reviewer needs a runtime that supports read-only execution; DeepSeek Harness cannot fill that role. Unsupported permissions prevent saving and are shown as permission issues.
 
-If no suitable runtime is available, choose **Setup and sign-in help**, follow the official setup guide, and select **Refresh detection**. Close the help dialog to continue. A discovered entry does not confirm sign-in or model access.
+If no suitable runtime is available, open the toolbar gear labeled **Collaboration settings**, then choose **Setup and sign-in help** in its panel. Follow the official setup guide and select **Refresh detection** in runtime settings. Close settings to return to the graph. A discovered entry does not confirm sign-in or model access.
 
-## 3. Review the setup
+## 3. Edit the graph and check the order
 
-Choose **Review the setup**. You can adjust the full configuration before saving.
+Stay on the canvas to adjust the setup. Click an agent node to edit its name, runtime, model, responsibilities and preset tasks. Expand **Connection, permissions and advanced settings** in that panel to check file access and collaboration permissions. **Add agent** places another participant on the same canvas.
+
+Click the connection between the two agents to edit its direction, type or display label. Relationships describe responsibilities. A **Supervises** relationship does not automatically review or control another agent.
+
+Switch to **Execution order** to check task dependencies. Click a task to edit it, or drag from an earlier task to the task that should wait for it. In this example, **Review the changes** must depend on **Implement the goal**. Open **Collaboration settings** to check the completion condition and run limits.
 
 | Check | Expected setup |
 | --- | --- |
@@ -121,7 +125,7 @@ Choose **Review the setup**. You can adjust the full configuration before saving
 
 The template does not grant permission to dispatch more tasks, send collaboration messages, publish artifacts, or change the run configuration. Both tasks receive the shared goal. The reviewer also receives the preceding task output.
 
-Choose **Save and view collaboration**. This saves a draft run. It does not execute the tasks yet.
+Choose **Save draft**. The saved collaboration keeps the graph layout and waits for you to start it explicitly.
 
 ## 4. Start and follow the work
 
@@ -152,4 +156,4 @@ The example is complete when:
 
 Task completion records execution status. Read the output and review findings before keeping the change.
 
-For another arrangement, choose **Custom collaboration**. Individual sessions, terminals, and previews remain available from the workspace. See [Getting started](getting-started.md) for drafts and backend controls.
+For another arrangement, create a new collaboration and choose **Start blank** on the canvas, or edit the template and add agents. Individual sessions, terminals, and previews remain available from the workspace. See [Getting started](getting-started.md) for drafts and backend controls.
