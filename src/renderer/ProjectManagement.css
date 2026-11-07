@@ -1,0 +1,76 @@
+.project-actions-trigger {
+  display: grid;
+  place-items: center;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  margin: 4px 5px 4px 0;
+  border-radius: var(--radius-control);
+  color: var(--muted);
+}
+.project-actions-trigger:hover:not(:disabled),
+.project-actions-trigger[aria-expanded="true"] { background: var(--surface-raised); color: var(--text); }
+.project-actions-trigger:focus-visible { outline-offset: 0; }
+
+.project-actions-menu {
+  --project-menu-width: min(176px, calc(100vw - 16px));
+  position: fixed;
+  inset: auto;
+  top: calc(anchor(bottom) + 4px);
+  right: clamp(8px, anchor(right), calc(100vw - var(--project-menu-width) - 8px));
+  position-try-fallbacks: --project-menu-above;
+  position-visibility: anchors-visible;
+  width: var(--project-menu-width);
+  max-height: calc(100dvh - 16px);
+  overflow: auto;
+  margin: 0;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-overlay);
+  background: var(--surface-overlay);
+  color: var(--text);
+  box-shadow: var(--shadow-popover);
+  backdrop-filter: blur(12px);
+}
+@position-try --project-menu-above {
+  top: auto;
+  bottom: calc(anchor(top) + 4px);
+}
+.project-actions-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 30px;
+  padding: 5px 8px;
+  border-radius: var(--radius-control);
+  text-align: left;
+  font-size: 12px;
+}
+.project-actions-menu button:hover,
+.project-actions-menu button:focus-visible { background: var(--hover); outline-offset: -2px; }
+.project-actions-menu button[data-action="remove"] { color: var(--danger); }
+
+.project-management-name, .project-management-directory {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px;
+}
+.modal .project-management-name > label { flex: 1 1 170px; min-width: 0; margin: 0; }
+.project-management-directory { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+.project-management-directory > div { flex: 1 1 170px; min-width: 0; }
+.project-management-directory strong, .project-management-destination strong { font-size: 12px; font-weight: 550; }
+.project-management-path { display: block; margin-top: 5px; color: var(--muted); overflow-wrap: anywhere; font-size: 12px; }
+.project-management-destination {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+  margin-top: 14px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+}
+.project-management-destination .project-management-path { margin: 0; }
+.project-management-error { margin-top: 12px; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }

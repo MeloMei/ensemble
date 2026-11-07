@@ -19,8 +19,8 @@ function persistedNotes(workspaceId: string): ReviewNote[] {
   catch { return []; }
 }
 
-export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [], onFeedback, onOpenProjectSettings }: {
-  workspace: Workspace; refreshKey: string; perform: Perform; sessions?: Session[]; onFeedback?(text: string): void; onOpenProjectSettings?(): void;
+export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [], onFeedback, onEditProject }: {
+  workspace: Workspace; refreshKey: string; perform: Perform; sessions?: Session[]; onFeedback?(text: string): void; onEditProject?(): void;
 }) {
   const { t } = useTranslation('workspace');
   const [view, setView] = useState<'files' | 'changes' | 'pr'>('files');
@@ -164,7 +164,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
     </header>
     {missingDirectory && <div className="pane-note" role="status">
       <p>{t('files.projectDirectoryMissing')}</p>
-      {onOpenProjectSettings && <button className="button small" onClick={onOpenProjectSettings}>{t('files.openProjectSettings')}</button>}
+      {onEditProject && <button className="button small" onClick={onEditProject}>{t('files.editProject')}</button>}
     </div>}
     <div className="file-view-tabs" data-view={view} role="group" aria-label={t('files.views')}>
       <button className={view === 'files' ? 'active' : ''} aria-pressed={view === 'files'} onClick={() => setView('files')}><Files size={13} />{t('files.files')}</button>
