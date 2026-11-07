@@ -670,6 +670,16 @@ const cases: Record<string, () => Promise<void>> = {
     assert(document.querySelector('.settings-nav') && document.querySelector('.language-settings [role=combobox]')
       && document.querySelector('.appearance-options') && document.querySelector('.application-update-settings'), 'General settings omit a former preferences section');
     assertWorkspace();
+    const settingsModal = document.querySelector<HTMLElement>('.modal:has(.settings-layout)')!;
+    const settingsWidth = settingsModal.offsetWidth;
+    const backdrop = settingsModal.parentElement!;
+    const backdropStyle = getComputedStyle(backdrop);
+    const availableWidth = backdrop.clientWidth - parseFloat(backdropStyle.paddingLeft) - parseFloat(backdropStyle.paddingRight);
+    assert(Math.abs(settingsWidth - Math.min(980, availableWidth)) <= 1, `Settings width ${settingsWidth} does not fit available width ${availableWidth}`);
+    for (const section of ['shell:app.providers', 'shell:settings.project', 'shell:settings.general']) {
+      await click(section);
+      assert(settingsModal.offsetWidth === settingsWidth, `Settings width changed from ${settingsWidth} to ${settingsModal.offsetWidth} after opening ${section}`);
+    }
     await click('shell:settings.project');
     await click('workspace:tools.newSkill');
     await change(input('.tools-editor input'), 'settings-draft');
