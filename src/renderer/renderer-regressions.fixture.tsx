@@ -42,7 +42,7 @@ const applicationUpdateApi = { getApplicationUpdate: async () => installedUpdate
 const idleUpdates: ReturnType<typeof useApplicationUpdates> = { state: installedUpdateState, error: '', pending: false, run: async operation => { await operation(); } };
 function ProjectSettings({ workspace, sessions, perform, onClose }: { workspace: Workspace; sessions: Session[]; perform: Perform; onClose: () => void }) {
   return <SettingsDialog snapshot={null} workspace={workspace} sessions={sessions} perform={perform} pending={new Set()} updates={idleUpdates}
-    initialSection="project" openSession={() => {}} onProjectRestored={() => {}} onClose={onClose} />;
+    initialSection="project" openSession={() => {}} onClose={onClose} />;
 }
 const tick = () => new Promise<void>(resolve => setTimeout(resolve, 0));
 async function frames(count = 3) {
@@ -613,12 +613,13 @@ const cases: Record<string, () => Promise<void>> = {
     scroller.scrollTop = 240;
     row.focus({ preventScroll: true });
     const top = scroller.scrollTop;
+    const entry = row.closest<HTMLElement>('.workspace-row-entry')!;
     let movedBetweenGroups = false;
     const movement = new MutationObserver(() => {
-      const transform = getComputedStyle(row).transform;
+      const transform = getComputedStyle(entry).transform;
       if (transform !== 'none' && Math.abs(new DOMMatrix(transform).m42) > 1) movedBetweenGroups = true;
     });
-    movement.observe(row, { attributes: true, attributeFilter: ['style'] });
+    movement.observe(entry, { attributes: true, attributeFilter: ['style'] });
     snapshot = { ...snapshot, sessions: snapshot.sessions.map(value => value.id === 'motion-session-8' ? { ...value, status: 'completed', attention: { revision: 1, seenRevision: 0, reason: 'result', updatedAt: value.updatedAt } } : value) };
     await act(async () => { publish(snapshot); await tick(); }); await frames();
     assert(document.querySelector('[data-workspace-id="motion-8"]') === row && row.classList.contains('group-review'), 'Finishing a task replaced its project row or lost its review state');
@@ -634,16 +635,18 @@ const cases: Record<string, () => Promise<void>> = {
     snapshot = { ...snapshot, workspaces: projects };
     await act(async () => { publish(snapshot); await tick(); }); await frames();
     assert(document.activeElement === search, 'A project move stole focus from another control');
-    if (matchMedia('(prefers-reduced-motion: reduce)').matches) assert(!row.style.transform || row.style.transform === 'none', 'Reduced motion still moved a project row');
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) assert(!entry.style.transform || entry.style.transform === 'none', 'Reduced motion still moved a project row');
   },
   'UI-SETTINGS: one settings entry preserves the active workspace and unsaved project edits': async () => {
     const draft = { text: 'Keep this unfinished task', attachments: [{ id: 'settings-note', name: 'settings-note.txt', kind: 'text' as const,
       ownedPath: '/settings-note.txt', mimeType: 'text/plain', size: 4, sha256: 'b'.repeat(64) }] };
     const currentSession: Session = { ...session, id: 'settings-session', historyLoaded: true, draft };
     const currentWorkspace: Workspace = { ...workspace, id: 'settings-workspace', tabs: [{ kind: 'agent', id: 'settings-tab', sessionId: currentSession.id }], activeTabId: 'settings-tab' };
-    const snapshot: Snapshot = { version: 1, sessions: [currentSession], workspaces: [currentWorkspace], providers: [provider], workflows: [], terminals: [], pluginErrors: [], pluginPath: '/plugins', dataPath: '/data' };
+    const otherWorkspace = { ...workspace, id: 'settings-other-project', name: 'Other project', cwd: '/other-project' };
+    const snapshot: Snapshot = { version: 1, sessions: [currentSession], workspaces: [currentWorkspace, otherWorkspace], providers: [provider], workflows: [], terminals: [], pluginErrors: [], pluginPath: '/plugins', dataPath: '/data' };
     const watched: string[][] = [];
     let subscriptions = 0, unsubscribed = 0;
+    const skillScopes: string[] = [];
     window.workbench = {
       ...applicationUpdateApi,
       snapshot: async () => snapshot, subscribe: () => { subscriptions++; return () => { unsubscribed++; }; },
@@ -651,7 +654,7 @@ const cases: Record<string, () => Promise<void>> = {
       onLanguageChanged: () => () => {}, setLanguage: async (preference: 'en') => ({ preference, language: 'en' }),
       watchSessions: async (ids: string[]) => { watched.push(ids); },
       listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {}, saveSessionDraft: async () => {},
-      providerHealth: async () => [provider], listSkills: async () => [],
+      providerHealth: async () => [provider], listSkills: async (id: string) => { skillScopes.push(id); return []; },
       mcpSettings: async () => ({ content: '{}', revision: 'settings-mcp-0', servers: [] }), notificationStatus: async () => ({ supported: true, state: 'idle' }),
     } as unknown as Window['workbench'];
     await render(<LanguageProvider initial={{ preference: 'en', language: 'en' }}><App /></LanguageProvider>);
@@ -681,10 +684,20 @@ const cases: Record<string, () => Promise<void>> = {
       assert(settingsModal.offsetWidth === settingsWidth, `Settings width changed from ${settingsWidth} to ${settingsModal.offsetWidth} after opening ${section}`);
     }
     await click('shell:settings.project');
+    const projectScope = () => button('shell:settings.projectScope');
+    await chooseOption(projectScope(), otherWorkspace.id);
+    await waitFor(() => skillScopes.at(-1) === otherWorkspace.id, 'Project settings did not switch tool scope');
+    assertWorkspace();
+    assert(!document.querySelector('.settings-panel .project-management-name'), 'Project lifecycle actions are still rendered in settings');
+    await chooseOption(projectScope(), currentWorkspace.id);
+    await waitFor(() => skillScopes.at(-1) === currentWorkspace.id, 'Project settings could not return to the current scope');
     await click('workspace:tools.newSkill');
     await change(input('.tools-editor input'), 'settings-draft');
     await change(input('.tools-editor textarea'), 'Project edits survive settings navigation');
     const skillEditor = input('.tools-editor textarea');
+    await chooseOption(projectScope(), otherWorkspace.id);
+    await click('workspace:tools.keepEditing');
+    assert(input('.tools-editor textarea') === skillEditor && skillScopes.at(-1) === currentWorkspace.id, 'Switching the settings scope discarded the current edit');
     await click('shell:settings.general');
     assert(skillEditor.isConnected && skillEditor.value === 'Project edits survive settings navigation', 'Leaving Project settings discarded its editor state');
     await click('shell:app.providers');
@@ -722,15 +735,19 @@ const cases: Record<string, () => Promise<void>> = {
     await waitFor(() => !document.querySelector('.settings-layout'), 'Confirmed discard did not close settings');
     assertWorkspace();
   },
-  'UI-PROJECT-MANAGEMENT: missing folder, relocation, archive and removal use project settings': async () => {
-    const original = { ...workspace, id: 'project-management', name: 'Moved project', cwd: '/old-project' };
-    let snapshot: Snapshot = { ...collaborationSnapshot([]), workspaces: [original], providers: [provider] };
+  'UI-PROJECT-MANAGEMENT: sidebar actions target the chosen project and recover a missing folder': async () => {
+    const current = { ...workspace, id: 'kept-project', name: 'Current project' };
+    const target = { ...workspace, id: 'moved-project', name: 'Moved project', cwd: '/old-project' };
+    let snapshot: Snapshot = { ...collaborationSnapshot([]), workspaces: [current, target], providers: [provider] };
     let publish: (snapshot: Snapshot) => void = () => {};
     let listingError = true;
     let unsaved = true;
-    const changes: WorkspaceManagement[] = [];
-    const update = (project?: Workspace) => {
-      snapshot = { ...snapshot, workspaces: project ? [project] : [] };
+    const changes: { id: string; action: WorkspaceManagement['action'] | 'rename' }[] = [];
+    const update = (id: string, apply: (project: Workspace) => Workspace | undefined) => {
+      snapshot = { ...snapshot, workspaces: snapshot.workspaces.flatMap(project => {
+        const next = project.id === id ? apply(project) : project;
+        return next ? [next] : [];
+      }) };
       publish(snapshot);
     };
     window.workbench = {
@@ -738,59 +755,101 @@ const cases: Record<string, () => Promise<void>> = {
       subscribe: (listener: (value: Snapshot) => void) => { publish = listener; return () => {}; },
       getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
       onLanguageChanged: () => () => {}, watchSessions: async () => {}, providerHealth: async () => [provider], setUnsavedFiles: () => {},
-      listFiles: async () => {
+      listFiles: async (id: string) => {
+        if (id !== target.id) return [];
         if (listingError) throw new Error('EACCES fixture');
-        return snapshot.workspaces[0]?.cwd === original.cwd ? null : [{ path: 'new.txt', name: 'new.txt', kind: 'file', size: 1 }];
+        return snapshot.workspaces.find(project => project.id === id)?.cwd === target.cwd ? null : [{ path: 'new.txt', name: 'new.txt', kind: 'file', size: 1 }];
       },
-      gitState: async () => ({ available: false }), listSkills: async () => [],
-      mcpSettings: async () => ({ content: '{}', revision: 'initial', servers: [] }), notificationStatus: async () => ({ supported: true, state: 'idle' }),
+      gitState: async () => ({ available: false }),
       chooseDirectory: async () => '/new-project',
-      updateWorkspace: async (_id: string, input: { name: string }) => update({ ...snapshot.workspaces[0], name: input.name }),
-      manageWorkspace: async (_id: string, input: WorkspaceManagement) => {
-        if (unsaved && input.action !== 'restore') throw new Error('WORKBENCH_UNSAVED_FILES');
-        changes.push(input);
-        const current = snapshot.workspaces[0];
-        if (input.action === 'relocate') update({ ...current, cwd: input.cwd });
-        if (input.action === 'archive' || input.action === 'restore') update({ ...current, archived: input.action === 'archive' });
-        if (input.action === 'remove') update();
+      updateWorkspace: async (id: string, value: { name: string }) => {
+        changes.push({ id, action: 'rename' }); update(id, project => ({ ...project, name: value.name }));
+      },
+      manageWorkspace: async (id: string, value: WorkspaceManagement) => {
+        if (unsaved && value.action === 'relocate') throw new Error('WORKBENCH_UNSAVED_FILES');
+        changes.push({ id, action: value.action });
+        switch (value.action) {
+          case 'relocate': update(id, project => ({ ...project, cwd: value.cwd })); break;
+          case 'archive': update(id, project => ({ ...project, archived: true })); break;
+          case 'restore': update(id, project => ({ ...project, archived: false })); break;
+          case 'remove': update(id, () => undefined); break;
+        }
       },
     } as unknown as Window['workbench'];
     await render(<LanguageProvider initial={{ preference: 'en', language: 'en' }}><App /></LanguageProvider>);
+    const row = (id: string, archived = false) => document.querySelector<HTMLElement>('[data-' + (archived ? 'archived-' : '') + 'workspace-id="' + id + '"]');
+    const activate = async (id: string) => {
+      const item = row(id); assert(item, 'Missing project ' + id);
+      await act(async () => { item.click(); await tick(); });
+    };
+    const projectTrigger = (id = target.id, archived = false) => {
+      const trigger = row(id, archived)?.closest('.workspace-row-entry')?.querySelector<HTMLButtonElement>('button[aria-haspopup=menu]');
+      assert(trigger && !trigger.disabled, 'The chosen project has no enabled actions menu');
+      return trigger;
+    };
+    const projectAction = async (key: string, id = target.id, archived = false) => {
+      const trigger = projectTrigger(id, archived);
+      await act(async () => { trigger.click(); await tick(); });
+      await waitFor(() => Boolean(document.querySelector('[role=menu]:popover-open')), 'The project menu did not open');
+      const menu = document.querySelector<HTMLElement>('[role=menu]:popover-open')!;
+      const item = [...menu.querySelectorAll<HTMLElement>('[role=menuitem]')].find(button => button.textContent?.trim() === translate(key));
+      assert(item, 'Missing project action ' + key);
+      await act(async () => { item.click(); await tick(); });
+    };
+    const activeProject = () => document.querySelector('.workspace-heading h1')?.textContent;
+    const trigger = projectTrigger();
+    await act(async () => {
+      trigger.focus(); trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); await tick();
+    });
+    await waitFor(() => trigger.getAttribute('aria-expanded') === 'true' && document.activeElement === document.querySelector('[role=menu]:popover-open [role=menuitem]'), 'Keyboard opening did not focus the first project action');
+    await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await tick(); });
+    assert(!document.querySelector('[role=menu]:popover-open') && document.activeElement === trigger, 'Escape did not close the project menu and restore focus');
+    await projectAction('shell:projectManagement.edit');
+    assert(activeProject() === current.name, 'Opening actions switched to the target project');
+    await change(input('dialog[open] input[name=project-name]'), 'Recovered project');
+    await click('shell:projectManagement.rename');
+    await waitFor(() => Boolean(row(target.id)?.textContent?.includes('Recovered project')), 'Renaming did not update the chosen row');
+    assert(activeProject() === current.name && changes[0]?.id === target.id, 'Rename switched or updated the active project');
+    await click('shell:common.close');
+    await activate(target.id);
     const missing = () => document.querySelector('.file-review-panel')?.textContent?.includes(translate('workspace:files.projectDirectoryMissing'));
     await waitFor(() => document.querySelector('.file-review-panel [role=alert]')?.textContent === 'EACCES fixture', 'Permission error was not shown');
     assert(!missing(), 'Permission error was treated as a missing folder');
     listingError = false;
     await click('workspace:files.refresh');
     await waitFor(() => Boolean(missing()), 'Missing folder did not offer recovery');
-    await click('workspace:files.openProjectSettings');
-    assert(document.querySelector('.project-management-name')?.checkVisibility(), 'Recovery did not open Project settings');
-    await change(input('.project-management-name input'), 'Recovered project');
-    await click('shell:projectManagement.rename');
-    assert(snapshot.workspaces[0].name === 'Recovered project', 'Rename did not use the project settings');
-    await click('workspace:tools.newSkill');
-    const skill = input('.tools-editor textarea');
-    await change(skill, 'Keep until discard is confirmed');
+    const recover = [...document.querySelectorAll<HTMLButtonElement>('.file-review-panel button')].find(item => item.textContent?.trim() === translate('workspace:files.editProject'));
+    assert(recover, 'The file panel has no project editor entry');
+    await act(async () => { recover.click(); await tick(); });
+    assert(document.querySelector('dialog[open] input[name=project-name]') && !document.querySelector('.settings-layout'), 'Recovery did not open the same project editor');
     await click('shell:projectManagement.relocate');
-    assert(changes.length === 0, 'Directory selection changed the binding before confirmation');
+    assert(changes.length === 1, 'Folder selection changed the binding before confirmation');
     await click('shell:projectManagement.confirmRelocate');
-    await click('workspace:tools.keepEditing');
-    assert(skill.value === 'Keep until discard is confirmed' && changes.length === 0, 'Keeping tool edits proceeded with relocation');
-    await click('shell:projectManagement.confirmRelocate');
-    await click('workspace:tools.discardChanges');
     assert([...document.querySelectorAll('dialog [role=alert]')].some(element => element.textContent === translate('shell:projectManagement.unsaved')), 'The unsaved-file guard had no readable error');
     unsaved = false;
     await click('shell:projectManagement.confirmRelocate');
+    await waitFor(() => snapshot.workspaces.some(project => project.id === target.id && project.cwd === '/new-project'), 'Relocation was not committed to the chosen project');
     await click('shell:common.close');
     await waitFor(() => Boolean(document.querySelector('.file-tree button[title="new.txt"]')), 'The file panel did not load the new folder');
     assert(!missing(), 'The old missing-folder warning survived relocation');
-    await click('shell:preferences.open'); await click('shell:settings.project'); await click('shell:projectManagement.archive');
-    assert(!document.querySelector('.workspace-row') && document.querySelector('.project-management-archived')?.textContent?.includes('Recovered project'), 'Archive remained in the sidebar or was unavailable to restore');
-    await click('shell:projectManagement.restore');
-    assert(document.querySelector('.workspace-row'), 'Restore did not return the project to the sidebar');
-    await click('shell:projectManagement.remove'); await click('shell:common.cancel');
-    assert(document.querySelector('.workspace-row'), 'Cancel removed the project');
-    await click('shell:projectManagement.remove'); await click('shell:projectManagement.confirmRemove');
-    assert(!document.querySelector('.workspace-row') && changes.map(change => change.action).join(',') === 'relocate,archive,restore,remove', 'The confirmation did not remove the project');
+    await activate(current.id);
+    await projectAction('shell:projectManagement.archive');
+    assert(!row(target.id) && activeProject() === current.name, 'Archive kept the project in the active list or switched projects');
+    await act(async () => { document.querySelector<HTMLButtonElement>('.workspace-archive-toggle')!.click(); await tick(); });
+    assert(row(target.id, true)?.textContent?.includes('Recovered project'), 'The archive is missing from the sidebar');
+    await projectAction('shell:projectManagement.restore', target.id, true);
+    assert(row(target.id) && !row(target.id, true) && activeProject() === current.name, 'Restore did not return the project without switching');
+    await projectAction('shell:projectManagement.archive', current.id);
+    assert(activeProject() === 'Recovered project', 'Archiving the current project did not select an available project');
+    await projectAction('shell:projectManagement.restore', current.id, true);
+    assert(activeProject() === 'Recovered project', 'Restoring the previously selected project stole the active workspace');
+    await activate(current.id);
+    await projectAction('shell:projectManagement.remove'); await click('shell:common.cancel');
+    assert(row(target.id), 'Cancel removed the project');
+    await projectAction('shell:projectManagement.remove'); await click('shell:projectManagement.confirmRemove');
+    assert(!row(target.id) && activeProject() === current.name
+      && changes.filter(change => change.id === target.id).map(change => change.action).join(',') === 'rename,relocate,archive,restore,remove'
+      && changes.filter(change => change.id === current.id).map(change => change.action).join(',') === 'archive,restore', 'Project operations targeted the wrong row or removed the active project');
   },
   'UI-TOOLTIPS: icon-only controls explain hover and focus without changing disabled actions': async () => {
     let presses = 0;
