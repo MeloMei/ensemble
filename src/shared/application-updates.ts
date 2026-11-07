@@ -20,6 +20,7 @@ export interface AppUpdateState {
   release?: AppUpdateRelease;
   downloadedBytes?: number;
   totalBytes?: number;
+  installFailure?: { version: string; status: 'error' | 'rollback-failed' };
   error?: string;
   errorCode?: 'rate-limited' | 'forbidden';
   retryAt?: string;

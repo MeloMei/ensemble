@@ -202,6 +202,29 @@ test('one update lease rejects in-flight work and protects desktop and external 
   } finally { await service.shutdown(); await rm(f.root, { recursive: true, force: true }); }
 });
 
+test('installation failure remains visible after successfully checking for a newer release', { skip: process.platform !== 'darwin' }, async () => {
+  const f = await fixture(); const token = randomUUID(); const cancellations: string[] = [];
+  const updates = new ApplicationUpdates({ ...f.options,
+    fetch: (async () => Response.json(release(Buffer.from('archive')))) as typeof fetch,
+    async cancelInstall(value) { cancellations.push(value); } });
+  try {
+    await mkdir(join(f.data, 'updates'));
+    await writeFile(join(f.data, 'updates', 'result.json'), JSON.stringify({ status: 'error', token, version: '0.8.2' }));
+    await updates.load();
+    assert.deepEqual(updates.snapshot.installFailure, { version: '0.8.2', status: 'error' });
+    assert.deepEqual(cancellations, [token]);
+    const checked = await updates.check();
+    assert.equal(checked.phase, 'available');
+    assert.equal(checked.release?.version, '0.8.2');
+    assert.deepEqual(checked.installFailure, { version: '0.8.2', status: 'error' });
+    const manuallyUpdated = new ApplicationUpdates({ ...f.options, currentVersion: '0.8.2' });
+    try {
+      await manuallyUpdated.load();
+      assert.equal(manuallyUpdated.snapshot.installFailure, undefined);
+    } finally { await manuallyUpdated.dispose(); }
+  } finally { await updates.dispose(); await rm(f.root, { recursive: true, force: true }); }
+});
+
 test('renderer readiness keeps the backend frozen until the matching installed receipt commits', async () => {
   const f = await fixture(); const token = randomUUID(); const cancellations: string[] = [];
   const updates = new ApplicationUpdates({ ...f.options, async cancelInstall(value) { cancellations.push(value); } });

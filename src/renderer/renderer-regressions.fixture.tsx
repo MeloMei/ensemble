@@ -855,6 +855,10 @@ const cases: Record<string, () => Promise<void>> = {
     assert(installs === 0 && !button('shell:updates.install').disabled, 'A completed download installed without confirmation');
     await click('shell:updates.install');
     assert(Number(installs) === 1, 'The explicit restart and install action was not sent');
+    state = { ...state, phase: 'available', installFailure: { version: release.version, status: 'error' } };
+    await act(async () => { publish(state); await tick(); });
+    assert(document.querySelector('.application-update-notice')?.textContent?.includes(translate('shell:updates.noticeInstallFailed', { version: release.version })), 'The update banner hid the failed installation');
+    assert(document.querySelector('.application-update-settings [role=alert]')?.textContent?.includes(translate('shell:updates.installFailure.error', { version: release.version })), 'Settings did not explain the rollback or manual upgrade option');
     await render(<div />);
     assert(unsubscribed === 1, 'Update notifications remain subscribed after unmount');
   },

@@ -270,10 +270,8 @@ export class ApplicationUpdates {
       this.startupConfirmation = { promise, resolve, reject };
       this.state.phase = 'installing';
     }
-    if (!confirming && result.success && result.data.status !== 'installed' && !semver.gt(this.options.currentVersion, result.data.version)) {
-      this.state.error = result.data.status === 'rollback-failed'
-        ? '更新未完成，自动恢复也未完成。请保留安装目录中的恢复副本，查看更新日志后处理。'
-        : '上次更新未完成，已恢复原来的应用。请重新检查后重试。';
+    if (!confirming && result.success && result.data.status !== 'installed' && semver.lt(this.options.currentVersion, result.data.version)) {
+      this.state.installFailure = { version: result.data.version, status: result.data.status };
       await this.options.cancelInstall(result.data.token);
     }
     this.changed();
@@ -414,7 +412,7 @@ export class ApplicationUpdates {
         }
         signal.throwIfAborted();
         await saveJson(join(this.updatePath, 'pending.json'), { token, version: release.version });
-        this.state = { ...this.state, phase: 'installing', error: undefined }; this.changed();
+        this.state = { ...this.state, phase: 'installing', error: undefined, installFailure: undefined }; this.changed();
         this.options.requestQuit();
         return this.snapshot;
       } catch (error) {
