@@ -37,9 +37,15 @@ export function useApplicationUpdates() {
 
 export function ApplicationUpdateNotice({ state, onOpen }: { state: AppUpdateState | null; onOpen: () => void }) {
   const { t } = useTranslation('shell');
-  if (!state?.release || !['available', 'downloading', 'ready', 'installing', 'error'].includes(state.phase)) return null;
+  if (!state) return null;
+  const failure = state.installFailure;
+  const release = state.release;
+  const message = failure ? t('updates.noticeInstallFailed', { version: failure.version })
+    : release && ['available', 'downloading', 'ready', 'installing', 'error'].includes(state.phase)
+      ? t(state.phase === 'ready' ? 'updates.noticeReady' : 'updates.noticeAvailable', { version: release.version }) : undefined;
+  if (!message) return null;
   return <div className="application-update-notice" role="status">
-    <Download size={15} aria-hidden="true" /><span>{t(state.phase === 'ready' ? 'updates.noticeReady' : 'updates.noticeAvailable', { version: state.release.version })}</span>
+    {failure ? <CircleAlert size={15} aria-hidden="true" /> : <Download size={15} aria-hidden="true" />}<span>{message}</span>
     <button type="button" onClick={onOpen}>{t('updates.view')}</button>
   </div>;
 }
@@ -94,6 +100,7 @@ export function ApplicationUpdateSettings({ state, error, pending, run }: Return
         </div><p className="application-update-note">{t('updates.installNote')}</p>
       </div>}
     </>}
+    {state?.installFailure && <div className="application-update-error" role="alert"><CircleAlert size={15} aria-hidden="true" /><p>{t(`updates.installFailure.${state.installFailure.status}`, { version: state.installFailure.version })}</p></div>}
     {failure && <div className="application-update-error" role="alert"><CircleAlert size={15} aria-hidden="true" /><div><p>{failure}</p>
       {retryAt && <small><time dateTime={retryAt}>{t('updates.retryAt', { time: formatCheckTime(retryAt) })}</time></small>}
     </div></div>}

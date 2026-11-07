@@ -57,7 +57,7 @@ Failures display a reason. If installation fails, the updater attempts to restor
 
 Automatic updates only accept packages compatible with the current local data format. If a release needs a data migration or does not declare compatibility, Ensemble keeps the current application and asks you to follow its manual upgrade instructions.
 
-Older versions without an update entry, including the original `0.8.1` release, need one manual installation of a version containing this feature. Subsequent upgrades can happen inside the application. Before manually replacing an app, quit the desktop and stop the shared backend as described below.
+Version `0.8.8` is the first release with a standalone macOS installer. The installed version runs the upgrade. Manually install `0.8.8` or newer once if your current release has no update entry or if `0.8.7` or earlier reopens at the same version after installing. Before replacing the app, quit the desktop and stop the shared backend as described below.
 
 ## Choose the interface language
 
