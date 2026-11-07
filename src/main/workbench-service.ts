@@ -16,7 +16,7 @@ import { createCursorDescriptor } from './providers/cursor';
 import { createQoderDescriptor } from './providers/qoder';
 import { loadPluginProviders } from './providers/plugins';
 import { TerminalManager } from './terminal-manager';
-import { WorkspaceFiles } from './workspace-files';
+import { MissingWorkspaceDirectoryError, WorkspaceFiles } from './workspace-files';
 import type { Snapshot } from '../shared/types';
 import { PROMPT_TEXT_LIMIT } from '../shared/types';
 import type { TerminalOutputEvent } from '../shared/backend';
@@ -78,7 +78,10 @@ export async function createWorkbenchService(options: {
     const publicSnapshot = (snapshot: Snapshot): Snapshot => ({ version: 1, sessions: snapshot.sessions, workflows: snapshot.workflows,
       providers: snapshot.providers.map(provider => health.describe(provider)), dataPath: snapshot.dataPath,
       pluginPath: snapshot.pluginPath, pluginErrors: snapshot.pluginErrors, terminals: snapshot.terminals, mails: snapshot.mails,
-      workspaces: snapshot.workspaces.map(workspace => ({ ...workspace, ...(managedWorktrees?.metadata(workspace.id) ? { worktree: managedWorktrees.metadata(workspace.id) } : {}) })),
+      workspaces: snapshot.workspaces.map(workspace => {
+        const worktree = managedWorktrees?.metadata(workspace.id);
+        return { ...workspace, ...(worktree ? { worktree } : managedWorktrees?.isManaged(workspace.id) ? { managedWorktreeAlias: true as const } : {}) };
+      }),
       collaborationEventSeq: store.latestEventSeq(), collaboration: {
       ...store.state.collaboration,
       identities: store.state.collaboration.identities.map(({ tokenHash: _, ...identity }) => identity),
@@ -231,6 +234,19 @@ export async function createWorkbenchService(options: {
       return parsed.mode === 'worktree' ? managedWorktrees!.create(parsed) : engine.createWorkspace(parsed);
     });
     handle('workbench:update-workspace', (_event, id: unknown, input: unknown) => engine.updateWorkspace(idSchema.parse(id), z.object({ name: z.string().trim().min(1).max(200).optional(), pinned: z.boolean().optional() }).strict().parse(input)));
+    handle('workbench:manage-workspace', (_event, id, input) => {
+      const workspaceId = idSchema.parse(id);
+      const change = z.union([
+        z.object({ action: z.literal('relocate'), cwd: cwdSchema }).strict(),
+        z.object({ action: z.enum(['archive', 'restore', 'remove']) }).strict(),
+      ]).parse(input);
+      return engine.manageWorkspace(workspaceId, change, destination => {
+        managedWorktrees!.assertOrdinaryProjectChange(workspaceId, destination);
+        if (change.action !== 'restore' && terminalManager.metadata().some(terminal => terminal.workspaceId === workspaceId && terminal.status === 'running')) {
+          throw new Error('请先停止该项目的终端。');
+        }
+      });
+    });
     handle('workbench:activate-tab', (_event, workspaceId: unknown, tabId: unknown) => engine.activateTab(idSchema.parse(workspaceId), idSchema.parse(tabId)));
     handle('workbench:close-tab', (_event, workspaceId: unknown, tabId: unknown) => {
       const workspace = engine.workspace(idSchema.parse(workspaceId));
@@ -256,7 +272,11 @@ export async function createWorkbenchService(options: {
       if (!['http:', 'https:'].includes(url.protocol) || !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) || url.username || url.password) throw new Error('预览仅支持本机 localhost 页面。');
       engine.addTab(id, { id: randomUUID(), kind: 'preview', url: url.toString() });
     });
-    handle('workbench:list-files', (_event, workspaceId: unknown, path: unknown) => workspaceFiles.list(engine.workspace(idSchema.parse(workspaceId)).cwd, z.string().max(4096).optional().parse(path)));
+    handle('workbench:list-files', async (_event, workspaceId, path) => {
+      const cwd = engine.workspace(idSchema.parse(workspaceId)).cwd;
+      try { return await workspaceFiles.list(cwd, z.string().max(4096).optional().parse(path)); }
+      catch (error) { if (error instanceof MissingWorkspaceDirectoryError) return null; throw error; }
+    });
     handle('workbench:read-file', async (_event, workspaceId: unknown, path: unknown) => {
       try { return await workspaceFiles.read(engine.workspace(idSchema.parse(workspaceId)).cwd, z.string().min(1).max(4096).parse(path)); }
       catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }

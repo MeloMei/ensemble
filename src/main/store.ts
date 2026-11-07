@@ -92,7 +92,7 @@ const savedSchema = record({
     })), createdAt: z.string(), updatedAt: z.string(),
   })),
   workspaces: z.array(record({
-    id: z.string(), name: z.string(), cwd: z.string(), pinned: z.boolean(),
+    id: z.string(), name: z.string(), cwd: z.string(), pinned: z.boolean(), archived: z.boolean().optional(),
     tabs: z.array(z.discriminatedUnion('kind', [
       record({ id: z.string(), kind: z.literal('agent'), sessionId: z.string() }),
       record({ id: z.string(), kind: z.literal('terminal'), terminalId: z.string() }),
@@ -164,7 +164,7 @@ export class StateStore {
     const removed = this.state.worktreeOperations?.filter(operation => operation.status === 'removed') ?? [];
     const retired = (cwd: string) => removed.some(operation => workspacePathContains(operation.path, cwd));
     this.state.workspaces = this.state.workspaces.filter(workspace => !retired(workspace.cwd));
-    for (const item of [...this.state.sessions, ...this.state.workflows]) {
+    if (migratingWorkspaces) for (const item of [...this.state.sessions, ...this.state.workflows]) {
       if (retired(item.cwd)) continue;
       if (!this.state.workspaces.some(workspace => workspace.cwd === item.cwd)) {
         this.state.workspaces.push({ id: randomUUID(), name: item.cwd.split('/').filter(Boolean).pop() || item.cwd,

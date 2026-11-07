@@ -46,8 +46,14 @@ export interface Workspace {
   splitRatio?: number;
   createdAt: string;
   updatedAt: string;
+  archived?: boolean;
   worktree?: ManagedWorktree;
+  managedWorktreeAlias?: true;
 }
+
+export type WorkspaceManagement =
+  | { action: 'relocate'; cwd: string }
+  | { action: 'archive' | 'restore' | 'remove' };
 
 export interface ManagedWorktree {
   repoRoot: string; path: string; branch: string; baseSha: string; createdAt: string;
@@ -262,6 +268,7 @@ export interface WorkbenchAPI {
   openPluginDirectory(): Promise<void>;
   createWorkspace(input: CreateWorkspaceInput): Promise<string>;
   removeWorktree(workspaceId: string): Promise<void>;
+  manageWorkspace(workspaceId: string, input: WorkspaceManagement): Promise<void>;
   updateWorkspace(id: string, input: { name?: string; pinned?: boolean }): Promise<void>;
   activateTab(workspaceId: string, tabId: string): Promise<void>;
   closeTab(workspaceId: string, tabId: string): Promise<void>;
@@ -271,7 +278,7 @@ export interface WorkbenchAPI {
   resizeTerminal(terminalId: string, columns: number, rows: number): Promise<void>;
   stopTerminal(terminalId: string): Promise<void>;
   createPreview(workspaceId: string, url: string): Promise<void>;
-  listFiles(workspaceId: string, relativePath?: string): Promise<FileEntry[]>;
+  listFiles(workspaceId: string, relativePath?: string): Promise<FileEntry[] | null>;
   readFile(workspaceId: string, relativePath: string): Promise<FileContent | null>;
   gitState(workspaceId: string): Promise<GitState>;
   fileDiff(workspaceId: string, relativePath: string): Promise<FileDiff>;

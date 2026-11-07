@@ -6,7 +6,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { I18nextProvider } from 'react-i18next';
 import { MotionConfig } from 'framer-motion';
 import { i18n, translate } from '../shared/i18n';
-import type { DiagnosticEntry, FileContent, McpSettingsView, Message, PromptInput, ProviderInfo, Session, Snapshot, UnsavedFileSummary, Workflow, WorkflowInput, Workspace } from '../shared/types';
+import type { DiagnosticEntry, FileContent, McpSettingsView, Message, PromptInput, ProviderInfo, Session, Snapshot, UnsavedFileSummary, Workflow, WorkflowInput, Workspace, WorkspaceManagement } from '../shared/types';
 import type { BackendConnectionState, SessionHistoryWindow } from '../shared/backend';
 import { SettingsDialog } from './SettingsDialog';
 import { LanguageProvider } from './language';
@@ -42,7 +42,7 @@ const applicationUpdateApi = { getApplicationUpdate: async () => installedUpdate
 const idleUpdates: ReturnType<typeof useApplicationUpdates> = { state: installedUpdateState, error: '', pending: false, run: async operation => { await operation(); } };
 function ProjectSettings({ workspace, sessions, perform, onClose }: { workspace: Workspace; sessions: Session[]; perform: Perform; onClose: () => void }) {
   return <SettingsDialog snapshot={null} workspace={workspace} sessions={sessions} perform={perform} pending={new Set()} updates={idleUpdates}
-    initialSection="project" openSession={() => {}} onClose={onClose} />;
+    initialSection="project" openSession={() => {}} onProjectRestored={() => {}} onClose={onClose} />;
 }
 const tick = () => new Promise<void>(resolve => setTimeout(resolve, 0));
 async function frames(count = 3) {
@@ -711,6 +711,76 @@ const cases: Record<string, () => Promise<void>> = {
     visibleConfirmation(); await click('workspace:tools.discardChanges');
     await waitFor(() => !document.querySelector('.settings-layout'), 'Confirmed discard did not close settings');
     assertWorkspace();
+  },
+  'UI-PROJECT-MANAGEMENT: missing folder, relocation, archive and removal use project settings': async () => {
+    const original = { ...workspace, id: 'project-management', name: 'Moved project', cwd: '/old-project' };
+    let snapshot: Snapshot = { ...collaborationSnapshot([]), workspaces: [original], providers: [provider] };
+    let publish: (snapshot: Snapshot) => void = () => {};
+    let listingError = true;
+    let unsaved = true;
+    const changes: WorkspaceManagement[] = [];
+    const update = (project?: Workspace) => {
+      snapshot = { ...snapshot, workspaces: project ? [project] : [] };
+      publish(snapshot);
+    };
+    window.workbench = {
+      ...applicationUpdateApi, snapshot: async () => snapshot,
+      subscribe: (listener: (value: Snapshot) => void) => { publish = listener; return () => {}; },
+      getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
+      onLanguageChanged: () => () => {}, watchSessions: async () => {}, providerHealth: async () => [provider], setUnsavedFiles: () => {},
+      listFiles: async () => {
+        if (listingError) throw new Error('EACCES fixture');
+        return snapshot.workspaces[0]?.cwd === original.cwd ? null : [{ path: 'new.txt', name: 'new.txt', kind: 'file', size: 1 }];
+      },
+      gitState: async () => ({ available: false }), listSkills: async () => [],
+      mcpSettings: async () => ({ content: '{}', revision: 'initial', servers: [] }), notificationStatus: async () => ({ supported: true, state: 'idle' }),
+      chooseDirectory: async () => '/new-project',
+      updateWorkspace: async (_id: string, input: { name: string }) => update({ ...snapshot.workspaces[0], name: input.name }),
+      manageWorkspace: async (_id: string, input: WorkspaceManagement) => {
+        if (unsaved && input.action !== 'restore') throw new Error('WORKBENCH_UNSAVED_FILES');
+        changes.push(input);
+        const current = snapshot.workspaces[0];
+        if (input.action === 'relocate') update({ ...current, cwd: input.cwd });
+        if (input.action === 'archive' || input.action === 'restore') update({ ...current, archived: input.action === 'archive' });
+        if (input.action === 'remove') update();
+      },
+    } as unknown as Window['workbench'];
+    await render(<LanguageProvider initial={{ preference: 'en', language: 'en' }}><App /></LanguageProvider>);
+    const missing = () => document.querySelector('.file-review-panel')?.textContent?.includes(translate('workspace:files.projectDirectoryMissing'));
+    await waitFor(() => document.querySelector('.file-review-panel [role=alert]')?.textContent === 'EACCES fixture', 'Permission error was not shown');
+    assert(!missing(), 'Permission error was treated as a missing folder');
+    listingError = false;
+    await click('workspace:files.refresh');
+    await waitFor(() => Boolean(missing()), 'Missing folder did not offer recovery');
+    await click('workspace:files.openProjectSettings');
+    assert(document.querySelector('.project-management-name')?.checkVisibility(), 'Recovery did not open Project settings');
+    await change(input('.project-management-name input'), 'Recovered project');
+    await click('shell:projectManagement.rename');
+    assert(snapshot.workspaces[0].name === 'Recovered project', 'Rename did not use the project settings');
+    await click('workspace:tools.newSkill');
+    const skill = input('.tools-editor textarea');
+    await change(skill, 'Keep until discard is confirmed');
+    await click('shell:projectManagement.relocate');
+    assert(changes.length === 0, 'Directory selection changed the binding before confirmation');
+    await click('shell:projectManagement.confirmRelocate');
+    await click('workspace:tools.keepEditing');
+    assert(skill.value === 'Keep until discard is confirmed' && changes.length === 0, 'Keeping tool edits proceeded with relocation');
+    await click('shell:projectManagement.confirmRelocate');
+    await click('workspace:tools.discardChanges');
+    assert([...document.querySelectorAll('dialog [role=alert]')].some(element => element.textContent === translate('shell:projectManagement.unsaved')), 'The unsaved-file guard had no readable error');
+    unsaved = false;
+    await click('shell:projectManagement.confirmRelocate');
+    await click('shell:common.close');
+    await waitFor(() => Boolean(document.querySelector('.file-tree button[title="new.txt"]')), 'The file panel did not load the new folder');
+    assert(!missing(), 'The old missing-folder warning survived relocation');
+    await click('shell:preferences.open'); await click('shell:settings.project'); await click('shell:projectManagement.archive');
+    assert(!document.querySelector('.workspace-row') && document.querySelector('.project-management-archived')?.textContent?.includes('Recovered project'), 'Archive remained in the sidebar or was unavailable to restore');
+    await click('shell:projectManagement.restore');
+    assert(document.querySelector('.workspace-row'), 'Restore did not return the project to the sidebar');
+    await click('shell:projectManagement.remove'); await click('shell:common.cancel');
+    assert(document.querySelector('.workspace-row'), 'Cancel removed the project');
+    await click('shell:projectManagement.remove'); await click('shell:projectManagement.confirmRemove');
+    assert(!document.querySelector('.workspace-row') && changes.map(change => change.action).join(',') === 'relocate,archive,restore,remove', 'The confirmation did not remove the project');
   },
   'UI-TOOLTIPS: icon-only controls explain hover and focus without changing disabled actions': async () => {
     let presses = 0;

@@ -39,7 +39,12 @@ export class WorkspaceToolDraftStore {
   discard(workspace: DraftWorkspace): boolean {
     const current = this.get(workspace);
     if (current.savingSkill || current.savingMcp) return false;
-    this.update(workspace, empty);
+    const skillDirty = hasSkillEdits(current.skill);
+    if (skillDirty || hasMcpEdits(current)) this.update(workspace, value => ({
+      ...value,
+      skill: skillDirty ? undefined : value.skill,
+      mcpDraft: { content: value.mcp?.content ?? '' },
+    }));
     return true;
   }
   private entry(workspace: DraftWorkspace): Entry {

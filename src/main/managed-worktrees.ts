@@ -68,6 +68,15 @@ export class ManagedWorktrees {
       baseSha: operation.baseSha, createdAt: operation.createdAt, ownership: 'created', status: operation.status as 'ready' | 'removing' } : undefined;
   }
 
+  isManaged(workspaceId: string): boolean { return Boolean(this.owner(workspaceId)); }
+
+  assertOrdinaryProjectChange(workspaceId: string, destination?: string): void {
+    if (this.isManaged(workspaceId) || (destination && this.store.state.worktreeOperations?.some(operation => contains(operation.path, destination)))) {
+      throw new Error('托管 worktree 及其目录别名必须使用独立的 worktree 管理操作。');
+    }
+    if (this.accesses.has(this.resource(workspaceId))) throw new Error('文件或配置操作未结束，请稍后再试。');
+  }
+
   assertWorkspaceAvailable(workspaceId: string): void {
     const owner = this.owner(workspaceId);
     if (owner?.status === 'removed') throw new Error('这个工作区已回收，请重新选择项目。');

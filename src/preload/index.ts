@@ -124,6 +124,10 @@ const api: WorkbenchAPI = {
     if (unsavedFiles().count) throw new Error('WORKBENCH_UNSAVED_FILES');
     return ipcRenderer.invoke('workbench:remove-worktree', id);
   },
+  manageWorkspace: async (id, input) => {
+    if (input.action !== 'restore' && unsavedFiles().count) throw new Error('WORKBENCH_UNSAVED_FILES');
+    return ipcRenderer.invoke('workbench:manage-workspace', id, input);
+  },
   updateWorkspace: (id, input) => ipcRenderer.invoke('workbench:update-workspace', id, input),
   activateTab: (workspaceId, tabId) => ipcRenderer.invoke('workbench:activate-tab', workspaceId, tabId),
   closeTab: (workspaceId, tabId) => ipcRenderer.invoke('workbench:close-tab', workspaceId, tabId),

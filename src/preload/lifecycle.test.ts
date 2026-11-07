@@ -43,6 +43,9 @@ test('preload aggregates file and tool drafts for native close and blocks worktr
     requestId: 'close-request', error: null, unsavedFiles: { count: 3, names: ['pending.ts', 'Project · Skill review', 'Project · MCP'] },
   }]]);
   await assert.rejects(api.removeWorktree('managed'), /WORKBENCH_UNSAVED_FILES/);
+  for (const action of [{ action: 'relocate', cwd: '/other' }, { action: 'archive' }, { action: 'remove' }] as const) {
+    await assert.rejects(api.manageWorkspace('project', action), /WORKBENCH_UNSAVED_FILES/);
+  }
   assert.deepEqual(calls, []);
   api.setUnsavedFiles({ count: 0, names: [] });
   await assert.rejects(api.removeWorktree('managed'), /WORKBENCH_UNSAVED_FILES/);
@@ -52,7 +55,10 @@ test('preload aggregates file and tool drafts for native close and blocks worktr
   browserEvents.get('beforeunload')!({ preventDefault: () => { prevented = true; }, returnValue: '' });
   assert.equal(prevented, false);
   await api.removeWorktree('managed');
-  assert.deepEqual(calls, [['workbench:remove-worktree', 'managed']]);
+  await api.manageWorkspace('project', { action: 'remove' });
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
+    ['workbench:remove-worktree', 'managed'], ['workbench:manage-workspace', 'project', { action: 'remove' }],
+  ]);
 });
 
 test('preload preserves the observed attempt when forwarding Stop', async () => {

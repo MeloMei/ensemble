@@ -189,9 +189,14 @@ async function statusRecords(root: string): Promise<{ repoRoot: string; records:
   return { repoRoot: repository.stdout.trim(), records };
 }
 
+export class MissingWorkspaceDirectoryError extends Error {}
+
 export class WorkspaceFiles {
   async list(cwd: string, relativePath = ''): Promise<FileEntry[]> {
-    const root = await workspaceRoot(cwd);
+    const root = await workspaceRoot(cwd).catch(error => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new MissingWorkspaceDirectoryError(error.message, { cause: error });
+      throw error;
+    });
     const directory = await scopedPath(root, relativePath);
     if (!(await stat(directory)).isDirectory()) throw new Error('Path is not a directory');
     const entries: FileEntry[] = [];
