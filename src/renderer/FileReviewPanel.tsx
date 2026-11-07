@@ -19,13 +19,14 @@ function persistedNotes(workspaceId: string): ReviewNote[] {
   catch { return []; }
 }
 
-export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [], onFeedback }: {
-  workspace: Workspace; refreshKey: string; perform: Perform; sessions?: Session[]; onFeedback?(text: string): void;
+export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [], onFeedback, onOpenProjectSettings }: {
+  workspace: Workspace; refreshKey: string; perform: Perform; sessions?: Session[]; onFeedback?(text: string): void; onOpenProjectSettings?(): void;
 }) {
   const { t } = useTranslation('workspace');
   const [view, setView] = useState<'files' | 'changes' | 'pr'>('files');
   const [directory, setDirectory] = useState('');
   const [entries, setEntries] = useState<FileEntry[]>([]);
+  const [missingDirectory, setMissingDirectory] = useState(false);
   const [git, setGit] = useState<GitState | null>(null);
   const [selected, setSelected] = useState<{ path: string; mode: 'content' | 'diff' } | null>(null);
   const [loadedPath, setLoadedPath] = useState<string | null>(null);
@@ -61,9 +62,21 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
   };
   const refresh = async (nextDirectory = directory) => {
     const token = ++directoryGeneration.current;
-    const [listing, status] = await Promise.all([window.workbench.listFiles(workspace.id, nextDirectory), window.workbench.gitState(workspace.id)]);
+    let listing: FileEntry[] | null;
+    try { listing = await window.workbench.listFiles(workspace.id, nextDirectory); }
+    catch (failure) {
+      if (token !== directoryGeneration.current) return;
+      setMissingDirectory(false);
+      throw failure;
+    }
     if (token !== directoryGeneration.current) return;
-    setEntries(listing); setGit(status); setDirectory(nextDirectory);
+    setMissingDirectory(listing === null);
+    setEntries(listing ?? []); setDirectory(listing === null ? '' : nextDirectory);
+    if (listing === null) { setGit(null); setView('files'); return; }
+    const status = await window.workbench.gitState(workspace.id);
+    if (token !== directoryGeneration.current) return;
+    setGit(status);
+    if (status.error && !/not a git repository/i.test(status.error)) throw new Error(status.error);
   };
   const refreshPullRequest = async () => {
     setReview(await window.workbench.reviewPullRequest(workspace.id));
@@ -105,7 +118,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
   };
 
   useEffect(() => {
-    setDirectory(''); setEntries([]); setGit(null); setSelected(null); setLoadedPath(null); setDiff(null);
+    setDirectory(''); setEntries([]); setMissingDirectory(false); setGit(null); setSelected(null); setLoadedPath(null); setDiff(null);
     setPreview(null); setReview(null); setNotes({ workspaceId: workspace.id, items: persistedNotes(workspace.id) });
     return () => { directoryGeneration.current++; fileGeneration.current++; };
   }, [workspace.id]);
@@ -149,14 +162,18 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
       <span className="file-panel-title"><PanelRight size={15} />{t('files.title')}</span>
       <IconButton label={t('files.refresh')} disabled={!!busy} onClick={() => run('refresh', () => view === 'pr' ? refreshPullRequest() : refresh())}><RefreshCw size={14} /></IconButton>
     </header>
+    {missingDirectory && <div className="pane-note" role="status">
+      <p>{t('files.projectDirectoryMissing')}</p>
+      {onOpenProjectSettings && <button className="button small" onClick={onOpenProjectSettings}>{t('files.openProjectSettings')}</button>}
+    </div>}
     <div className="file-view-tabs" data-view={view} role="group" aria-label={t('files.views')}>
       <button className={view === 'files' ? 'active' : ''} aria-pressed={view === 'files'} onClick={() => setView('files')}><Files size={13} />{t('files.files')}</button>
-      <button className={view === 'changes' ? 'active' : ''} aria-pressed={view === 'changes'} onClick={() => setView('changes')}><GitCompareArrows size={13} />{t('files.changes')}{git?.available && <span>{git.changes.length}</span>}</button>
-      <button className={view === 'pr' ? 'active' : ''} aria-pressed={view === 'pr'} onClick={() => { setView('pr'); run('pr', refreshPullRequest); }}><GitPullRequest size={13} />PR / CI</button>
+      <button disabled={missingDirectory} className={view === 'changes' ? 'active' : ''} aria-pressed={view === 'changes'} onClick={() => setView('changes')}><GitCompareArrows size={13} />{t('files.changes')}{git?.available && <span>{git.changes.length}</span>}</button>
+      <button disabled={missingDirectory} className={view === 'pr' ? 'active' : ''} aria-pressed={view === 'pr'} onClick={() => { setView('pr'); run('pr', refreshPullRequest); }}><GitPullRequest size={13} />PR / CI</button>
     </div>
-    <div className="file-branch"><GitBranch size={13} /><span>{git?.available ? git.branch : t('files.notGitLabel')}</span>
+    {!missingDirectory && <div className="file-branch"><GitBranch size={13} /><span>{git?.available ? git.branch : t('files.notGitLabel')}</span>
       {git?.available && <button className="review-text-button" disabled={!!busy || dirty} onClick={() => run('preview', async () => setPreview(await window.workbench.gitCommitPreview(workspace.id)))}>{t('files.commitPreview')}</button>}
-    </div>
+    </div>}
     {error && <div className="pane-note error-text" role="alert">{typeof error === 'string' ? error : renderDisplayText('', error)}</div>}
     {busy && <div className="review-busy" role="status"><LoaderCircle className="spin" size={12} />{t('files.processing')}</div>}
     {view === 'pr' ? <section className="pr-review-body">
@@ -179,7 +196,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
         {entries.map(entry => <button key={entry.path} className={`tree-row ${entry.kind} ${selected?.path === entry.path ? 'selected' : ''}`} title={entry.path}
           onClick={() => run('open', () => entry.kind === 'directory' ? refresh(entry.path) : load(entry.path, 'content'))}>
           {entry.kind === 'directory' ? <Folder size={14} /> : <FileCode2 size={14} />}<span className="tree-name">{entry.name}</span>
-        </button>)}{!entries.length && <div className="pane-note">{t('files.emptyDirectory')}</div>}
+        </button>)}{!missingDirectory && !entries.length && <div className="pane-note">{t('files.emptyDirectory')}</div>}
       </> : !git?.available ? <div className="pane-note">{git?.error || t('files.notGit')}</div> : !git.changes.length ? <div className="pane-note">{t('files.clean')}</div> : git.changes.map(change => <div className="review-change-row" key={change.path}>
         <button className={`tree-row ${selected?.path === change.path ? 'selected' : ''}`} onClick={() => run('open', () => load(change.path, 'diff'))} title={change.path}>
           <GitCompareArrows size={13} /><span className="tree-name">{change.path}</span><code>{change.status}</code>

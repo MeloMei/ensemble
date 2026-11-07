@@ -131,7 +131,7 @@ export function App() {
   }, []);
   useEffect(() => () => clearTimeout(toastTimer.current), []);
 
-  const workspaces = snapshot?.workspaces ?? [];
+  const workspaces = snapshot?.workspaces.filter(item => !item.archived) ?? [];
   const sessions = snapshot?.sessions ?? [];
   const workflows = snapshot?.workflows ?? [];
   const providers = snapshot?.providers ?? [];
@@ -184,7 +184,7 @@ export function App() {
       const current = await window.workbench.snapshot();
       const session = current.sessions.find(item => item.id === id);
       if (!session) throw new Error(t('app.sessionMissing'));
-      const destination = current.workspaces.find(item => item.cwd === session.cwd)?.id;
+      const destination = current.workspaces.find(item => !item.archived && item.cwd === session.cwd)?.id;
       if (readOnly || !destination) {
         setReadingSessionId(id); setPage('history'); setDialog(null); return;
       }
@@ -271,7 +271,7 @@ export function App() {
             items[next]?.focus({ preventScroll: true });
           }}><IconButton label={t('app.addTab')} aria-haspopup="menu" aria-expanded={tabMenu} onClick={() => setTabMenu(value => !value)}><Plus size={17} /></IconButton><AnimatePresence>{tabMenu && <><button key="dismiss" className="menu-dismiss" tabIndex={-1} aria-label={t('app.dismissAddMenu')} onClick={() => setTabMenu(false)} /><motion.div key="menu" className="tab-menu" role="menu" aria-label={t('app.addTabMenu')} initial={reducedMotion ? false : "initial"} animate="animate" exit={reducedMotion ? undefined : "exit"} variants={motionPopover}><button role="menuitem" onClick={() => { setDialog('agent'); setTabMenu(false); }}><MessageSquare size={15} />{t('app.newAgentSession')}</button><button role="menuitem" disabled={pending.has('create-terminal')} onClick={() => { setTabMenu(false); void perform('create-terminal', () => window.workbench.createTerminal(workspace.id)); }}><TerminalSquare size={15} />{t('app.openLocalTerminal')}</button><button role="menuitem" onClick={() => { setDialog('preview'); setTabMenu(false); }}><Globe size={15} />{t('app.addPreview')}</button></motion.div></>}</AnimatePresence></div></div>
           <WorkspacePanes workspace={workspace} secondary={!!secondaryTab} perform={perform} primary={renderTab(activeTab)} other={renderTab(secondaryTab)} />
-        </div><motion.div className="file-panel-transition" initial={false} animate={{ width: rightPane ? 'var(--file-width)' : 0, opacity: rightPane ? 1 : 0 }} transition={reducedMotion ? { duration: 0 } : SPRING_SNAPPY} inert={!rightPane} aria-hidden={!rightPane}><FileReviewPanel key={workspace.id} workspace={workspace} refreshKey={refreshKey} perform={perform} sessions={sessions} onFeedback={activeSession ? text => { const draft = currentDrafts.current[activeSession.id] ?? activeSession.draft ?? { text: '' }; updateDraft(activeSession.id, { ...draft, text: [draft.text, text].filter(Boolean).join('\n\n') }); } : undefined} /></motion.div></div> : <FirstTask providers={providers} connected={connected} perform={perform} pending={pending} />)}
+        </div><motion.div className="file-panel-transition" initial={false} animate={{ width: rightPane ? 'var(--file-width)' : 0, opacity: rightPane ? 1 : 0 }} transition={reducedMotion ? { duration: 0 } : SPRING_SNAPPY} inert={!rightPane} aria-hidden={!rightPane}><FileReviewPanel key={JSON.stringify([workspace.id, workspace.cwd])} workspace={workspace} onOpenProjectSettings={() => openSettings('project')} refreshKey={refreshKey} perform={perform} sessions={sessions} onFeedback={activeSession ? text => { const draft = currentDrafts.current[activeSession.id] ?? activeSession.draft ?? { text: '' }; updateDraft(activeSession.id, { ...draft, text: [draft.text, text].filter(Boolean).join('\n\n') }); } : undefined} /></motion.div></div> : <FirstTask providers={providers} connected={connected} perform={perform} pending={pending} />)}
         {page === 'history' && (readingSession ? <section className="history-session-view">
           <header className="history-session-toolbar"><span>{t('history.readOnly')}</span><button className="header-button" onClick={() => setReadingSessionId(null)}><X size={13} />{t('history.closeSession')}</button></header>
           <SessionChat key={readingSession.id} session={readingSession} readOnly connected={connected} sessions={sessions}
@@ -283,7 +283,7 @@ export function App() {
       </>}
     </main>
     {dialog === 'settings' && <SettingsDialog snapshot={snapshot} workspace={workspace} sessions={sessions} session={activeSession}
-      perform={perform} pending={pending} updates={applicationUpdates} initialSection={settingsSection} openSession={openSession} onClose={() => setDialog(null)} />}
+      perform={perform} pending={pending} updates={applicationUpdates} initialSection={settingsSection} openSession={openSession} onProjectRestored={selectWorkspace} onClose={() => setDialog(null)} />}
     {dialog === 'workspace' && <NewWorkspaceDialog perform={perform} pending={pending} onClose={() => setDialog(null)} onCreated={id => { setDialog(null); selectWorkspace(id); }} />}
     {dialog === 'agent' && workspace && <NewAgentDialog workspace={workspace} providers={providers} pending={pending} perform={perform} onClose={() => setDialog(null)} />}
     {dialog === 'preview' && workspace && <PreviewDialog workspace={workspace} pending={pending} perform={perform} onClose={() => setDialog(null)} />}

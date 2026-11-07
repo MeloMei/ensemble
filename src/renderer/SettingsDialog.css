@@ -25,3 +25,13 @@
   .settings-nav > button { padding-left: 7px; gap: 7px; }
   .settings-panel { padding-left: 16px; }
 }
+
+.project-management { display: grid; gap: 12px; margin-bottom: 22px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+.project-management-name, .project-management-row, .project-management-actions { display: flex; align-items: center; gap: 8px; }
+.project-management-name { align-items: flex-end; }
+.project-management-name label, .project-management-row > div:first-child { display: grid; flex: 1; gap: 4px; min-width: 0; font-size: 12px; }
+.project-management-name input { width: 100%; }
+.project-management-row code, .project-management-path { overflow-wrap: anywhere; color: var(--muted); font-size: 11px; }
+.project-management-archived { display: grid; gap: 8px; }
+.project-management-archived h4 { font-size: 12px; }
+.project-management-archived .pane-note { padding: 0; }

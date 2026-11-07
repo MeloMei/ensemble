@@ -8,12 +8,13 @@ import { ApplicationUpdateSettings, type useApplicationUpdates } from './Applica
 import { ProvidersContent } from './WorkflowViews';
 import { WorkspaceToolsPanel, type WorkspaceToolsHandle } from './WorkspaceTools';
 import { SessionSettingsPanel } from './SessionChat';
+import { ProjectManagement } from './ProjectManagement';
 import { Modal, type Perform } from './ui';
 import './SettingsDialog.css';
 
 export type SettingsSection = 'general' | 'providers' | 'project' | 'session';
 
-export function SettingsDialog({ snapshot, workspace, sessions, session, perform, pending, updates, initialSection, openSession, onClose }: {
+export function SettingsDialog({ snapshot, workspace, sessions, session, perform, pending, updates, initialSection, openSession, onProjectRestored, onClose }: {
   snapshot: Snapshot | null;
   workspace?: Workspace;
   sessions: Session[];
@@ -23,12 +24,14 @@ export function SettingsDialog({ snapshot, workspace, sessions, session, perform
   updates: ReturnType<typeof useApplicationUpdates>;
   initialSection: SettingsSection;
   openSession: (id: string) => void;
+  onProjectRestored: (id: string) => void;
   onClose: () => void;
 }) {
   const { t } = useTranslation('shell');
   const [section, setSection] = useState(initialSection);
   const [visited, setVisited] = useState<Set<SettingsSection>>(() => new Set([initialSection]));
   const [projectBusy, setProjectBusy] = useState(false);
+  const [managementBusy, setManagementBusy] = useState(false);
   const project = useRef<WorkspaceToolsHandle>(null);
   const tabs = useRef<HTMLDivElement>(null);
   const id = useId();
@@ -42,9 +45,12 @@ export function SettingsDialog({ snapshot, workspace, sessions, session, perform
     setVisited(current => current.has(next) ? current : new Set([...current, next]));
     setSection(next);
   };
-  const close = () => { if (project.current) project.current.requestClose(onClose); else onClose(); };
+  const guardProjectEdits = (action: () => void) => {
+    if (project.current) project.current.requestClose(action); else action();
+  };
+  const close = () => guardProjectEdits(onClose);
 
-  return <Modal title={t('preferences.title')} subtitle={t('preferences.subtitle')} size="wide" busy={projectBusy} onClose={close}>
+  return <Modal title={t('preferences.title')} subtitle={t('preferences.subtitle')} size="wide" busy={projectBusy || managementBusy} onClose={close}>
     <div className="settings-layout">
       <div className="settings-nav" ref={tabs} role="tablist" aria-label={t('preferences.title')} aria-orientation="vertical"
         onKeyDown={event => {
@@ -78,8 +84,10 @@ export function SettingsDialog({ snapshot, workspace, sessions, session, perform
         <section className="settings-panel" id={`${id}-project`} role="tabpanel" aria-labelledby={`${id}-project-tab`} hidden={section !== 'project'}>
           {visited.has('project') && <>
             <header className="settings-section-heading"><h3>{t('settings.project')}</h3><p>{workspace?.name ?? t('settings.projectEmpty')}</p></header>
-            {workspace && <WorkspaceToolsPanel ref={project} workspace={workspace} sessions={sessions} perform={perform}
-              onBusyChange={setProjectBusy} onRemoved={onClose} />}
+            <ProjectManagement workspace={workspace} archived={snapshot?.workspaces.filter(item => item.archived) ?? []}
+              disabled={projectBusy} guardProjectEdits={guardProjectEdits} onBusyChange={setManagementBusy} onRestored={onProjectRestored} />
+            {workspace && <div inert={managementBusy}><WorkspaceToolsPanel ref={project} workspace={workspace} sessions={sessions} perform={perform}
+              onBusyChange={setProjectBusy} onRemoved={onClose} /></div>}
           </>}
         </section>
         <section className="settings-panel" id={`${id}-session`} role="tabpanel" aria-labelledby={`${id}-session-tab`} hidden={section !== 'session'}>

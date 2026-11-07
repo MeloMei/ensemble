@@ -294,10 +294,10 @@ export function ProvidersContent({ snapshot, perform, pending }: ProvidersProps)
   const { t: runtimeText } = useTranslation('runtime');
   const reducedMotion = useReducedMotion();
   const [directory, setDirectory] = useState('');
-  const cwd = snapshot.workspaces.some(workspace => workspace.cwd === directory) ? directory : '';
+  const cwd = snapshot.workspaces.some(workspace => !workspace.archived && workspace.cwd === directory) ? directory : '';
   const health = useRuntimeHealth(snapshot.providers, cwd);
   const available = health.providers.filter(provider => provider.available).length;
-  const directories = snapshot.workspaces.filter((workspace, index, values) => values.findIndex(item => item.cwd === workspace.cwd) === index);
+  const directories = snapshot.workspaces.filter((workspace, index, values) => !workspace.archived && values.findIndex(item => !item.archived && item.cwd === workspace.cwd) === index);
   return <div className="providers-content">
     <div className="runtime-directory"><label>{runtimeText('health.directory')}<AppSelect label={runtimeText('health.directory')} value={cwd} onChange={setDirectory}
       options={[{ value: '', label: runtimeText('health.global') }, ...directories.map(workspace => ({ value: workspace.cwd, label: workspace.name, description: workspace.cwd }))]} /></label>{cwd && <code>{cwd}</code>}<p>{runtimeText(cwd ? 'health.directoryNote' : 'health.globalNote')}</p></div>

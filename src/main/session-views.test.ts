@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import test from 'node:test';
-import type { FileContent, Message, ProviderInfo } from '../shared/types';
+import type { FileContent, Message, ProviderInfo, WorkspaceManagement } from '../shared/types';
 import type { SessionHistoryWindow } from '../shared/backend';
 import type { ProviderAdapter } from './providers/types';
 import { createWorkbenchService, type WorkbenchService } from './workbench-service';
@@ -31,6 +31,73 @@ async function createFixture(run: ProviderAdapter['run'] = async () => {}) {
 
 const timestamp = '2026-10-23T00:00:00Z';
 const sorted = (values: string[]) => [...values].sort();
+
+test('ordinary project management preserves history and persists relocation, archive and removal', async () => {
+  const fixture = await createFixture();
+  try {
+    const { service, firstProject, secondProject } = fixture;
+    execFileSync('git', ['init', '--quiet', firstProject]);
+    await writeFile(join(firstProject, 'notes.txt'), 'local project');
+    const sessionId = await service.engine.createSession({ title: 'Original session', providerId: fixture.info.id, cwd: firstProject });
+    service.store.atomic(state => { state.sessions.find(item => item.id === sessionId)!.externalId = 'native-history'; });
+    const workflowId = await service.engine.createWorkflow({ name: 'Original workflow', cwd: firstProject,
+      steps: [{ id: 'step', providerId: fixture.info.id, title: 'Original step', prompt: 'Read the project', dependsOn: [] }] });
+    const [{ id }] = service.snapshot().workspaces;
+    const otherId = await service.engine.createWorkspace({ name: 'Other project', cwd: secondProject });
+    const call = (input: WorkspaceManagement) => fixture.service.call('workbench:manage-workspace', [id, input]);
+    await service.call('workbench:update-workspace', [id, { name: 'Renamed project', pinned: true }]);
+    const alias = join(fixture.directory, 'duplicate-project');
+    await symlink(secondProject, alias, 'dir');
+    await assert.rejects(call({ action: 'relocate', cwd: alias }), /已绑定到另一个项目/);
+    await assert.rejects(service.call('workbench:list-files', [id, 'missing-child']), /ENOENT/);
+    await assert.rejects(call({ action: 'relocate', cwd: join(firstProject, 'notes.txt') }), /必须是目录/);
+
+    const destination = join(fixture.directory, 'moved-project');
+    const terminalId = await service.call('workbench:create-terminal', [id]) as string;
+    await assert.rejects(call({ action: 'remove' }), /先停止该项目的终端/);
+    await service.call('workbench:stop-terminal', [terminalId]);
+    for (let attempt = 0; attempt < 100 && service.terminalSnapshot(terminalId).status === 'running'; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(service.terminalSnapshot(terminalId).status, 'exited');
+    const release = service.engine.reserveProject(firstProject, 'running-turn');
+    try {
+      await rename(firstProject, destination);
+      await assert.rejects(call({ action: 'relocate', cwd: destination }), /正在运行/);
+      await assert.rejects(call({ action: 'archive' }), /正在运行/);
+      await assert.rejects(call({ action: 'remove' }), /正在运行/);
+    } finally { release(); }
+    assert.equal(await service.call('workbench:list-files', [id]), null);
+    await writeFile(firstProject, 'regular file at old root');
+    await assert.rejects(service.call('workbench:list-files', [id]), /not a directory/);
+    await rm(firstProject);
+    await call({ action: 'relocate', cwd: destination });
+    const moved = fixture.service.snapshot().workspaces.find(item => item.id === id)!;
+    assert.equal(moved.cwd, destination);
+    assert.equal(moved.name, 'Renamed project');
+    assert.equal(moved.pinned, true);
+    assert.deepEqual(moved.tabs, []);
+    assert.equal(fixture.service.engine.getSession(sessionId).cwd, firstProject);
+    assert.equal(fixture.service.engine.getSession(sessionId).externalId, 'native-history');
+    assert.equal(fixture.service.snapshot().workflows.find(item => item.id === workflowId)?.cwd, firstProject);
+    assert.equal(fixture.service.snapshot().workspaces.find(item => item.id === otherId)?.cwd, secondProject);
+
+    await call({ action: 'archive' });
+    await fixture.restart();
+    assert.equal(fixture.service.snapshot().workspaces.find(item => item.id === id)?.archived, true);
+    await assert.rejects(fixture.service.call('workbench:list-files', [id]), /恢复已归档的项目/);
+    await call({ action: 'restore' });
+    assert.equal(fixture.service.snapshot().workspaces.find(item => item.id === id)?.archived, undefined);
+    const newSessionId = await fixture.service.engine.createSession({ title: 'New session', providerId: fixture.info.id, cwd: destination });
+    await call({ action: 'remove' });
+    await fixture.restart();
+    assert.deepEqual(fixture.service.snapshot().workspaces.map(item => item.id), [otherId]);
+    assert.equal(fixture.service.engine.getSession(sessionId).cwd, firstProject);
+    assert.equal(fixture.service.engine.getSession(newSessionId).cwd, destination);
+    assert.equal(await readFile(join(destination, 'notes.txt'), 'utf8'), 'local project');
+    assert((await stat(join(destination, '.git'))).isDirectory());
+  } finally { await fixture.close(); }
+});
 
 test('service history cursors and search preserve bounded views and recover full matching messages', async () => {
   const fixture = await createFixture();
@@ -208,6 +275,11 @@ test('service worktree access fences alias saves and persistent removal admissio
     const childCwd = join(operation.path, 'packages');
     const childAlias = await fixture.service.call('workbench:create-workspace', [{ name: 'Child alias', cwd: childCwd }]) as string;
     assert.equal(new Set([managedId, rootAlias, childAlias]).size, 3);
+    assert.equal(fixture.service.snapshot().workspaces.find(item => item.id === childAlias)?.managedWorktreeAlias, true);
+    await assert.rejects(fixture.service.call('workbench:manage-workspace', [managedId, { action: 'remove' }]), /托管 worktree/);
+    await assert.rejects(fixture.service.call('workbench:manage-workspace', [childAlias, { action: 'archive' }]), /托管 worktree/);
+    const ordinaryId = await fixture.service.engine.createWorkspace({ name: 'Ordinary project', cwd: fixture.secondProject });
+    await assert.rejects(fixture.service.call('workbench:manage-workspace', [ordinaryId, { action: 'relocate', cwd: operation.path }]), /托管 worktree/);
     const sessionId = await fixture.service.engine.createSession({ title: 'Must not execute during removal', providerId: fixture.info.id, cwd: childCwd });
     const original = await fixture.service.call('workbench:read-file', [childAlias, 'app/entry.txt']) as FileContent;
     WorkspaceFiles.prototype.write = async function(cwd, input) {

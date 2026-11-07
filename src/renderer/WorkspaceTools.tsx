@@ -33,7 +33,7 @@ export interface WorkspaceToolsHandle {
 }
 
 export const WorkspaceToolsPanel = forwardRef<WorkspaceToolsHandle, WorkspaceToolsPanelProps>(function WorkspaceToolsPanel(props, ref) {
-  return <WorkspaceToolsContent key={props.workspace.id} {...props} ref={ref} />;
+  return <WorkspaceToolsContent key={JSON.stringify([props.workspace.id, props.workspace.cwd])} {...props} ref={ref} />;
 });
 
 const WorkspaceToolsContent = forwardRef<WorkspaceToolsHandle, WorkspaceToolsPanelProps>(function WorkspaceToolsContent({ workspace, sessions, perform, onBusyChange, onRemoved }, ref) {

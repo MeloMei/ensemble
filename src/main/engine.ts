@@ -5,7 +5,7 @@ import { z } from 'zod';
 import type {
   AgentMail, ApprovalInput, CollaborationCaller, CreateSessionInput, McpServerConfig, PromptInput, ProviderInfo,
   Session, SessionAttempt, SessionCommandReceipt, SessionQueueItem, SessionSettings, SessionSkillAssignment, SessionSkillAssignmentReceipt, SessionStatus, SessionUpdate, Snapshot, TerminalInfo, Workflow,
-  WorkflowInput, Workspace, WorkspaceTab,
+  WorkflowInput, Workspace, WorkspaceManagement, WorkspaceTab,
 } from '../shared/types';
 import type { LoadedPromptAttachment, ProviderAdapter, ProviderEvent } from './providers/types';
 import { PROMPT_TEXT_LIMIT } from '../shared/types';
@@ -186,6 +186,7 @@ export class WorkbenchEngine {
   workspace(id: string): Workspace {
     const workspace = this.store.state.workspaces.find(item => item.id === id);
     if (!workspace) throw new Error('工作区不存在。');
+    if (workspace.archived) throw new Error('请先在项目设置中恢复已归档的项目。');
     return workspace;
   }
 
@@ -200,7 +201,9 @@ export class WorkbenchEngine {
   async createWorkspace(input: { name: string; cwd: string }): Promise<string> {
     const cwd = await validateWorkspace(input.cwd);
     await this.prepareExecutionKey(cwd); this.assertOpen();
-    const workspace = this.ensureWorkspace(cwd, input.name); this.changed(); return workspace.id;
+    const workspace = this.ensureWorkspace(cwd, input.name);
+    if (workspace.archived) throw new Error('请先在项目设置中恢复已归档的项目。');
+    this.changed(); return workspace.id;
   }
 
   updateWorkspace(id: string, input: { name?: string; pinned?: boolean }): void {
@@ -208,6 +211,75 @@ export class WorkbenchEngine {
     if (input.name !== undefined) workspace.name = input.name.trim();
     if (input.pinned !== undefined) workspace.pinned = input.pinned;
     workspace.updatedAt = now(); this.changed();
+  }
+
+  async manageWorkspace(id: string, input: WorkspaceManagement, assertAllowed: (destination?: string) => void): Promise<void> {
+    this.assertOpen();
+    const workspace = this.store.state.workspaces.find(item => item.id === id);
+    if (!workspace) throw new Error('工作区不存在。');
+    const { cwd: previousCwd, archived } = workspace;
+    let destination: string | undefined;
+    if (input.action === 'relocate') {
+      assertAllowed();
+      if (archived) throw new Error('请先在项目设置中恢复已归档的项目。');
+      destination = await validateWorkspace(input.cwd);
+      assertAllowed(destination);
+      await this.prepareDirectoryExecution(destination);
+      const bindings = this.store.state.workspaces.filter(item => item !== workspace).map(item => item.cwd);
+      const destinationInfo = await stat(destination);
+      const duplicates = await Promise.all(bindings.map(async cwd => {
+        if (cwd === destination) return true;
+        try {
+          const info = await stat(cwd);
+          return info.dev === destinationInfo.dev && info.ino === destinationInfo.ino;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+          throw error;
+        }
+      }));
+      const currentBindings = this.store.state.workspaces.filter(item => item !== workspace).map(item => item.cwd);
+      if (duplicates.some(Boolean)) throw new Error('该目录已绑定到另一个项目。');
+      if (bindings.length !== currentBindings.length || bindings.some((cwd, index) => cwd !== currentBindings[index])) {
+        throw new Error('项目列表已变化，请重试。');
+      }
+    }
+    this.assertOpen();
+    if (!this.store.state.workspaces.includes(workspace) || workspace.cwd !== previousCwd || workspace.archived !== archived) {
+      throw new Error('项目设置已变化，请重试。');
+    }
+    assertAllowed(destination);
+    if (input.action === 'relocate' && destination === previousCwd) return;
+    if (input.action !== 'restore') this.assertProjectIdle(destination ? [previousCwd, destination] : [previousCwd]);
+    this.store.atomic(state => {
+      if (input.action === 'remove') {
+        state.workspaces = state.workspaces.filter(item => item !== workspace);
+        return;
+      }
+      if (input.action === 'restore') delete workspace.archived;
+      if (input.action === 'archive') workspace.archived = true;
+      if (destination !== undefined) {
+        workspace.cwd = destination;
+        workspace.tabs = [];
+        workspace.activeTabId = null;
+        delete workspace.secondaryTabId;
+      }
+      workspace.updatedAt = now();
+    });
+    this.publish(this.liveSnapshot());
+  }
+
+  private assertProjectIdle(directories: string[]): void {
+    const paths = directories.flatMap(cwd => [cwd, this.executionKeys.get(cwd) ?? cwd]);
+    const overlaps = (cwd: string) => paths.some(path => executionPathsOverlap(path, cwd));
+    const activeCollaboration = this.store.state.collaboration.runs.some(({ status, definitionSnapshot }) => {
+      if (status !== 'running') return false;
+      return overlaps(definitionSnapshot.cwd) || definitionSnapshot.participants.some(participant => {
+        return [participant.cwd, participant.permissions.workspace?.cwd].some(cwd => cwd !== undefined && overlaps(cwd));
+      });
+    });
+    if (activeCollaboration || [...this.projectClaims.keys()].some(overlaps)) {
+      throw new ProjectBusyError('项目有正在运行的任务、编排或文件操作，请等待结束后再试。');
+    }
   }
 
   activateTab(workspaceId: string, tabId: string): void {
