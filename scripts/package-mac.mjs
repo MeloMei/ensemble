@@ -25,11 +25,25 @@ const temporaryArchive = `${archive}.${basename(temporaryDirectory)}.tmp`;
 const temporaryImage = join(releaseDirectory, `.${basename(temporaryDirectory)}.dmg`);
 const temporaryChecksums = join(releaseDirectory, `.${basename(temporaryDirectory)}.SHA256SUMS`);
 try {
+  const logo = join(projectRoot, 'docs', 'brand', 'ensemble-logo.png');
+  const iconset = join(temporaryDirectory, `${productName}.iconset`);
+  const icon = join(temporaryDirectory, `${productName}.icns`);
+  await mkdir(iconset);
+  for (const size of [16, 32, 128, 256, 512]) {
+    for (const [scale, suffix] of [[1, ''], [2, '@2x']]) {
+      const pixels = String(size * scale);
+      const destination = join(iconset, `icon_${size}x${size}${suffix}.png`);
+      await run('sips', ['--resampleHeightWidth', pixels, pixels, logo, '--out', destination]);
+    }
+  }
+  await run('iconutil', ['--convert', 'icns', iconset, '--output', icon]);
+
   const paths = await packager({
     dir: projectRoot, name: productName, platform: 'darwin', arch: process.arch,
     out: temporaryDirectory, overwrite: true, asar: false, prune: true,
     appBundleId: 'local.agent-workbench.desktop',
     appCategoryType: 'public.app-category.developer-tools',
+    icon,
     ignore: [nonRuntimeEntries, /^\/bin\/apply-app-update\.sh$/],
   });
   if (paths.length !== 1) throw new Error('Expected exactly one macOS application.');
