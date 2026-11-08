@@ -98,6 +98,8 @@ function payloadHash(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex');
 }
 
+const archivedProjectNotice = '请先在左侧项目列表中恢复已归档的项目。';
+
 export class WorkbenchEngine {
   private adapters = new Map<string, ProviderAdapter>();
   private disposableAdapters = new Set<ProviderAdapter>();
@@ -186,7 +188,7 @@ export class WorkbenchEngine {
   workspace(id: string): Workspace {
     const workspace = this.store.state.workspaces.find(item => item.id === id);
     if (!workspace) throw new Error('工作区不存在。');
-    if (workspace.archived) throw new Error('请先在项目设置中恢复已归档的项目。');
+    if (workspace.archived) throw new Error(archivedProjectNotice);
     return workspace;
   }
 
@@ -202,7 +204,7 @@ export class WorkbenchEngine {
     const cwd = await validateWorkspace(input.cwd);
     await this.prepareExecutionKey(cwd); this.assertOpen();
     const workspace = this.ensureWorkspace(cwd, input.name);
-    if (workspace.archived) throw new Error('请先在项目设置中恢复已归档的项目。');
+    if (workspace.archived) throw new Error(archivedProjectNotice);
     this.changed(); return workspace.id;
   }
 
@@ -221,7 +223,7 @@ export class WorkbenchEngine {
     let destination: string | undefined;
     if (input.action === 'relocate') {
       assertAllowed();
-      if (archived) throw new Error('请先在项目设置中恢复已归档的项目。');
+      if (archived) throw new Error(archivedProjectNotice);
       destination = await validateWorkspace(input.cwd);
       assertAllowed(destination);
       await this.prepareDirectoryExecution(destination);

@@ -13,6 +13,9 @@
 .settings-section-heading { margin-bottom: 22px; }
 .settings-section-heading h3 { color: var(--text); font-size: 15px; font-weight: 550; }
 .settings-section-heading p { margin-top: 7px; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.settings-project-picker { display: grid; gap: 6px; width: min(100%, 360px); margin-bottom: 20px; font-size: 12px; }
+.settings-project-picker small { color: var(--muted); font-size: 11px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.settings-project-empty { color: var(--muted); font-size: 12px; }
 .settings-appearance { padding-top: 0; }
 .settings-panel .language-settings { margin-bottom: 24px; }
 .settings-panel .application-update-settings { margin-bottom: 0; }
@@ -25,13 +28,3 @@
   .settings-nav > button { padding-left: 7px; gap: 7px; }
   .settings-panel { padding-left: 16px; }
 }
-
-.project-management { display: grid; gap: 12px; margin-bottom: 22px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
-.project-management-name, .project-management-row, .project-management-actions { display: flex; align-items: center; gap: 8px; }
-.project-management-name { align-items: flex-end; }
-.project-management-name label, .project-management-row > div:first-child { display: grid; flex: 1; gap: 4px; min-width: 0; font-size: 12px; }
-.project-management-name input { width: 100%; }
-.project-management-row code, .project-management-path { overflow-wrap: anywhere; color: var(--muted); font-size: 11px; }
-.project-management-archived { display: grid; gap: 8px; }
-.project-management-archived h4 { font-size: 12px; }
-.project-management-archived .pane-note { padding: 0; }

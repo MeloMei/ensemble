@@ -5,16 +5,16 @@ import type { Session, Snapshot, Workspace } from '../shared/types';
 import { ThemeOptions } from './appearance';
 import { LanguageOptions } from './language';
 import { ApplicationUpdateSettings, type useApplicationUpdates } from './ApplicationUpdates';
+import { AppSelect } from './AppSelect';
 import { ProvidersContent } from './WorkflowViews';
 import { WorkspaceToolsPanel, type WorkspaceToolsHandle } from './WorkspaceTools';
 import { SessionSettingsPanel } from './SessionChat';
-import { ProjectManagement } from './ProjectManagement';
 import { Modal, type Perform } from './ui';
 import './SettingsDialog.css';
 
 export type SettingsSection = 'general' | 'providers' | 'project' | 'session';
 
-export function SettingsDialog({ snapshot, workspace, sessions, session, perform, pending, updates, initialSection, openSession, onProjectRestored, onClose }: {
+export function SettingsDialog({ snapshot, workspace, sessions, session, perform, pending, updates, initialSection, openSession, onClose }: {
   snapshot: Snapshot | null;
   workspace?: Workspace;
   sessions: Session[];
@@ -24,17 +24,19 @@ export function SettingsDialog({ snapshot, workspace, sessions, session, perform
   updates: ReturnType<typeof useApplicationUpdates>;
   initialSection: SettingsSection;
   openSession: (id: string) => void;
-  onProjectRestored: (id: string) => void;
   onClose: () => void;
 }) {
   const { t } = useTranslation('shell');
   const [section, setSection] = useState(initialSection);
   const [visited, setVisited] = useState<Set<SettingsSection>>(() => new Set([initialSection]));
+  const [projectId, setProjectId] = useState(workspace?.id);
   const [projectBusy, setProjectBusy] = useState(false);
-  const [managementBusy, setManagementBusy] = useState(false);
-  const project = useRef<WorkspaceToolsHandle>(null);
+  const projectTools = useRef<WorkspaceToolsHandle>(null);
   const tabs = useRef<HTMLDivElement>(null);
   const id = useId();
+  const projects = (snapshot?.workspaces ?? (workspace ? [workspace] : [])).filter(item => !item.archived);
+  const projectWorkspace = projects.find(item => item.id === projectId) ?? projects.find(item => item.id === workspace?.id) ?? projects[0];
+  if (projectId !== projectWorkspace?.id) setProjectId(projectWorkspace?.id);
   const sections = [
     { id: 'general', label: t('settings.general'), Icon: Palette },
     { id: 'providers', label: t('app.providers'), Icon: Plug },
@@ -46,11 +48,11 @@ export function SettingsDialog({ snapshot, workspace, sessions, session, perform
     setSection(next);
   };
   const guardProjectEdits = (action: () => void) => {
-    if (project.current) project.current.requestClose(action); else action();
+    if (projectTools.current) projectTools.current.requestClose(action); else action();
   };
   const close = () => guardProjectEdits(onClose);
 
-  return <Modal title={t('preferences.title')} subtitle={t('preferences.subtitle')} size="wide" busy={projectBusy || managementBusy} onClose={close}>
+  return <Modal title={t('preferences.title')} subtitle={t('preferences.subtitle')} size="wide" busy={Boolean(projectWorkspace && projectBusy)} onClose={close}>
     <div className="settings-layout">
       <div className="settings-nav" ref={tabs} role="tablist" aria-label={t('preferences.title')} aria-orientation="vertical"
         onKeyDown={event => {
@@ -83,11 +85,19 @@ export function SettingsDialog({ snapshot, workspace, sessions, session, perform
         </section>
         <section className="settings-panel" id={`${id}-project`} role="tabpanel" aria-labelledby={`${id}-project-tab`} hidden={section !== 'project'}>
           {visited.has('project') && <>
-            <header className="settings-section-heading"><h3>{t('settings.project')}</h3><p>{workspace?.name ?? t('settings.projectEmpty')}</p></header>
-            <ProjectManagement workspace={workspace} archived={snapshot?.workspaces.filter(item => item.archived) ?? []}
-              disabled={projectBusy} guardProjectEdits={guardProjectEdits} onBusyChange={setManagementBusy} onRestored={onProjectRestored} />
-            {workspace && <div inert={managementBusy}><WorkspaceToolsPanel ref={project} workspace={workspace} sessions={sessions} perform={perform}
-              onBusyChange={setProjectBusy} onRemoved={onClose} /></div>}
+            <header className="settings-section-heading"><h3>{t('settings.project')}</h3><p>{t('settings.projectDescription')}</p></header>
+            {projectWorkspace ? <>
+              <div className="settings-project-picker">
+                <label htmlFor={`${id}-project-scope`}>{t('settings.projectScope')}</label>
+                <AppSelect id={`${id}-project-scope`} label={t('settings.projectScope')} aria-describedby={`${id}-project-path`}
+                  value={projectWorkspace.id} disabled={projectBusy}
+                  options={projects.map(item => ({ value: item.id, label: item.name, description: item.cwd }))}
+                  onChange={nextId => { if (nextId !== projectWorkspace.id) guardProjectEdits(() => setProjectId(nextId)); }} />
+                <small id={`${id}-project-path`} title={projectWorkspace.cwd}>{projectWorkspace.cwd}</small>
+              </div>
+              <WorkspaceToolsPanel ref={projectTools} workspace={projectWorkspace} sessions={sessions} perform={perform}
+                onBusyChange={setProjectBusy} onRemoved={close} />
+            </> : <p className="settings-project-empty">{t('settings.projectEmpty')}</p>}
           </>}
         </section>
         <section className="settings-panel" id={`${id}-session`} role="tabpanel" aria-labelledby={`${id}-session-tab`} hidden={section !== 'session'}>

@@ -1,7 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import {
-  ArrowUpRight, CheckCircle2, Circle, CircleAlert, CircleDot,
+  Archive, ArrowUpRight, CheckCircle2, ChevronRight, Circle, CircleAlert, CircleDot,
   Folder, GitBranch, Globe, History, Layers2, LoaderCircle, MessageSquare,
   Network, PanelRight, Pin, Plus, Search, Settings2, TerminalSquare, X, LayoutGrid, FolderOpen,
 } from 'lucide-react';
@@ -16,6 +16,7 @@ import ensembleLogo from '../../docs/brand/ensemble-avatar.png';
 import { AgentIcon } from './AgentIcon';
 import { ApplicationUpdateNotice, useApplicationUpdates } from './ApplicationUpdates';
 import { FileReviewPanel } from './FileReviewPanel';
+import { ProjectRowActions, useProjectManagement } from './ProjectManagement';
 import { SettingsDialog, type SettingsSection } from './SettingsDialog';
 import { AppSelect } from './AppSelect';
 import { Tooltip } from './Tooltip';
@@ -75,6 +76,7 @@ export function App() {
   const [rightPane, setRightPane] = useState(true);
   const [query, setQuery] = useState('');
   const [searching, setSearching] = useState(false);
+  const [archivesOpen, setArchivesOpen] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, PromptInput>>({});
   const currentDrafts = useRef<Record<string, PromptInput>>({});
   const draftReady = useRef(new Set<string>());
@@ -117,6 +119,7 @@ export function App() {
       toastTimer.current = setTimeout(() => setToast(''), 7000);
     } finally { setPending(current => { const next = new Set(current); next.delete(key); return next; }); }
   }, []);
+  const projectManagement = useProjectManagement(perform);
 
   useEffect(() => {
     let active = true;
@@ -175,7 +178,10 @@ export function App() {
     });
   }, [watchedIds, connected]);
   useEffect(() => () => { void window.workbench.watchSessions([]).catch(() => {}); }, []);
-  const visibleWorkspaces = workspaces.filter(item => `${item.name} ${item.cwd}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
+  const matchesSearch = (item: Workspace) => `${item.name} ${item.cwd}`.toLocaleLowerCase().includes(query.toLocaleLowerCase());
+  const visibleWorkspaces = workspaces.filter(matchesSearch);
+  const archivedWorkspaces = snapshot?.workspaces.filter(item => item.archived) ?? [];
+  const visibleArchives = archivedWorkspaces.filter(matchesSearch);
   const refreshKey = sessions.filter(session => session.cwd === workspace?.cwd).map(session => `${session.id}:${session.status}`).join('|');
 
   const selectWorkspace = useCallback((id: string) => { setReadingSessionId(null); setWorkspaceId(id); setPage('workspace'); setTabMenu(false); }, []);
@@ -210,12 +216,17 @@ export function App() {
       ?? related.find(session => ['running', 'waiting_children', 'queued'].includes(session.status))
       ?? related.find(session => sessionAttentionReason(session) === 'result') ?? related[0];
     const unread = related.filter(sessionIsUnread).length;
-    return <motion.button key={`workspace:${item.id}`} data-workspace-id={item.id} initial={false}
+    const selected = page === 'workspace' && workspace?.id === item.id;
+    return <motion.div key={`workspace:${item.id}`} initial={false}
       layout={reducedMotion || searching ? false : 'position'} transition={{ layout: SPRING_SNAPPY }}
-      className={`workspace-row group-${group}${last ? ' workspace-group-end' : ''} ${page === 'workspace' && workspace?.id === item.id ? 'selected' : ''}`} onClick={() => selectWorkspace(item.id)}>
-      <span className="workspace-glyph">{current ? <AgentIcon providerId={current.providerId} size={15} /> : <Layers2 size={15} />}{current?.status === 'running' && <i />}</span>
-      <span className="workspace-row-body"><span className="workspace-row-title">{item.name}</span>{current && <span className="workspace-row-meta"><Status value={current.status} /><AttentionBadge session={current} /></span>}</span>{unread > 0 && <span className="workspace-unread" aria-label={t('attention.unreadSessions', { count: unread })}>{unread}</span>}<time>{relativeTime(item.updatedAt)}</time>
-    </motion.button>;
+      className={`workspace-row-entry group-${group}${last ? ' workspace-group-end' : ''}${selected ? ' selected' : ''}`}>
+      <button type="button" data-workspace-id={item.id} aria-current={selected ? 'true' : undefined}
+        className={`workspace-row group-${group}${selected ? ' selected' : ''}`} onClick={() => selectWorkspace(item.id)}>
+        <span className="workspace-glyph">{current ? <AgentIcon providerId={current.providerId} size={15} /> : <Layers2 size={15} />}{current?.status === 'running' && <i />}</span>
+        <span className="workspace-row-body"><span className="workspace-row-title">{item.name}</span>{current && <span className="workspace-row-meta"><Status value={current.status} /><AttentionBadge session={current} /></span>}</span>{unread > 0 && <span className="workspace-unread" aria-label={t('attention.unreadSessions', { count: unread })}>{unread}</span>}<time>{relativeTime(item.updatedAt)}</time>
+      </button>
+      <ProjectRowActions workspace={item} disabled={!connected || projectManagement.busy} onAction={action => projectManagement.open(item, action)} />
+    </motion.div>;
   };
 
   const groups = [
@@ -232,7 +243,7 @@ export function App() {
     sidebarItems.push(...pinnedWorkspaces.map((item, index) => workspaceRow(item, 'pinned', index === pinnedWorkspaces.length - 1)));
   }
   sidebarItems.push(<div key="heading:local" className="sidebar-section-title workspace-section-heading"><span>{t('app.localProjects')}</span><IconButton label={t('app.searchWorkspaces')} onClick={() => { setSearching(value => !value); setQuery(''); }}><Search size={13} /></IconButton></div>);
-  if (searching) sidebarItems.push(<div key="search" className="workspace-search"><Search size={13} /><input aria-label={t('app.searchWorkspaces')} autoFocus value={query} onChange={event => setQuery(event.target.value)} placeholder={t('app.searchPlaceholder')} /></div>);
+  if (searching) sidebarItems.push(<div key="search" className="workspace-search"><Search size={13} /><input aria-label={t('app.searchWorkspaces')} autoFocus value={query} onChange={event => { setQuery(event.target.value); if (event.target.value.trim()) setArchivesOpen(true); }} placeholder={t('app.searchPlaceholder')} /></div>);
   for (const group of groups) {
     const items = visibleWorkspaces.filter(item => !item.pinned && workspaceGroup(item, sessions) === group.id);
     if (!items.length) continue;
@@ -240,7 +251,22 @@ export function App() {
     sidebarItems.push(...items.map((item, index) => workspaceRow(item, group.id, index === items.length - 1)));
   }
   if (!workspaces.length) sidebarItems.push(<div key="empty" className="sidebar-placeholder">{t('app.chooseLocalProject')}<br />{t('app.addRuntimeNote')}</div>);
-  if (workspaces.length > 0 && !visibleWorkspaces.length) sidebarItems.push(<div key="no-match" className="sidebar-placeholder">{t('app.noWorkspaceMatch')}</div>);
+  if (query.trim() && !visibleWorkspaces.length && !visibleArchives.length) sidebarItems.push(<div key="no-match" className="sidebar-placeholder">{t('app.noWorkspaceMatch')}</div>);
+  if (visibleArchives.length) sidebarItems.push(<section key="archives" className="workspace-archives">
+    <button type="button" className="workspace-archive-toggle" aria-expanded={archivesOpen} aria-controls="workspace-archive-list"
+      onClick={() => setArchivesOpen(open => !open)}>
+      <ChevronRight size={12} /><span>{t('projectManagement.archived')}</span><small>{visibleArchives.length}</small>
+    </button>
+    <div id="workspace-archive-list" hidden={!archivesOpen}>
+      {archivesOpen && visibleArchives.map(item => <div className="workspace-row-entry archived" key={item.id}>
+        <div className="workspace-row" data-archived-workspace-id={item.id}><span className="workspace-glyph"><Archive size={14} /></span><span className="workspace-row-body"><span className="workspace-row-title">{item.name}</span></span></div>
+        <ProjectRowActions workspace={item} disabled={!connected || projectManagement.busy} onAction={action => {
+          if (action === 'restore' && workspace) setWorkspaceId(workspace.id);
+          projectManagement.open(item, action);
+        }} />
+      </div>)}
+    </div>
+  </section>);
 
   return <div className="workbench">
     <aside className="workspace-sidebar"><div className="sidebar-titlebar"><img className="brand-symbol" src={ensembleLogo} alt="" /><span>{PRODUCT_NAME}<span className="brand-period">.</span></span></div>
@@ -271,7 +297,7 @@ export function App() {
             items[next]?.focus({ preventScroll: true });
           }}><IconButton label={t('app.addTab')} aria-haspopup="menu" aria-expanded={tabMenu} onClick={() => setTabMenu(value => !value)}><Plus size={17} /></IconButton><AnimatePresence>{tabMenu && <><button key="dismiss" className="menu-dismiss" tabIndex={-1} aria-label={t('app.dismissAddMenu')} onClick={() => setTabMenu(false)} /><motion.div key="menu" className="tab-menu" role="menu" aria-label={t('app.addTabMenu')} initial={reducedMotion ? false : "initial"} animate="animate" exit={reducedMotion ? undefined : "exit"} variants={motionPopover}><button role="menuitem" onClick={() => { setDialog('agent'); setTabMenu(false); }}><MessageSquare size={15} />{t('app.newAgentSession')}</button><button role="menuitem" disabled={pending.has('create-terminal')} onClick={() => { setTabMenu(false); void perform('create-terminal', () => window.workbench.createTerminal(workspace.id)); }}><TerminalSquare size={15} />{t('app.openLocalTerminal')}</button><button role="menuitem" onClick={() => { setDialog('preview'); setTabMenu(false); }}><Globe size={15} />{t('app.addPreview')}</button></motion.div></>}</AnimatePresence></div></div>
           <WorkspacePanes workspace={workspace} secondary={!!secondaryTab} perform={perform} primary={renderTab(activeTab)} other={renderTab(secondaryTab)} />
-        </div><motion.div className="file-panel-transition" initial={false} animate={{ width: rightPane ? 'var(--file-width)' : 0, opacity: rightPane ? 1 : 0 }} transition={reducedMotion ? { duration: 0 } : SPRING_SNAPPY} inert={!rightPane} aria-hidden={!rightPane}><FileReviewPanel key={JSON.stringify([workspace.id, workspace.cwd])} workspace={workspace} onOpenProjectSettings={() => openSettings('project')} refreshKey={refreshKey} perform={perform} sessions={sessions} onFeedback={activeSession ? text => { const draft = currentDrafts.current[activeSession.id] ?? activeSession.draft ?? { text: '' }; updateDraft(activeSession.id, { ...draft, text: [draft.text, text].filter(Boolean).join('\n\n') }); } : undefined} /></motion.div></div> : <FirstTask providers={providers} connected={connected} perform={perform} pending={pending} />)}
+        </div><motion.div className="file-panel-transition" initial={false} animate={{ width: rightPane ? 'var(--file-width)' : 0, opacity: rightPane ? 1 : 0 }} transition={reducedMotion ? { duration: 0 } : SPRING_SNAPPY} inert={!rightPane} aria-hidden={!rightPane}><FileReviewPanel key={JSON.stringify([workspace.id, workspace.cwd])} workspace={workspace} onEditProject={connected ? () => projectManagement.open(workspace, 'edit') : undefined} refreshKey={refreshKey} perform={perform} sessions={sessions} onFeedback={activeSession ? text => { const draft = currentDrafts.current[activeSession.id] ?? activeSession.draft ?? { text: '' }; updateDraft(activeSession.id, { ...draft, text: [draft.text, text].filter(Boolean).join('\n\n') }); } : undefined} /></motion.div></div> : <FirstTask providers={providers} connected={connected} perform={perform} pending={pending} />)}
         {page === 'history' && (readingSession ? <section className="history-session-view">
           <header className="history-session-toolbar"><span>{t('history.readOnly')}</span><button className="header-button" onClick={() => setReadingSessionId(null)}><X size={13} />{t('history.closeSession')}</button></header>
           <SessionChat key={readingSession.id} session={readingSession} readOnly connected={connected} sessions={sessions}
@@ -283,7 +309,8 @@ export function App() {
       </>}
     </main>
     {dialog === 'settings' && <SettingsDialog snapshot={snapshot} workspace={workspace} sessions={sessions} session={activeSession}
-      perform={perform} pending={pending} updates={applicationUpdates} initialSection={settingsSection} openSession={openSession} onProjectRestored={selectWorkspace} onClose={() => setDialog(null)} />}
+      perform={perform} pending={pending} updates={applicationUpdates} initialSection={settingsSection} openSession={openSession} onClose={() => setDialog(null)} />}
+    {projectManagement.dialog}
     {dialog === 'workspace' && <NewWorkspaceDialog perform={perform} pending={pending} onClose={() => setDialog(null)} onCreated={id => { setDialog(null); selectWorkspace(id); }} />}
     {dialog === 'agent' && workspace && <NewAgentDialog workspace={workspace} providers={providers} pending={pending} perform={perform} onClose={() => setDialog(null)} />}
     {dialog === 'preview' && workspace && <PreviewDialog workspace={workspace} pending={pending} perform={perform} onClose={() => setDialog(null)} />}
