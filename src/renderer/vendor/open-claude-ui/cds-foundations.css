@@ -9,7 +9,7 @@
   --cds-radius-composer: 14px;
   --cds-panel-radius: var(--radius-panel);
   --cds-radius-dialog: var(--radius-overlay);
-  --cds-ease-out-expo: cubic-bezier(.16, 1, .3, 1);
+  --cds-ease-out-expo: var(--ease-out);
 }
 .cds-control {
   position: relative;

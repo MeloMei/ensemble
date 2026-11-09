@@ -25,6 +25,7 @@ import { useSessionHistory, type IndexedMessages } from './useSessionHistory';
 import { promptCommandInput, runSessionCommand, runSessionStopCommand } from './session-command';
 import { sessionIsUnread } from './session-attention';
 import { Tooltip } from './Tooltip';
+import { RollingText } from './ui-kit/RollingText';
 import './SessionChat.css';
 
 interface SessionChatProps {
@@ -676,7 +677,7 @@ export function SessionChat({
           onClick={() => find === null ? setFind('') : closeFind()}><Search size={15} /></IconButton>
         <Tooltip label={t('chat.activity')}><button className={`text-button chat-activity-button ${showActivity ? 'selected' : ''}`} aria-label={t('chat.activity')}
           aria-expanded={showActivity} aria-controls={activityId} onClick={() => setShowActivity(value => !value)}>
-          <Activity size={14} /><span className="chat-activity-label">{t('chat.activity')}</span>{activity.length > 0 && <span className="chat-count">{activity.length}</span>}
+          <Activity size={14} /><span className="chat-activity-label">{t('chat.activity')}</span>{activity.length > 0 && <RollingText className="chat-count" value={formatNumber(activity.length)} animate={active && !history.showingHistory} />}
         </button></Tooltip>
         {!readOnly && active && <button className="text-button stop-action" disabled={!connected || pending.has(`cancel-${session.id}`)}
           onClick={() => void perform(`cancel-${session.id}`, () => runSessionStopCommand(session,

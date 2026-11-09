@@ -26,6 +26,7 @@ import type { AppUpdateState } from '../shared/application-updates';
 import { TerminalPane } from './TerminalPane';
 import { Terminal } from '@xterm/xterm';
 import { AppearanceProvider } from './appearance';
+import { RollingText } from './ui-kit/RollingText';
 import type { Perform } from './ui';
 import './vendor/open-claude-ui/cds-foundations.css';
 import './styles.css';
@@ -259,6 +260,22 @@ const cases: Record<string, () => Promise<void>> = {
       }
       assertHistory(); assert(snapshotReads === 1 && commands.length === 1, 'Completing creation fetched stale state or repeated the command');
     }
+  },
+  'MOTION-ROLLING-TEXT: only changed digits roll and history replacements stay still': async () => {
+    await render(<RollingText value="56/100" />);
+    assert(!document.querySelector('.ui-rolling-text-change'), 'The initial value animated');
+    await render(<RollingText value="57/100" />);
+    const change = document.querySelector('.ui-rolling-text-change');
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      assert(!change && document.querySelector('.ui-rolling-text-visual')?.textContent === '57/100', 'Reduced motion did not replace the value directly');
+    } else {
+      assert(change?.previousSibling?.textContent === '5' && change.nextSibling?.textContent === '/100', 'Unchanged characters moved into the animation');
+      assert(change.querySelector('.ui-rolling-text-leaving')?.textContent === '6'
+        && change.querySelector('.ui-rolling-text-entering')?.textContent === '7', 'The changed digit pair was lost');
+    }
+    assert(document.querySelector('.ui-rolling-text-accessible')?.textContent === '57/100', 'The accessible value lagged behind the visual change');
+    await render(<RollingText value="99/100" animate={false} />);
+    assert(!document.querySelector('.ui-rolling-text-change') && document.querySelector('.ui-rolling-text-visual')?.textContent === '99/100', 'A historical value animated');
   },
   'MOTION-SKILL-ASSIGNMENT: recipient feedback follows the saved session selection': async () => {
     const skillList = ['review', 'build', 'docs'].map(id => ({ id, name: id, description: id, path: '/' + id, scope: 'project', editable: true }));

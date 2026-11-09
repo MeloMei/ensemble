@@ -1,0 +1,34 @@
+.ui-rolling-text {
+  position: relative;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+.ui-rolling-text-accessible {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.ui-rolling-text-visual { white-space: nowrap; }
+.ui-rolling-text-change {
+  display: inline-grid;
+  align-items: baseline;
+  overflow: clip;
+  vertical-align: bottom;
+}
+.ui-rolling-text-change > span { grid-area: 1 / 1; }
+.ui-rolling-text-leaving { animation: ui-roll-leave var(--duration-roll, 340ms) var(--ease-out, ease-out) both; }
+.ui-rolling-text-entering { animation: ui-roll-enter var(--duration-roll, 340ms) var(--ease-out, ease-out) both; }
+
+@keyframes ui-roll-leave {
+  to { transform: translateY(.7em) scale(.93); opacity: 0; }
+}
+@keyframes ui-roll-enter {
+  from { transform: translateY(-.7em) scale(.93); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ui-rolling-text-leaving { display: none; }
+  .ui-rolling-text-entering { animation: none; }
+}
