@@ -86,6 +86,9 @@ export interface FileEntry { path: string; name: string; kind: 'file' | 'directo
 export interface FileContent { path: string; content: string; size: number; language: string; revision: string }
 export interface GitChange { path: string; status: string; staged: boolean; additions: number; deletions: number }
 export interface GitState { available: boolean; branch: string; changes: GitChange[]; error?: string }
+export interface GitBranchComparison {
+  targetRef: string; targetSha: string; mergeBase: string; headSha: string; patch: string; truncated: boolean;
+}
 export interface FileDiff { path: string; patch: string; binary: boolean; truncated: boolean; revision?: string }
 
 export interface Message {
@@ -283,6 +286,8 @@ export interface WorkbenchAPI {
   listFiles(workspaceId: string, relativePath?: string): Promise<FileEntry[] | null>;
   readFile(workspaceId: string, relativePath: string): Promise<FileContent | null>;
   gitState(workspaceId: string): Promise<GitState>;
+  gitBranchRefs(workspaceId: string): Promise<string[]>;
+  gitBranchComparison(workspaceId: string, targetRef: string): Promise<GitBranchComparison>;
   fileDiff(workspaceId: string, relativePath: string): Promise<FileDiff>;
   chooseAttachments(): Promise<PromptAttachment[]>;
   sendPrompt(sessionId: string, input: PromptInput, commandId?: string): Promise<void>;
