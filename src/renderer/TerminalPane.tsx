@@ -2,7 +2,7 @@ import { useTranslation } from 'react-i18next';
 import { useEffect, useRef } from 'react';
 import { Terminal, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import { CircleStop, TerminalSquare } from 'lucide-react';
+import { CircleStop, Minus, TerminalSquare } from 'lucide-react';
 import type { TerminalInfo } from '../shared/types';
 import { type Perform } from './ui';
 import { useAppearance } from './appearance';
@@ -22,7 +22,9 @@ function terminalTheme(element: HTMLElement): ITheme {
   return Object.fromEntries(Object.entries(terminalColors).map(([key, token]) => [key, styles.getPropertyValue(`--terminal-${token}`).trim()]));
 }
 
-export function TerminalPane({ info, cwd, perform }: { info: TerminalInfo; cwd: string; perform: Perform }) {
+export function TerminalPane({ info, cwd, perform, onHide, onStop }: {
+  info: TerminalInfo; cwd: string; perform: Perform; onHide?: () => void; onStop?: () => void;
+}) {
   const { t } = useTranslation('workspace');
   const { theme } = useAppearance();
   const container = useRef<HTMLDivElement>(null);
@@ -104,6 +106,7 @@ export function TerminalPane({ info, cwd, perform }: { info: TerminalInfo; cwd: 
 
   return <section className="terminal-pane"><div className="terminal-toolbar"><span title={cwd}><TerminalSquare size={14} /><span>{cwd}</span></span>
     <span className={`terminal-status ${info.status === 'running' ? 'running' : ''}`}><i />{info.status === 'running' ? t('terminal.running') : info.exitCode !== null ? t('terminal.exitedCode', { code: info.exitCode }) : t('terminal.exited')}</span>
-    {info.status === 'running' && <button className="text-button" onClick={() => void perform(`stop-terminal-${info.id}`, () => window.workbench.stopTerminal(info.id))}><CircleStop size={13} />{t('common.stop')}</button>}
+    {onHide && <button className="text-button" onClick={onHide}><Minus size={13} />{t('shell:app.hideTerminal')}</button>}
+    {info.status === 'running' && onStop && <button className="text-button terminal-stop" onClick={onStop}><CircleStop size={13} />{t('common.stop')}</button>}
   </div><TerminalServicePreviews key={info.id} info={info} perform={perform} /><div className="terminal-surface" ref={container} /></section>;
 }

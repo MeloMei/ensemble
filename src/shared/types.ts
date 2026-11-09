@@ -289,7 +289,7 @@ export interface WorkbenchAPI {
   manageWorkspace(workspaceId: string, input: WorkspaceManagement): Promise<void>;
   updateWorkspace(id: string, input: { name?: string; pinned?: boolean }): Promise<void>;
   activateTab(workspaceId: string, tabId: string): Promise<void>;
-  closeTab(workspaceId: string, tabId: string): Promise<void>;
+  closeTab(workspaceId: string, tabId: string, confirmStop?: boolean): Promise<void>;
   openSessionTab(workspaceId: string, sessionId: string): Promise<void>;
   createTerminal(workspaceId: string): Promise<string>;
   writeTerminal(terminalId: string, data: string): Promise<void>;

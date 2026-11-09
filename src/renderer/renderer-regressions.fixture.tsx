@@ -142,6 +142,49 @@ async function graphReady(count: number) {
 }
 
 const cases: Record<string, () => Promise<void>> = {
+  'TERMINAL-CLOSE-01: collapsing a running terminal preserves its process and reopen uses the same output': async () => {
+    const info = { id: 'terminal-close-fixture', workspaceId: workspace.id, title: 'zsh', status: 'running' as const, exitCode: null, output: '', outputOffset: 0 };
+    const tab = { id: 'terminal-close-tab', kind: 'terminal' as const, terminalId: info.id };
+    let snapshot: Snapshot = { ...collaborationSnapshot([]), terminals: [info], workspaces: [{ ...workspace, tabs: [tab], activeTabId: tab.id }] };
+    let publish = (_snapshot: Snapshot) => {};
+    const closed: [string, string, boolean | undefined][] = [];
+    const subscriptions: string[] = [];
+    const stops: string[] = [];
+    window.workbench = {
+      ...applicationUpdateApi, snapshot: async () => snapshot,
+      subscribe: (listener: typeof publish) => { publish = listener; return () => {}; },
+      getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
+      watchSessions: async () => {}, listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {},
+      resizeTerminal: async () => {},
+      onTerminalOutput: (id: string) => { subscriptions.push(id); return () => {}; },
+      stopTerminal: async (id: string) => { stops.push(id); },
+      closeTab: async (id: string, tabId: string, confirmStop?: boolean) => {
+        closed.push([id, tabId, confirmStop]);
+        snapshot = { ...snapshot, workspaces: [{ ...workspace, tabs: [], activeTabId: null }] };
+        publish(snapshot);
+      },
+    } as unknown as Window['workbench'];
+    await render(<App />);
+    await waitFor(() => subscriptions.length === 1, 'The running terminal did not open');
+    const clickClose = () => act(async () => { document.querySelector<HTMLButtonElement>('.tab-close')!.click(); await tick(); });
+    await clickClose();
+    assert(document.querySelector('dialog[open]') && !closed.length, 'Closing a running tab bypassed the confirmation');
+    await act(async () => {
+      const hide = [...document.querySelectorAll<HTMLButtonElement>('dialog[open] button')].find(item => item.textContent === translate('app.hideTerminal'));
+      assert(hide, 'The dialog did not offer collapsing the terminal');
+      hide.click(); await tick();
+    });
+    assert(!closed.length && !stops.length && !document.querySelector('.terminal-surface') && document.querySelector('.tab-select'), 'Collapsing ended the process or removed its tab');
+    await click('app.showTerminal');
+    await waitFor(() => subscriptions.length === 2, 'Reopening did not restore the terminal subscription');
+    assert(subscriptions.every(id => id === info.id), 'Reopening started a different terminal');
+    await click('workspace:common.stop');
+    await click('common.cancel');
+    assert(!stops.length, 'Cancelling still stopped the process');
+    await clickClose();
+    await click('app.stopAndCloseTerminal');
+    assert(JSON.stringify(closed) === JSON.stringify([[workspace.id, tab.id, true]]) && !document.querySelector('.tab-close'), 'The confirmed close did not end the matching terminal tab');
+  },
   'FILE-REF-01: links from chat reveal the exact file and preserve unsaved edits': async () => {
     const tab = { kind: 'agent' as const, id: 'file-reference-tab', sessionId: session.id };
     const answer: Message = { ...messageRange(0, 1)[0], text: [

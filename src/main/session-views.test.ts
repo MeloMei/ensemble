@@ -32,6 +32,25 @@ async function createFixture(run: ProviderAdapter['run'] = async () => {}) {
 const timestamp = '2026-10-23T00:00:00Z';
 const sorted = (values: string[]) => [...values].sort();
 
+test('closing a running terminal tab requires confirmation and keeps the tab on refusal', async () => {
+  const fixture = await createFixture();
+  try {
+    const { service } = fixture;
+    const workspaceId = await service.engine.createWorkspace({ name: 'Terminal project', cwd: fixture.firstProject });
+    const terminalId = await service.call('workbench:create-terminal', [workspaceId]) as string;
+    const tab = service.engine.workspace(workspaceId).tabs[0];
+    await assert.rejects(service.call('workbench:close-tab', [workspaceId, tab.id]), /确认停止/);
+    assert.equal(service.engine.workspace(workspaceId).tabs[0].id, tab.id);
+    assert.equal(service.terminalSnapshot(terminalId).status, 'running');
+    await service.call('workbench:close-tab', [workspaceId, tab.id, true]);
+    assert.deepEqual(service.engine.workspace(workspaceId).tabs, []);
+    for (let attempt = 0; attempt < 100 && service.terminalSnapshot(terminalId).status === 'running'; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(service.terminalSnapshot(terminalId).status, 'exited');
+  } finally { await fixture.close(); }
+});
+
 test('ordinary project management preserves history and persists relocation, archive and removal', async () => {
   const fixture = await createFixture();
   try {

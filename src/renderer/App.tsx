@@ -35,6 +35,7 @@ import { BusyIcon, DirectoryField, EmptyState, ErrorToast, IconButton, Modal, Mo
 
 type Page = 'workspace' | 'attention' | 'history' | 'workflows' | 'collaboration';
 type Dialog = 'workspace' | 'agent' | 'preview' | 'codex' | 'settings' | null;
+interface TerminalAction { workspaceId: string; tabId: string; terminalId: string; kind: 'close' | 'stop' }
 const CollaborationViews = lazy(() => import('./CollaborationViews').then(module => ({ default: module.CollaborationViews })));
 
 function workspaceGroup(workspace: Workspace, sessions: Session[]) {
@@ -93,6 +94,8 @@ export function App() {
   draftReady.current = new Set((snapshot?.sessions ?? []).filter(session => session.historyLoaded !== false).map(session => session.id));
   const [draftErrors, setDraftErrors] = useState<Record<string, string>>({});
   const [fileRequest, setFileRequest] = useState<WorkspaceFileRequest>();
+  const [terminalAction, setTerminalAction] = useState<TerminalAction>();
+  const [hiddenTerminals, setHiddenTerminals] = useState(new Set<string>());
   const [pending, setPending] = useState<Set<string>>(new Set());
   const [toast, setToast] = useState('');
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -229,13 +232,41 @@ export function App() {
     void perform('create-terminal', () => window.workbench.createTerminal(workspace.id));
   };
   const showFiles = () => { setPage('workspace'); setRightPane(true); };
+  const setTerminalHidden = (id: string, hidden: boolean) => setHiddenTerminals(current => {
+    if (current.has(id) === hidden) return current;
+    const next = new Set(current);
+    if (hidden) next.add(id); else next.delete(id);
+    return next;
+  });
+  const activateTab = (id: string, tab: WorkspaceTab) => {
+    if (tab.kind === 'terminal') setTerminalHidden(tab.terminalId, false);
+    void perform('activate-tab', () => window.workbench.activateTab(id, tab.id));
+  };
+  const requestCloseTab = (id: string, tab: WorkspaceTab, terminalExited: boolean) => {
+    if (tab.kind === 'terminal' && !terminalExited) {
+      setTerminalAction({ workspaceId: id, tabId: tab.id, terminalId: tab.terminalId, kind: 'close' });
+      return;
+    }
+    void perform(`close-tab-${tab.id}`, async () => {
+      await window.workbench.closeTab(id, tab.id);
+      if (tab.kind === 'terminal') setTerminalHidden(tab.terminalId, false);
+    });
+  };
+  const terminalActionKey = terminalAction && `terminal-action-${terminalAction.terminalId}`;
   const renderTab = (tab?: WorkspaceTab) => {
     const tabSession = tab?.kind === 'agent' ? sessions.find(item => item.id === tab.sessionId) : undefined;
     const tabTerminal = tab?.kind === 'terminal' ? snapshot?.terminals.find(item => item.id === tab.terminalId) : undefined;
     if (tabSession && workspace) return <SessionChat key={tabSession.id} session={tabSession} sessions={sessions} openSession={openSession} connected={connected} provider={providers.find(item => item.id === tabSession.providerId)} providers={providers} perform={perform} pending={pending} draft={drafts[tabSession.id] ?? tabSession.draft ?? { text: '' }} draftError={draftErrors[tabSession.id]} onDraftChange={(value, expected) => updateDraft(tabSession.id, value, expected)}
       attentionOpen={tab?.id === activeTab?.id && attentionOpen?.sessionId === tabSession.id ? attentionOpen : undefined}
       onAttentionOpened={onAttentionOpened} />;
-    if (tabTerminal && workspace) return <TerminalPane key={tabTerminal.id} info={tabTerminal} cwd={workspace.cwd} perform={perform} />;
+    if (tab?.kind === 'terminal' && tabTerminal && workspace) {
+      if (hiddenTerminals.has(tabTerminal.id)) return <div className="terminal-collapsed">
+        <button className="button" onClick={() => setTerminalHidden(tabTerminal.id, false)}><TerminalSquare size={14} />{t('app.showTerminal')}</button>
+      </div>;
+      return <TerminalPane key={tabTerminal.id} info={tabTerminal} cwd={workspace.cwd} perform={perform}
+        onHide={() => setTerminalHidden(tabTerminal.id, true)}
+        onStop={() => setTerminalAction({ workspaceId: workspace.id, tabId: tab.id, terminalId: tabTerminal.id, kind: 'stop' })} />;
+    }
     if (tab?.kind === 'preview') return <PreviewPane key={tab.id} tab={tab} />;
     return <EmptyState icon={<Layers2 size={28} />} title={t('app.projectReady')} action={<div className="empty-actions"><button className="button" onClick={openAgentDialog}><Plus size={14} />{t('app.addAgent')}</button><button className="button subtle" disabled={pending.has('create-terminal')} onClick={openLocalTerminal}><TerminalSquare size={14} />{t('app.openTerminal')}</button></div>}>{t('app.projectReadyNote')}</EmptyState>;
   };
@@ -354,7 +385,7 @@ export function App() {
               event.dataTransfer.effectAllowed = 'move';
               setDraggedTab({ workspaceId: workspace.id, tabId: tab.id, activeTabId: workspace.activeTabId, secondaryTabId: workspace.secondaryTabId ?? null });
             }} onDragEnd={() => setDraggedTab(undefined)}
-            onClick={() => void perform('activate-tab', () => window.workbench.activateTab(workspace.id, tab.id))}>
+            onClick={() => activateTab(workspace.id, tab)}>
             {tab.kind === 'agent' ? <AgentIcon providerId={tabSession?.providerId ?? ''} size={14} /> : tab.kind === 'terminal' ? <TerminalSquare size={14} /> : <Globe size={14} />}
             <span>{label}</span>{tabSession && <AttentionBadge session={tabSession} />}
             {tabSession && ['running', 'waiting_approval', 'waiting_children', 'failed'].includes(tabSession.status) && <i className={`tab-state tab-state-${tabSession.status}`} aria-label={statusLabel(tabSession.status)} />}
@@ -362,7 +393,7 @@ export function App() {
           return <div key={tab.id} ref={activeTab?.id === tab.id ? activeTabElement : undefined} className={`workspace-tab ${activeTab?.id === tab.id ? 'active' : ''}`}>
             {activeTab?.id === tab.id && <motion.span className="workspace-tab-active" layoutId={`workspace-tab-${workspace.id}`} transition={reducedMotion ? { duration: 0 } : SPRING_SNAPPY} />}
             {tabSession ? <SessionDetailCard session={tabSession} provider={providers.find(provider => provider.id === tabSession.providerId)} side="bottom">{tabButton}</SessionDetailCard> : tabButton}
-            <Tooltip label={t('app.closeNamedTab', { label })}><button className="tab-close" aria-label={t('app.closeNamedTab', { label })} title={tab.kind === 'terminal' ? t('app.closeTerminalTab') : t('app.closeTab')} onClick={() => void perform(`close-tab-${tab.id}`, () => window.workbench.closeTab(workspace.id, tab.id))}><X size={11} /></button></Tooltip>
+            <Tooltip label={t('app.closeNamedTab', { label })}><button className="tab-close" aria-label={t('app.closeNamedTab', { label })} title={tab.kind === 'terminal' ? t('app.closeTerminalTab') : t('app.closeTab')} onClick={() => requestCloseTab(workspace.id, tab, tabTerminal?.status === 'exited')}><X size={11} /></button></Tooltip>
           </div>;
         })}</div><div className="tab-add" ref={tabMenuContainer} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setTabMenu(false); }} onKeyDown={event => {
             if (!tabMenu) return;
@@ -403,6 +434,22 @@ export function App() {
     {dialog === 'agent' && workspace && <NewAgentDialog workspace={workspace} providers={providers} pending={pending} perform={perform} onClose={() => setDialog(null)} />}
     {dialog === 'preview' && workspace && <PreviewDialog workspace={workspace} pending={pending} perform={perform} onClose={() => setDialog(null)} />}
     {dialog === 'codex' && <CodexDialog initialCwd={workspace?.cwd ?? ''} pending={pending} perform={perform} onClose={() => setDialog(null)} />}
+    {terminalAction && terminalActionKey && <Modal title={t('app.stopTerminalTitle')} subtitle={t('app.stopTerminalNote')}
+      busy={pending.has(terminalActionKey)} onClose={() => setTerminalAction(undefined)}>
+      <div className="modal-actions">
+        {terminalAction.kind === 'close' ? <button className="button subtle" disabled={pending.has(terminalActionKey)} onClick={() => {
+          setTerminalHidden(terminalAction.terminalId, true);
+          setTerminalAction(undefined);
+        }}>{t('app.hideTerminal')}</button> : <button className="button subtle" disabled={pending.has(terminalActionKey)} onClick={() => setTerminalAction(undefined)}>{t('common.cancel')}</button>}
+        <button className="button danger" disabled={pending.has(terminalActionKey)} onClick={() => void perform(terminalActionKey, async () => {
+          if (terminalAction.kind === 'close') {
+            await window.workbench.closeTab(terminalAction.workspaceId, terminalAction.tabId, true);
+            setTerminalHidden(terminalAction.terminalId, false);
+          } else await window.workbench.stopTerminal(terminalAction.terminalId);
+          setTerminalAction(current => current === terminalAction ? undefined : current);
+        })}>{t(terminalAction.kind === 'close' ? 'app.stopAndCloseTerminal' : 'app.stopTerminal')}</button>
+      </div>
+    </Modal>}
     {toast && <ErrorToast message={toast} onDismiss={() => setToast('')} />}
   </div></WorkspaceFileNavigation.Provider>;
 }
