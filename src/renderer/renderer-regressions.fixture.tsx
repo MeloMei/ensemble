@@ -2089,6 +2089,99 @@ const cases: Record<string, () => Promise<void>> = {
     await show({ ...session, queue: [] });
     assert(!document.querySelector('.composer-dock'), 'An empty session displays a composer dock');
   },
+  'FILE-PANE-WIDTH: the divider follows the pointer and restores the preferred width and selected file': async () => {
+    const snapshot: Snapshot = { ...collaborationSnapshot([]), sessions: [session], providers: [provider],
+      workspaces: [{ ...workspace, tabs: [{ kind: 'agent', id: 'file-pane-tab', sessionId: session.id }], activeTabId: 'file-pane-tab' }] };
+    const file = { path: 'pane.txt', name: 'pane.txt', kind: 'file', size: 7 };
+    let reads = 0;
+    window.workbench = {
+      ...applicationUpdateApi,
+      snapshot: async () => snapshot, subscribe: () => () => {},
+      getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
+      watchSessions: async () => {}, listFiles: async () => [file], gitState: async () => ({ available: false }), setUnsavedFiles: () => {},
+      readFile: async () => { reads++; return { ...file, content: 'fixture', revision: 'r0', language: 'text' }; },
+    } as unknown as Window['workbench'];
+    const storageKey = 'ensemble.file-pane-width';
+    const previous = localStorage.getItem(storageKey);
+    localStorage.removeItem(storageKey);
+    try {
+      await render(<App />, 'user');
+      const host = document.querySelector<HTMLElement>('.workbench')!.parentElement!;
+      const resizeWindow = async (width: number) => {
+        await act(async () => { host.style.width = `${width}px`; await tick(); });
+      };
+      await resizeWindow(1440);
+      await click(file.name);
+      await waitFor(() => Boolean(document.querySelector('[data-test-editor]')), 'The file did not open');
+      const editor = input('[data-test-editor]');
+      const pane = document.querySelector<HTMLDivElement>('.file-panel-transition')!;
+      const content = pane.querySelector<HTMLElement>('.file-pane-content')!;
+      const divider = pane.querySelector<HTMLDivElement>('[role=separator]')!;
+      const width = () => pane.getBoundingClientRect().width;
+      const centerWidth = () => document.querySelector('.workspace-center')!.getBoundingClientRect().width;
+      const columnsWidth = () => document.querySelector('.workspace-columns')!.getBoundingClientRect().width;
+      await waitFor(() => Number(divider.getAttribute('aria-valuemax')) === 640 && width() > 0, 'The resized fixture did not settle');
+      const x = Math.round(pane.getBoundingClientRect().left);
+      const initialWidth = width();
+      let captured = 0;
+      divider.setPointerCapture = pointerId => { captured = pointerId; };
+      const pointer = (type: string, clientX: number) => act(async () => {
+        divider.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, isPrimary: true, pointerId: 3, pointerType: 'mouse', button: 0, clientX }));
+        await tick();
+      });
+      await pointer('pointerdown', x);
+      await pointer('pointermove', x - 80);
+      assert(captured === 3 && width() === initialWidth + 80 && centerWidth() === columnsWidth() - width(), 'Dragging did not lay out both panes at the pointer width');
+      await pointer('pointermove', x - 1500);
+      assert(width() === Number(divider.getAttribute('aria-valuemax')) && centerWidth() >= 560, 'Dragging squeezed the workspace past its minimum');
+      assert(localStorage.getItem(storageKey) === null, 'A pointer move wrote the preference');
+      await pointer('pointercancel', x - 1500);
+      assert(width() === initialWidth && localStorage.getItem(storageKey) === null, 'Cancel retained an unfinished drag');
+      await pointer('pointerdown', x);
+      await pointer('pointermove', x - 140);
+      await pointer('pointerup', x - 140);
+      const draggedWidth = initialWidth + 140;
+      assert(width() === draggedWidth && localStorage.getItem(storageKey) === String(draggedWidth), 'Releasing the divider did not remember its position');
+
+      await act(async () => { divider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true })); await tick(); });
+      const savedWidth = draggedWidth + 24;
+      assert(width() === savedWidth && localStorage.getItem(storageKey) === String(savedWidth), 'The keyboard did not resize and save the panel');
+      if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        assert(getComputedStyle(content).transitionDuration === '0s', 'Reduced motion left a panel animation enabled');
+      } else {
+        assert(getComputedStyle(content).transitionProperty === 'opacity', 'The panel animates properties that can change layout');
+      }
+      await click('shell:app.hideFiles');
+      assert(width() === 0 && centerWidth() === columnsWidth() && pane.inert, 'Closing the panel did not immediately release its layout width');
+      assert(content.getBoundingClientRect().width === savedWidth && input('[data-test-editor]') === editor, 'Closing reflowed or replaced the file editor');
+      await click('shell:app.showFiles');
+      assert(width() === savedWidth && centerWidth() === columnsWidth() - savedWidth, 'Opening did not immediately restore the target layout');
+      await resizeWindow(1150);
+      await waitFor(() => width() > 0 && width() < savedWidth, 'The panel did not clamp to the available workspace width');
+      await act(async () => { editor.focus(); await tick(); });
+      await resizeWindow(1040);
+      await waitFor(() => pane.inert && width() === 0, 'A window with insufficient width left the panel visible');
+      assert(document.querySelector('.file-pane-space-note')?.textContent === translate('shell:app.filesNeedSpace')
+        && document.activeElement === button('shell:app.hideFiles'), 'The collapsed panel lost its reason or keyboard focus');
+      assert(localStorage.getItem(storageKey) === String(savedWidth), 'Narrowing the window overwrote the preferred width');
+      await resizeWindow(1440);
+      await waitFor(() => width() === savedWidth, 'Expanding the window did not restore the preferred width');
+      assert(!pane.inert && input('[data-test-editor]') === editor && document.querySelector('.tree-row.selected')?.textContent?.includes(file.name)
+        && reads === 1, 'Auto-hiding replaced the selected file or read it again');
+      await click('shell:app.hideFiles');
+      await resizeWindow(1040);
+      await resizeWindow(1440);
+      await frames();
+      assert(width() === 0 && pane.inert, 'Resizing opened a panel the user had closed');
+
+      await render(<div />);
+      await render(<App />, 'user');
+      await waitFor(() => document.querySelector('.file-panel-transition')?.getBoundingClientRect().width === savedWidth, 'Reopening Ensemble did not read the width preference');
+    } finally {
+      if (previous === null) localStorage.removeItem(storageKey);
+      else localStorage.setItem(storageKey, previous);
+    }
+  },
   'UX2-SHELL: add-tab menus remain inside the workspace at both ends of the tab strip': async () => {
     const values = Array.from({ length: 12 }, (_, index) => ({ ...session, id: `menu-${index}`, title: `Independent task ${index}` }));
     const tabs = values.map(value => ({ id: `tab-${value.id}`, kind: 'agent' as const, sessionId: value.id }));
@@ -2101,8 +2194,8 @@ const cases: Record<string, () => Promise<void>> = {
       watchSessions: async () => {}, listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {},
     } as unknown as Window['workbench'];
     await render(<App />);
-    document.querySelector<HTMLElement>('.workbench')!.parentElement!.style.width = `${window.innerWidth}px`;
     await frames(); await click('shell:app.hideFiles');
+    document.querySelector<HTMLElement>('.workbench')!.parentElement!.style.width = `${window.innerWidth}px`;
     await waitFor(() => document.querySelector('.file-panel-transition')!.getBoundingClientRect().width < 1, 'The file panel did not finish closing');
     const checkMenu = async () => {
       await click('shell:app.addTab'); await frames();
