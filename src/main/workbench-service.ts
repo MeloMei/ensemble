@@ -295,6 +295,9 @@ export async function createWorkbenchService(options: {
     handle('workbench:resume-workflow', (_event, id) => engine.resumeWorkflow(idSchema.parse(id)));
     handle('workbench:split-workspace', (_event, id, input) => engine.splitWorkspace(idSchema.parse(id), z.object({ tabId: idSchema.optional(), direction: z.enum(['horizontal', 'vertical']).optional(), ratio: z.number().min(0.2).max(0.8).optional() }).strict().parse(input)));
     const workspaceCwd = (id: unknown) => engine.workspace(idSchema.parse(id)).cwd;
+    handle('workbench:git-branch-refs', (_event, id) => workspaceFiles.gitBranchRefs(workspaceCwd(id)));
+    handle('workbench:git-branch-comparison', (_event, id, targetRef) =>
+      workspaceFiles.gitBranchComparison(workspaceCwd(id), z.string().min(1).max(4096).parse(targetRef)));
     handle('workbench:write-file', (_event, id, input) => workspaceFiles.write(workspaceCwd(id), z.object({ path: cwdSchema, content: z.string().max(1_048_576), revision: idSchema }).strict().parse(input)));
     handle('workbench:git-mutate', (_event, id, input) => {
       const cwd = workspaceCwd(id);

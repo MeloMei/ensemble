@@ -5,6 +5,7 @@ import { useContext, useEffect, useRef, useState, useSyncExternalStore } from 'r
 import { FileCode2, Files, GitBranch, GitCompareArrows, GitPullRequest, LoaderCircle, Maximize2, MessageSquare, Minimize2, PanelRight, RefreshCw, Save, X } from 'lucide-react';
 import { z } from 'zod';
 import type { FileContent, FileDiff, FileEntry, GitCommitPreview, GitMutation, GitState, PullRequestReview, Session, Workspace } from '../shared/types';
+import { BranchComparison } from './BranchComparison';
 import { CodeEditor } from './CodeEditor';
 import { WorkspaceFileTree } from './WorkspaceFileTree';
 import { FileDraftStore } from './file-drafts';
@@ -196,6 +197,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
       <button disabled={missingDirectory} className={view === 'pr' ? 'active' : ''} aria-pressed={view === 'pr'} onClick={() => { setView('pr'); run('pr', refreshPullRequest); }}><GitPullRequest size={13} />PR / CI</button>
     </div>
     {!missingDirectory && <div className="file-branch"><GitBranch size={13} /><span>{git?.available ? git.branch : t('files.notGitLabel')}</span>
+      {view === 'changes' && <BranchComparison workspaceId={workspace.id} />}
       {git?.available && <button className="review-text-button" disabled={!!busy || dirty} onClick={() => run('preview', async () => setPreview(await window.workbench.gitCommitPreview(workspace.id)))}>{t('files.commitPreview')}</button>}
     </div>}
     {error && <div className="pane-note error-text" role="alert">{typeof error === 'string' ? error : renderDisplayText('', error)}</div>}

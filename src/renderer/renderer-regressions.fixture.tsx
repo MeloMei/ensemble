@@ -1372,6 +1372,56 @@ const cases: Record<string, () => Promise<void>> = {
     await waitFor(() => open('src/lib') && Boolean(row(target)), 'Returning to the workspace lost its expanded paths');
     assert(opened.length === 1, 'Restoring the tree reopened a file without a click');
   },
+  'BRANCH-COMPARE: Changes opens a read-only comparison with explicit refs and preserves the working diff': async () => {
+    const local = 'refs/heads/review';
+    const remote = 'refs/remotes/origin/review';
+    const currentProject = { ...workspace, id: 'branch-compare-project' };
+    const calls: string[][] = [];
+    const staged = 'Staged changes\ndiff --git a/file.txt b/file.txt\n@@ -1 +1 @@\n-before\n+staged';
+    const targetSha = 'a'.repeat(40), mergeBase = 'b'.repeat(40), headSha = 'c'.repeat(40);
+    let targetUnavailable = false;
+    window.workbench = {
+      listFiles: async () => [], setUnsavedFiles: () => {},
+      gitState: async () => ({ available: true, branch: 'main', changes: [{ path: 'file.txt', status: 'M ', staged: true, additions: 1, deletions: 1 }] }),
+      fileDiff: async () => ({ path: 'file.txt', patch: staged, binary: false, truncated: false, revision: 'staged-1' }),
+      gitBranchRefs: async (id: string) => { calls.push([id]); return [local, remote]; },
+      gitBranchComparison: async (id: string, targetRef: string) => {
+        calls.push([id, targetRef]);
+        if (targetUnavailable) throw new Error('The selected branch reference is unavailable');
+        return { targetRef, targetSha, mergeBase, headSha, patch: targetRef === local ? '+committed content' : '', truncated: targetRef === local };
+      },
+    } as unknown as Window['workbench'];
+    await render(<FileReviewPanel workspace={currentProject} refreshKey="branch" perform={perform} />);
+    await settle();
+    assert(calls.length === 0 && !document.querySelector('.branch-comparison'), 'Opening Files read branch refs before user intent');
+    await act(async () => { document.querySelector<HTMLButtonElement>('.file-view-tabs button:nth-child(2)')!.click(); await tick(); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('.review-change-row .tree-row')!.click(); await tick(); });
+    await settle();
+    const workingDiff = document.querySelector('.review-inspector .review-diff');
+    assert(workingDiff?.textContent?.includes('+staged'), 'The existing staged diff was not available');
+    await click('workspace:files.branchCompare');
+    const compare = async (ref: string) => {
+      await chooseOption(button('workspace:files.branchCompareTarget'), ref);
+      await click('workspace:files.branchCompareRun');
+    };
+    await compare(remote);
+    const dialog = document.querySelector('.branch-comparison')!;
+    assert(dialog.textContent?.includes(translate('workspace:files.branchCompareEmpty')), 'The empty comparison state was missing');
+    const revisions = [...dialog.querySelectorAll('dd code')].map(item => item.textContent);
+    assert(revisions.join(',') === [remote, targetSha, mergeBase, headSha].join(','), 'The selected ref or exact commit range was missing');
+    await compare(local);
+    assert(dialog.querySelector('pre')?.textContent === '+committed content'
+      && dialog.textContent?.includes(translate('workspace:files.branchCompareTruncated')), 'A truncated committed patch looked complete');
+    targetUnavailable = true;
+    await compare(remote);
+    assert(dialog.querySelector('[role=alert]')?.textContent?.includes('reference is unavailable') && !dialog.querySelector('pre'),
+      'A stale patch was presented as the result of a failed comparison');
+    await act(async () => { document.querySelector<HTMLButtonElement>('dialog .modal-heading button')!.click(); await tick(); });
+    assert(document.querySelector('.review-inspector .review-diff') === workingDiff
+      && !document.querySelector('.branch-comparison'), 'Opening or closing comparison replaced the staged diff');
+    assert(JSON.stringify(calls) === JSON.stringify([[currentProject.id], [currentProject.id, remote], [currentProject.id, local], [currentProject.id, remote]]),
+      'Branch comparison used a different workspace or did not send the full selected ref');
+  },
   'UX2-FILES-PR: refreshing the PR view rereads its checks without background GitHub requests': async () => {
     let reviewReads = 0, fileReads = 0;
     window.workbench = {
