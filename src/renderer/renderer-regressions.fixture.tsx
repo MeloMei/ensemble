@@ -1217,87 +1217,235 @@ const cases: Record<string, () => Promise<void>> = {
   },
   'UI-05: inline session controls preserve drafts, capabilities and partial settings updates': async () => {
     const writes: Record<string, unknown>[] = [];
+    let sends = 0;
     let draftChanges = 0;
-    const configuredProvider: ProviderInfo = { ...provider, models: [{ id: 'model-a', name: 'Model A', free: false }, { id: 'model-b', name: 'Model B', free: false }] };
+    const configuredProvider: ProviderInfo = { ...provider, models: [
+      { id: 'model-a', name: 'Model A', free: false },
+      { id: 'model-b', name: 'Alternate', free: false, efforts: ['low'] },
+      { id: 'model-c', name: 'Fast model', free: true, efforts: [] },
+    ] };
     const configuredSession: Session = { ...session, modelId: 'model-a' };
     const draft = { text: 'Keep this unfinished task', attachments: [{ id: 'attachment', name: 'note.txt', kind: 'text' as const, ownedPath: '/note.txt', mimeType: 'text/plain', size: 4, sha256: 'a'.repeat(64) }] };
     let settingsVisible = false;
-    const show = (overrides: Partial<Parameters<typeof SessionChat>[0]> = {}) => render(<>{chat({ session: configuredSession, provider: configuredProvider, draft, onDraftChange: () => { draftChanges++; }, ...overrides })}
-      {settingsVisible && <SessionSettingsPanel session={overrides.session ?? configuredSession} workspaceId={workspace.id} visible perform={perform} openSession={() => {}} />}
-    </>);
-    const selector = (key: string) => `.composer-controls button[role=combobox][aria-label="${translate(`workspace:chat.${key}`)}"]`;
-    const control = (key: string) => {
-      const element = document.querySelector<HTMLButtonElement>(selector(key));
-      assert(element, `Missing session control ${key}`);
-      return element;
+    let receiveSession: React.Dispatch<React.SetStateAction<Session>>;
+    let holdWrite: ReturnType<typeof deferred<void>> | undefined;
+    let delaySnapshot = false;
+    let deliverSnapshot: (() => void) | undefined;
+    let failWrite = false;
+    function ComposerFixture({ overrides }: { overrides: Partial<Parameters<typeof SessionChat>[0]> }) {
+      const [current, setCurrent] = React.useState(configuredSession);
+      receiveSession = setCurrent;
+      const displayed = overrides.session ?? current;
+      return <>{chat({ session: displayed, provider: configuredProvider, draft, onDraftChange: () => { draftChanges++; }, ...overrides })}
+        {settingsVisible && <SessionSettingsPanel session={displayed} workspaceId={workspace.id} visible perform={perform} openSession={() => {}} />}
+      </>;
+    }
+    const show = (overrides: Partial<Parameters<typeof SessionChat>[0]> = {}) => render(<ComposerFixture overrides={overrides} />, 'user');
+    const trigger = () => document.querySelector<HTMLButtonElement>('.composer-select-model')!;
+    const permission = () => document.querySelector<HTMLButtonElement>(`.composer-controls button[role=combobox][aria-label="${translate('workspace:chat.permissions')}"]`)!;
+    const picker = () => document.querySelector<HTMLElement>('.composer-model-picker[data-state=open]');
+    const disclosure = () => picker()!.querySelector<HTMLButtonElement>('.composer-model-disclosure')!;
+    const slider = () => picker()?.querySelector<HTMLInputElement>('input[type=range]');
+    const modelOption = (label: string) => [...picker()!.querySelectorAll<HTMLButtonElement>('.composer-model-option')].find(item => item.textContent?.startsWith(label));
+    const open = async () => {
+      await act(async () => { trigger().focus(); trigger().click(); await tick(); });
+      await waitFor(() => Boolean(picker()), 'The model control did not open');
+      return picker()!;
     };
-    const controls = () => ['model', 'effort', 'permissions'].map(control);
-    const menu = () => document.querySelector<HTMLElement>('.composer-select-menu[role=listbox]');
-    const open = async (key: string) => {
-      await act(async () => {
-        control(key).focus();
-        control(key).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-        await tick();
-      });
-      await waitFor(() => Boolean(menu()), `Session control ${key} did not open its application menu`);
-      return menu()!;
+    const expand = async () => {
+      await act(async () => { disclosure().click(); await tick(); });
+      const search = input('.composer-model-search input');
+      assert(disclosure().getAttribute('aria-expanded') === 'true' && document.activeElement === search, 'Opening the model list did not focus search');
+      return search;
     };
-    const choose = async (key: string, value: string) => {
-      const list = await open(key);
-      const option = [...list.querySelectorAll<HTMLElement>('[role=option]')].find(item => item.dataset.value === value);
-      assert(option && !option.hasAttribute('data-disabled'), `Missing selectable session option ${key}: ${value}`);
+    const choose = async (label: string) => {
+      const option = modelOption(label);
+      assert(option && !option.disabled, `Missing selectable model ${label}`);
       await act(async () => { option.click(); await tick(); });
-      await waitFor(() => !menu(), `Session control ${key} did not close after selection`);
+    };
+    const composerHost = window as unknown as {
+      dispatchComposerInput: (event: string) => void;
+      completeComposerInput: (error?: string) => void;
+    };
+    const composerInput = (event: Record<string, string | number>) => new Promise<void>((resolve, reject) => {
+      composerHost.completeComposerInput = error => { if (error) reject(new Error(error)); else resolve(); };
+      composerHost.dispatchComposerInput(JSON.stringify(event));
+    });
+    const key = async (name: string, windowsVirtualKeyCode: number) => {
+      await act(async () => {
+        for (const type of ['keyDown', 'keyUp']) await composerInput({ type, key: name, code: name, windowsVirtualKeyCode });
+      });
     };
     window.workbench = {
       listSkills: async () => [{ id: 'skill', name: 'Skill', path: '/skill', description: '', scope: 'project', editable: true }],
-      updateSession: async (_id: string, patch: Record<string, unknown>) => { writes.push(structuredClone(patch)); if (patch.skillAssignment) return { skillIds: ['skill'], updatedAt: '2026-11-04T01:00:00Z' }; },
+      sendPrompt: async () => { sends++; },
+      updateSession: async (_id: string, patch: { modelId?: string | null; settings?: { effort?: string | null; permission?: 'review' | 'read-only' }; skillAssignment?: unknown }) => {
+        writes.push(structuredClone(patch));
+        if (patch.skillAssignment) return { skillIds: ['skill'], updatedAt: '2026-11-04T01:00:00Z' };
+        if (holdWrite) await holdWrite.promise;
+        if (failWrite) throw new Error('fixture rejected the session settings');
+        const deliver = () => receiveSession(current => ({
+          ...current,
+          modelId: patch.modelId === undefined ? current.modelId : patch.modelId ?? undefined,
+          settings: {
+            ...current.settings,
+            permission: patch.settings?.permission ?? current.settings?.permission,
+            effort: patch.settings?.effort === undefined ? current.settings?.effort : patch.settings.effort ?? undefined,
+          },
+        }));
+        if (delaySnapshot) deliverSnapshot = deliver;
+        else deliver();
+      },
     } as unknown as Window['workbench'];
     await show();
     const textarea = input('textarea');
     const assertDraft = () => assert(input('textarea') === textarea && textarea.value === draft.text && document.querySelector('.attachments-strip')?.textContent?.includes('note.txt') && draftChanges === 0, 'Session controls replaced or erased the unfinished draft');
-    assert(!document.querySelector(`.chat-toolbar button[aria-label="${translate('workspace:chat.settings')}"]`) && controls().every(item => !item.disabled), 'Session controls require opening settings or retain a duplicate settings entry');
-    const modelTrigger = control('model');
-    const list = await open('model');
-    const selectedModel = list.querySelector<HTMLElement>('[role=option][data-value="model-a"]');
-    assert(selectedModel?.getAttribute('aria-selected') === 'true' || selectedModel?.dataset.state === 'checked', 'The model menu does not identify its current selection');
-    await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await tick(); });
-    await waitFor(() => !menu() && document.activeElement === modelTrigger, 'Escape did not close the session menu and restore trigger focus');
-    assert(writes.length === 0, 'Canceling the session menu changed a setting');
-    await choose('model', 'model-a');
-    assert(writes.length === 0, 'Selecting the current model wrote an unchanged setting');
-    await choose('permissions', 'read-only');
-    await choose('effort', 'high');
-    await choose('model', 'model-b');
+    assert(!document.querySelector(`.chat-toolbar button[aria-label="${translate('workspace:chat.settings')}"]`) && !trigger().disabled && !permission().disabled, 'Session controls require opening settings or retain a duplicate settings entry');
+
+    const panel = await open();
+    const title = panel.querySelector('h2');
+    const originalSlider = slider()!;
+    assert(originalSlider && document.activeElement === originalSlider && disclosure().getAttribute('aria-expanded') === 'false', 'The model picker did not start with the current value and effort');
+    await expand();
+    assert(modelOption('Model A')?.getAttribute('aria-pressed') === 'true', 'The model list does not identify its current selection');
+    await key('Escape', 27);
+    assert(picker() === panel && document.activeElement === disclosure(), 'Escape from search did not fold the model list');
+    await key('Escape', 27);
+    await waitFor(() => !picker() && document.activeElement === trigger(), 'Escape did not close the picker and restore trigger focus');
+    assert(writes.length === 0, 'Canceling the picker changed a setting');
+    await chooseOption(permission(), 'read-only');
+    await waitFor(() => !document.querySelector('.composer-select-menu') && document.activeElement === permission(), 'The permissions menu did not restore focus');
+
+    const persistentPanel = await open();
+    const persistentTitle = persistentPanel.querySelector('h2');
+    const persistentSlider = slider()!;
+    const assertStable = (phase: string) => assert(picker() === persistentPanel && picker()?.querySelector('h2') === persistentTitle && slider() === persistentSlider,
+      `The ${phase} replaced the open picker (${picker() === persistentPanel}), title (${picker()?.querySelector('h2') === persistentTitle}), or slider (${slider() === persistentSlider})`);
+    const track = persistentPanel.querySelector<HTMLElement>('.discrete-slider-track')!;
+    const rail = persistentPanel.querySelector<HTMLElement>('.discrete-slider-control')!;
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    assert((getComputedStyle(persistentPanel).animationName === 'none') === reduced, 'Picker motion ignored the system preference');
+    const drag = async (type: string, fraction: number) => {
+      const bounds = track.getBoundingClientRect();
+      await act(async () => {
+        await composerInput({ type, x: bounds.left + bounds.width * fraction, y: bounds.top + bounds.height / 2,
+          button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, ...(type === 'mouseMoved' ? { force: .5 } : { clickCount: 1 }) });
+      });
+    };
+    await waitFor(() => !persistentPanel.getAnimations().some(animation => animation.playState === 'running'), 'The picker did not finish opening');
+    await drag('mousePressed', .5);
+    await waitFor(() => rail.hasAttribute('data-dragging'), 'The slider did not capture the pointer');
+    await drag('mouseMoved', .82);
+    const percent = () => parseFloat(rail.style.getPropertyValue('--slider-position'));
+    await waitFor(() => rail.hasAttribute('data-dragging') && percent() > 79 && percent() < 85,
+      () => `The slider did not track the pointer at 82% during drag (position ${percent()}%)`, 10);
+    assert(Number(writes.length) === 1, 'The slider saved during a pointer drag');
+    assert(getComputedStyle(rail.querySelector('.discrete-slider-thumb')!).transitionDuration === '0s', 'The thumb was eased during a pointer drag');
+    holdWrite = deferred<void>();
+    await drag('mouseReleased', .82);
+    assertStable('pointer release');
+    assert(percent() === 100 && !rail.hasAttribute('data-dragging') && Number(writes.length) === 2, 'Pointer release did not snap and commit once');
+    await show({ pending: new Set([`session-settings-${session.id}`]) });
+    assertStable('pending settings write');
+    assert(button('workspace:chat.sendTask').disabled, 'A settings write leaves Send available');
+    await act(async () => { textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await tick(); });
+    assert(sends === 0, 'Enter bypassed the pending settings guard');
+    holdWrite.resolve();
+    holdWrite = undefined;
+    await settle(); await show();
+    assert(persistentSlider.getAttribute('aria-valuetext') === translate('workspace:chat.effort.high'), 'The stored effort did not match the slider');
+
+    const search = await expand();
+    const catalog = persistentPanel.querySelector('.composer-model-catalog-content')!;
+    await waitFor(() => !catalog.getAnimations().some(animation => animation.playState === 'running'), 'The model catalog did not finish expanding');
+    const expandedBounds = persistentPanel.getBoundingClientRect();
+    await change(search, 'no matching model');
+    assert(picker()?.querySelector('.composer-model-empty')?.textContent === translate('workspace:chat.noMatchingModels'), 'The model search did not report no results');
+    const filteredBounds = persistentPanel.getBoundingClientRect();
+    assert(Math.abs(filteredBounds.height - expandedBounds.height) < 1 && Math.abs(filteredBounds.top - expandedBounds.top) < 1, 'Searching moved or resized the expanded picker');
+    await change(search, 'MODEL-B');
+    assert(!modelOption('Model A') && modelOption('Alternate'), 'Model search did not filter by model ID');
+    holdWrite = deferred<void>();
+    delaySnapshot = true;
+    await choose('Alternate');
+    assertStable('model choice');
+    assert(disclosure().getAttribute('aria-expanded') === 'false' && persistentTitle?.textContent?.includes('Alternate'), 'Model selection did not update the title and fold the list');
+    const roll = persistentTitle?.querySelector('.ui-rolling-text-entering');
+    assert(reduced ? !roll : Boolean(roll), 'The model label did not follow the motion preference');
+    holdWrite.resolve();
+    holdWrite = undefined;
+    await settle();
+    assertStable('write acknowledgement before the snapshot');
+    assert(persistentTitle?.textContent?.includes('Alternate') && persistentSlider.value === '0' && persistentPanel.getAttribute('aria-busy') === 'true', 'The picker reverted to the previous selection while awaiting the snapshot');
+    assert(deliverSnapshot, 'The successful write did not stage a session snapshot');
+    const receive = deliverSnapshot;
+    delaySnapshot = false;
+    await act(async () => { receive(); await tick(); });
+    assertStable('model write completion');
+    assert(persistentSlider.value === '0' && !persistentPanel.hasAttribute('aria-busy'), 'The snapshot did not settle the picker or clear the incompatible effort');
+    await act(async () => { persistentSlider.focus(); });
+    await key('ArrowRight', 39); await settle();
+    assert(persistentSlider.getAttribute('aria-valuetext') === translate('workspace:chat.effort.low'), 'ArrowRight did not select the next effort');
+    await expand(); await choose(translate('workspace:chat.cliDefault')); await settle();
+    assertStable('CLI default selection');
+    assert(persistentSlider.getAttribute('aria-valuetext') === translate('workspace:chat.effort.low'), 'The CLI default lost a compatible effort');
+    await act(async () => { persistentSlider.focus(); });
+    await key('Home', 36); await settle();
+    assert(persistentSlider.value === '0', 'Home did not restore the runtime default effort');
+    await expand(); await choose('Fast model'); await settle();
+    assert(picker() === persistentPanel && !slider() && !trigger().querySelector('.composer-model-effort'), 'A model without reasoning support displayed the effort control');
+    await expand(); await choose('Fast model'); await settle();
+    assert(JSON.stringify(writes) === JSON.stringify([
+      { settings: { permission: 'read-only' } }, { settings: { effort: 'high' } },
+      { modelId: 'model-b', settings: { effort: null } }, { settings: { effort: 'low' } },
+      { modelId: null }, { settings: { effort: null } }, { modelId: 'model-c' },
+    ]), `A stale or duplicate setting was sent: ${JSON.stringify(writes)}`);
+    await expand();
+    holdWrite = deferred<void>();
+    failWrite = true;
+    await choose('Model A');
+    assert(persistentTitle?.textContent?.includes('Model A') && slider(), 'The proposed model was not shown while saving');
+    holdWrite.resolve();
+    holdWrite = undefined;
+    await settle();
+    failWrite = false;
+    assert(picker() === persistentPanel && persistentTitle?.textContent?.includes('Fast model') && !slider() && !persistentPanel.hasAttribute('aria-busy'), 'The picker retained a rejected model choice');
+    assert(errors.pop()?.includes('fixture rejected the session settings'), 'The rejected model change was not reported');
+    await key('Escape', 27);
+    assertDraft();
+
     settingsVisible = true; await show();
     assert(!document.querySelector('.session-settings [role=combobox]'), 'Advanced settings duplicate the inline session controls');
-    await change(input('.session-skills input'), true);
-    await choose('effort', '');
-    await choose('model', '');
-    assert(JSON.stringify(writes) === JSON.stringify([{ settings: { permission: 'read-only' } }, { settings: { effort: 'high' } }, { modelId: 'model-b' }, { skillAssignment: { skillId: 'skill', enabled: true } }, { settings: { effort: null } }, { modelId: null }]), `A stale setting was sent: ${JSON.stringify(writes)}`);
-    assertDraft();
+    await change(input('.session-skills input'), true); await settle();
+    assert(JSON.stringify(writes.at(-1)) === JSON.stringify({ skillAssignment: { skillId: 'skill', enabled: true } }), 'Inline settings changed the separate skill write');
     settingsVisible = false; await show();
-    await open('effort');
+    await open();
     await show({ session: { ...configuredSession, status: 'running' } });
-    await waitFor(() => !menu(), 'An open session menu remained available after its session started running');
+    assert(!picker(), 'An open picker remained available after its session started running');
     for (const status of ['running', 'waiting_approval', 'waiting_children', 'queued'] as const) {
       await show({ session: { ...configuredSession, status } });
-      assert(controls().every(item => item.disabled), `Session controls remain editable during ${status}`);
+      assert(trigger().disabled && permission().disabled, `Session controls remain editable during ${status}`);
     }
-    for (const key of [`send-${session.id}`, `session-settings-${session.id}`]) {
-      await show({ pending: new Set([key]) });
-      assert(controls().every(item => item.disabled), `Session controls remain editable during ${key}`);
+    for (const pending of [`send-${session.id}`, `session-settings-${session.id}`]) {
+      await show({ pending: new Set([pending]) });
+      assert(trigger().disabled && permission().disabled, `Session controls remain editable during ${pending}`);
     }
     await show({ pending: new Set(['session-settings-other-session']) });
-    assert(controls().every(item => !item.disabled), 'Another session settings write blocks this composer');
+    assert(!trigger().disabled && !permission().disabled, 'Another session settings write blocks this composer');
     await show({ provider: { ...configuredProvider, capabilities: { ...configuredProvider.capabilities, effort: false, permissions: false } } });
-    assert(!document.querySelector(selector('effort')) && !document.querySelector(selector('permissions')) && !control('model').disabled, 'Unsupported runtime controls remain visible');
-    await show({ provider: { ...configuredProvider, efforts: [] } });
-    assert(!document.querySelector(selector('effort')), 'Empty reasoning options still expose a reasoning control');
-    await show({ provider: { ...configuredProvider, models: [] } });
-    assert(control('model').disabled && control('model').textContent?.includes(configuredSession.modelId!), 'Missing model catalog hides or enables changing the current model');
-    await show({ session, provider: { ...configuredProvider, models: [] } });
-    assert(control('model').disabled && control('model').textContent?.includes(translate('workspace:chat.modelDefault', { provider: configuredProvider.name })), 'Missing model catalog does not preserve the runtime default');
+    await open();
+    assert(!slider() && !permission() && !trigger().disabled, 'Unsupported runtime controls remain visible');
+    await key('Escape', 27);
+
+    await show({ session: { ...configuredSession, modelId: 'legacy-model' } });
+    await open(); await expand();
+    const legacy = modelOption('legacy-model');
+    assert(legacy?.disabled && legacy.getAttribute('aria-pressed') === 'true' && legacy.textContent?.includes(translate('workspace:chat.modelUnavailable')), 'An unavailable legacy model can be selected or lost its label');
+    await key('Escape', 27); await key('Escape', 27);
+    await show({ session: configuredSession, provider: { ...configuredProvider, models: [], efforts: [] } });
+    assert(trigger().disabled && trigger().textContent?.includes(configuredSession.modelId!) && !trigger().querySelector('.composer-model-effort'), 'Missing model catalog hides or enables changing the current model');
+    await show({ session: { ...session, settings: undefined }, provider: { ...configuredProvider, models: [], efforts: [] } });
+    assert(trigger().disabled && trigger().textContent?.includes(translate('workspace:chat.modelDefault', { provider: configuredProvider.name })), 'Missing model catalog does not preserve the runtime default');
     assertDraft();
     assert(errors.length === 0, errors.join('\n'));
   },

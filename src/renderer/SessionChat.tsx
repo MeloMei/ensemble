@@ -7,10 +7,11 @@ import { memo, useCallback, useEffect, useId, useLayoutEffect, useRef, useState,
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { AppSelect } from './AppSelect';
+import { ComposerModelPicker } from './ComposerModelPicker';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
-  Activity, Archive, ArrowDown, ArrowUp, ArrowUpLeft, Brain, Check, ChevronDown,
+  Activity, Archive, ArrowDown, ArrowUp, ArrowUpLeft, Check, ChevronDown,
   CircleAlert, CircleStop, Clock3, Copy, CornerDownLeft, FileText, FolderOpen,
   GitFork, Image, ListChecks, LoaderCircle, MessageCircle, PanelsTopLeft,
   Paperclip, Pause, Play, Search, ShieldCheck, TerminalSquare, Users, X,
@@ -282,30 +283,20 @@ function ComposerSettings({ session, provider, disabled, saving, perform }: {
   perform: Perform;
 }) {
   const { t } = useTranslation('workspace');
-  const efforts = provider?.models?.find(item => item.id === session.modelId)?.efforts ?? provider?.efforts ?? [];
   const hint = saving ? t('chat.savingSettings') : t('chat.settingsAfterTask');
-  const change = (patch: Parameters<typeof window.workbench.updateSession>[1]) =>
-    void perform(`session-settings-${session.id}`, () => window.workbench.updateSession(session.id, patch));
-  const modelLabel = session.modelId ? modelName(provider, session.modelId) : t('chat.modelDefault', { provider: provider?.name ?? session.providerId });
-  const effortLabel = (effort: string) => t(`chat.effort.${effort}`, { defaultValue: effort });
+  const change = async (patch: Parameters<typeof window.workbench.updateSession>[1]) => {
+    let accepted = false;
+    await perform(`session-settings-${session.id}`, async () => {
+      await window.workbench.updateSession(session.id, patch);
+      accepted = true;
+    });
+    return accepted;
+  };
   return <>
-    <AppSelect compact side="top" menuClassName="composer-select-menu" className="composer-select-model" label={t('chat.model')} icon={<AgentIcon providerId={session.providerId} size={14} />}
-      value={session.modelId ?? ''} display={modelLabel} disabled={disabled || !provider?.models?.length}
-      hint={disabled ? hint : t('chat.cliDefault')} onChange={value => change({ modelId: value || null })}
-      options={[
-        { value: '', label: provider?.defaultModelId ? t('chat.defaultModelName', { model: modelName(provider, provider.defaultModelId) }) : t('chat.cliDefault') },
-        ...(session.modelId && !provider?.models?.some(model => model.id === session.modelId)
-          ? [{ value: session.modelId, label: session.modelId, description: t('chat.modelUnavailable'), disabled: true }] : []),
-        ...(provider?.models?.map(model => ({ value: model.id, label: model.name,
-          description: model.free ? t('chat.modelFree') : session.providerId === 'codex' ? t('chat.modelAccount') : t('chat.modelMetered') })) ?? []),
-      ]} />
-    {provider?.capabilities.effort && efforts.length > 0 && <AppSelect compact side="top" menuClassName="composer-select-menu" label={t('chat.effort')} icon={<Brain size={13} />}
-      value={session.settings?.effort ?? ''} display={session.settings?.effort ? effortLabel(session.settings.effort) : t('chat.defaultEffort')}
-      disabled={disabled} hint={hint} onChange={value => change({ settings: { effort: value || null } })}
-      options={[{ value: '', label: t('chat.runtimeDefault') }, ...efforts.map(effort => ({ value: effort, label: effortLabel(effort) }))]} />}
+    <ComposerModelPicker session={session} provider={provider} disabled={disabled} saving={saving} hint={hint} onChange={change} />
     {provider?.capabilities.permissions && <AppSelect compact side="top" menuClassName="composer-select-menu" label={t('chat.permissions')} icon={<ShieldCheck size={13} />}
       value={session.settings?.permission ?? 'review'} display={session.settings?.permission === 'read-only' ? t('common.readOnly') : t('chat.reviewPermissionShort')}
-      disabled={disabled} hint={hint} onChange={value => change({ settings: { permission: value as 'review' | 'read-only' } })}
+      disabled={disabled || saving} hint={hint} onChange={value => void change({ settings: { permission: value as 'review' | 'read-only' } })}
       options={[{ value: 'review', label: t('chat.reviewPermission') }, { value: 'read-only', label: t('common.readOnly') }]} />}
     {saving && <span className="composer-settings-saving" role="status" aria-label={t('chat.savingSettings')}><LoaderCircle size={13} className="spin" /></span>}
   </>;
@@ -831,7 +822,7 @@ export function SessionChat({
                   onDraftChange({ ...currentDraft.current, attachments: [...(currentDraft.current.attachments ?? []), ...selected] });
                 })}><Paperclip size={16} /></IconButton>
               <span className="composer-divider" />
-              <ComposerSettings session={session} provider={provider} disabled={!historyReady || !connected || active || busy || settingsBusy}
+              <ComposerSettings session={session} provider={provider} disabled={!historyReady || !connected || active || busy}
                 saving={settingsBusy} perform={perform} />
             </div>
             <Tooltip label={active || session.queuePaused ? t('chat.queueNextTurn') : t('chat.sendTask')}><motion.button className="send-button" aria-label={t('chat.sendTask')}

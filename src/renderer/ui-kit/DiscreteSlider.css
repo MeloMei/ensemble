@@ -1,0 +1,85 @@
+.discrete-slider-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.discrete-slider-value {
+  color: var(--accent);
+  font-weight: 600;
+  text-align: end;
+}
+.discrete-slider-control {
+  position: relative;
+  display: grid;
+  align-items: center;
+  height: 28px;
+  padding-inline: 7px;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+}
+.discrete-slider-control:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.discrete-slider[data-disabled] .discrete-slider-control {
+  cursor: default;
+}
+.discrete-slider-control > input {
+  position: absolute;
+  inset: 0;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.discrete-slider-track {
+  position: relative;
+  display: block;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--border-strong);
+}
+.discrete-slider-fill {
+  position: absolute;
+  inset: 0;
+  width: var(--slider-position);
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width var(--duration-fast) var(--ease-out);
+}
+.discrete-slider-tick, .discrete-slider-thumb {
+  position: absolute;
+  top: 50%;
+  translate: -50% -50%;
+  border-radius: 50%;
+}
+.discrete-slider-tick {
+  width: 6px;
+  height: 6px;
+  background: var(--border-strong);
+}
+.discrete-slider-tick[data-passed] {
+  background: var(--accent);
+}
+.discrete-slider-thumb {
+  left: var(--slider-position);
+  width: 12px;
+  height: 12px;
+  background: var(--accent);
+  border: 2px solid var(--surface-raised);
+  transition: left var(--duration-fast) var(--ease-out);
+}
+.discrete-slider-control[data-dragging] {
+  cursor: grabbing;
+}
+.discrete-slider-control[data-dragging] :is(.discrete-slider-thumb, .discrete-slider-fill) {
+  transition: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .discrete-slider-control :is(.discrete-slider-thumb, .discrete-slider-fill) { transition: none; }
+}

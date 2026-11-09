@@ -37,12 +37,28 @@ test('actual renderer components preserve approval, draft, recovery and settings
       app.whenReady().then(async () => {
         const window = new BrowserWindow({show: false, webPreferences: {contextIsolation: true, sandbox: true}});
         await window.loadFile(${JSON.stringify(path.join(directory, 'index.html'))});
-        if (${JSON.stringify(process.env.ENSEMBLE_REDUCED_MOTION === '1')}) {
-          window.webContents.debugger.attach('1.3');
-          await window.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', {features: [{name: 'prefers-reduced-motion', value: 'reduce'}]});
-        }
         const prefixes = ${JSON.stringify(selectedCases ?? null)};
         const names = await window.webContents.executeJavaScript('window.rendererRegressionNames');
+        const usesComposerInput = names.some(name => name.startsWith('UI-05:') && (!prefixes || prefixes.some(prefix => name.startsWith(prefix))));
+        if (usesComposerInput || ${JSON.stringify(process.env.ENSEMBLE_REDUCED_MOTION === '1')}) window.webContents.debugger.attach('1.3');
+        if (${JSON.stringify(process.env.ENSEMBLE_REDUCED_MOTION === '1')}) {
+          await window.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', {features: [{name: 'prefers-reduced-motion', value: 'reduce'}]});
+        }
+        if (usesComposerInput) {
+          window.webContents.debugger.on('message', async (_event, method, params) => {
+            if (method !== 'Runtime.bindingCalled' || params.name !== 'dispatchComposerInput') return;
+            const event = JSON.parse(params.payload);
+            let error;
+            try {
+              await window.webContents.debugger.sendCommand(
+                event.type.startsWith('mouse') ? 'Input.dispatchMouseEvent' : 'Input.dispatchKeyEvent', event);
+            } catch (failure) {
+              error = String(failure);
+            }
+            await window.webContents.executeJavaScript('window.completeComposerInput(' + JSON.stringify(error) + ')');
+          });
+          await window.webContents.debugger.sendCommand('Runtime.addBinding', {name: 'dispatchComposerInput'});
+        }
         const results = [];
         for (const name of names) {
           if (prefixes && !prefixes.some(prefix => name.startsWith(prefix))) continue;
