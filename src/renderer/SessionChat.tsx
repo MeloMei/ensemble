@@ -5,12 +5,12 @@ import { formatDate, formatNumber, renderDisplayText } from '../shared/i18n';
 import { sessionComposerActivity } from '../shared/session-composer-activity';
 import { validQuestionAnswers } from '../shared/question-answers';
 import { ATTACHMENT_LIMITS, attachmentLimitIssue } from '../shared/prompt-attachments';
-import { Fragment, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type Ref } from 'react';
+import { Fragment, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type Ref } from 'react';
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { AppSelect } from './AppSelect';
 import { ComposerModelPicker } from './ComposerModelPicker';
-import ReactMarkdown, { type Components } from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   Activity, Archive, ArrowDown, ArrowUp, ArrowUpLeft, Check, ChevronDown,
@@ -32,6 +32,7 @@ import { DetailCard } from './ui-kit/DetailCard';
 import { RollingText } from './ui-kit/RollingText';
 import { expandConversation, type TraceEntry } from './conversation-index';
 import { measureConversationRow, useReadingAnchor, useSessionReadingPosition } from './useSessionReadingPosition';
+import { WorkspaceFileNavigation, workspaceFileReference } from './workspace-file-reference';
 import './SessionChat.css';
 
 interface SessionChatProps {
@@ -408,10 +409,29 @@ function AttachmentLimitNotice({ issue }: { issue: ReturnType<typeof attachmentL
 
 const markdownPlugins = [remarkGfm];
 const markdownComponents: Components = {
-  a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
+  a: function AnswerLink({ node: _node, children, ...props }) {
+    const navigation = useContext(WorkspaceFileNavigation);
+    const reference = navigation && props.href && workspaceFileReference(props.href, navigation.cwd, true);
+    const label = <WorkspaceFileNavigation.Provider value={null}>{children}</WorkspaceFileNavigation.Provider>;
+    return reference
+      ? <button type="button" className="markdown-file-link" onClick={() => navigation.open(reference)}>{label}</button>
+      : <a {...props} target="_blank" rel="noreferrer">{label}</a>;
+  },
+  code: function AnswerCode({ node: _node, children, ...props }) {
+    const navigation = useContext(WorkspaceFileNavigation);
+    const reference = navigation && typeof children === 'string' && workspaceFileReference(children, navigation.cwd);
+    const code = <code {...props}>{children}</code>;
+    return reference
+      ? <button type="button" className="markdown-file-link" onClick={() => navigation.open(reference)}>{code}</button>
+      : code;
+  },
 };
 const MarkdownAnswer = memo(function MarkdownAnswer({ text }: { text: string }) {
-  return <ReactMarkdown remarkPlugins={markdownPlugins} components={markdownComponents}>{text}</ReactMarkdown>;
+  const navigation = useContext(WorkspaceFileNavigation);
+  return <ReactMarkdown remarkPlugins={markdownPlugins} components={markdownComponents} urlTransform={(url, key, node) =>
+    key === 'href' && node.tagName === 'a' && navigation && workspaceFileReference(url, navigation.cwd, true) ? url : defaultUrlTransform(url)}>
+    {text}
+  </ReactMarkdown>;
 });
 
 function SessionProgress({ status }: { status: Session['status'] }) {

@@ -5,6 +5,7 @@ import React, { act, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { I18nextProvider } from 'react-i18next';
 import { MotionConfig } from 'framer-motion';
+import { EditorView } from '@codemirror/view';
 import { i18n, translate } from '../shared/i18n';
 import type { DiagnosticEntry, FileContent, McpSettingsView, Message, PromptInput, ProviderInfo, Session, Snapshot, UnsavedFileSummary, Workflow, WorkflowInput, Workspace, WorkspaceManagement } from '../shared/types';
 import type { BackendConnectionState, SessionHistoryWindow } from '../shared/backend';
@@ -141,6 +142,61 @@ async function graphReady(count: number) {
 }
 
 const cases: Record<string, () => Promise<void>> = {
+  'FILE-REF-01: links from chat reveal the exact file and preserve unsaved edits': async () => {
+    const tab = { kind: 'agent' as const, id: 'file-reference-tab', sessionId: session.id };
+    const answer: Message = { ...messageRange(0, 1)[0], text: [
+      'See `src/view.ts:40:3`, [these lines](file:///fixture/src/view.ts#L42-L45), or [other file](./src/other.ts:8).',
+      '[External](https://example.com/docs#L12) · [outside](file:///fixture-sibling/out.ts#L12) · `../other.ts:8`.',
+      '```\nsrc/view.ts:56\n```',
+    ].join('\n\n') };
+    const fileText = Array.from({ length: 80 }, (_, index) => `Line ${index + 1}`).join('\n');
+    const snapshot: Snapshot = { ...collaborationSnapshot([]), sessions: [{ ...session, messages: [answer] }],
+      providers: [provider], workspaces: [{ ...workspace, tabs: [tab], activeTabId: tab.id }] };
+    const reads: string[] = [];
+    window.workbench = {
+      ...applicationUpdateApi,
+      snapshot: async () => snapshot, subscribe: () => () => {},
+      getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
+      onLanguageChanged: () => () => {}, watchSessions: async () => {},
+      listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {},
+      readFile: async (_id: string, path: string) => {
+        reads.push(path);
+        return { path, content: fileText, size: fileText.length, language: 'TypeScript', revision: 'file-reference-r1' };
+      },
+    } as unknown as Window['workbench'];
+    await render(<LanguageProvider initial={{ preference: 'en', language: 'en' }}><div style={{ width: 1180 }}><App /></div></LanguageProvider>);
+    await waitFor(() => document.querySelectorAll('.markdown-file-link').length === 3, 'The answer did not expose exactly the in-project file references');
+    assert(document.querySelector('.markdown-message a[href="https://example.com/docs#L12"]') && !document.querySelector('.markdown-message pre button'),
+      'External links or code examples were changed');
+    const openReference = async (label: string) => {
+      const link = [...document.querySelectorAll<HTMLButtonElement>('.markdown-file-link')].find(item => item.textContent === label);
+      assert(link, `Missing workspace reference ${label}`);
+      await act(async () => { link.click(); await tick(); });
+    };
+    await click('app.hideFiles');
+    await openReference('src/view.ts:40:3');
+    assert(document.querySelector('.file-panel-transition')?.getAttribute('aria-hidden') === 'false', 'The reference did not reopen the file pane');
+    const editor = () => {
+      const element = document.querySelector<HTMLElement>('.review-editor .cm-editor');
+      return element && EditorView.findFromDOM(element);
+    };
+    await waitFor(() => editor()?.state.doc.lineAt(editor()!.state.selection.main.head).number === 40, 'The editor did not jump to line 40');
+    const view = editor()!;
+    assert(view.state.selection.main.head === view.state.doc.line(40).from + 2
+      && view.dom.querySelector('.cm-activeLine')?.textContent === 'Line 40' && reads.join() === 'src/view.ts',
+    'The target column or active line was incorrect');
+    await act(async () => { view.dispatch({ changes: { from: 0, insert: 'Draft: ' } }); await tick(); });
+    await openReference('these lines');
+    const selection = view.state.selection.main;
+    assert(editor() === view && reads.length === 1 && view.state.doc.toString().startsWith('Draft: ')
+      && selection.from === view.state.doc.line(42).from && selection.to === view.state.doc.line(45).to,
+    'Jumping to a range in the open file did not preserve its draft or select the range');
+    await openReference('other file');
+    await waitFor(() => document.body.textContent?.includes(translate('workspace:files.saveBeforeOpen')) === true, 'A dirty editor did not block opening a different file');
+    assert(editor() === view && reads.length === 1 && document.querySelector('.tab-select[aria-current="page"]')?.textContent?.includes(session.title),
+      'File navigation discarded the draft, read an unrelated file, or switched the conversation');
+    await act(async () => { view.dispatch({ changes: { from: 0, to: 'Draft: '.length } }); await tick(); });
+  },
   'RUNTIME-CONTINUATION: a different Agent receives an editable draft only after explicit creation': async () => {
     const target: ProviderInfo = { ...provider, id: 'claude', name: 'Claude Code', defaultModelId: 'default', models: [
       { id: 'default', name: 'Default model', free: true }, { id: 'selected', name: 'Selected model', free: true },
@@ -2033,6 +2089,99 @@ const cases: Record<string, () => Promise<void>> = {
     await show({ ...session, queue: [] });
     assert(!document.querySelector('.composer-dock'), 'An empty session displays a composer dock');
   },
+  'FILE-PANE-WIDTH: the divider follows the pointer and restores the preferred width and selected file': async () => {
+    const snapshot: Snapshot = { ...collaborationSnapshot([]), sessions: [session], providers: [provider],
+      workspaces: [{ ...workspace, tabs: [{ kind: 'agent', id: 'file-pane-tab', sessionId: session.id }], activeTabId: 'file-pane-tab' }] };
+    const file = { path: 'pane.txt', name: 'pane.txt', kind: 'file', size: 7 };
+    let reads = 0;
+    window.workbench = {
+      ...applicationUpdateApi,
+      snapshot: async () => snapshot, subscribe: () => () => {},
+      getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
+      watchSessions: async () => {}, listFiles: async () => [file], gitState: async () => ({ available: false }), setUnsavedFiles: () => {},
+      readFile: async () => { reads++; return { ...file, content: 'fixture', revision: 'r0', language: 'text' }; },
+    } as unknown as Window['workbench'];
+    const storageKey = 'ensemble.file-pane-width';
+    const previous = localStorage.getItem(storageKey);
+    localStorage.removeItem(storageKey);
+    try {
+      await render(<App />, 'user');
+      const host = document.querySelector<HTMLElement>('.workbench')!.parentElement!;
+      const resizeWindow = async (width: number) => {
+        await act(async () => { host.style.width = `${width}px`; await tick(); });
+      };
+      await resizeWindow(1440);
+      await click(file.name);
+      await waitFor(() => Boolean(document.querySelector('[data-test-editor]')), 'The file did not open');
+      const editor = input('[data-test-editor]');
+      const pane = document.querySelector<HTMLDivElement>('.file-panel-transition')!;
+      const content = pane.querySelector<HTMLElement>('.file-pane-content')!;
+      const divider = pane.querySelector<HTMLDivElement>('[role=separator]')!;
+      const width = () => pane.getBoundingClientRect().width;
+      const centerWidth = () => document.querySelector('.workspace-center')!.getBoundingClientRect().width;
+      const columnsWidth = () => document.querySelector('.workspace-columns')!.getBoundingClientRect().width;
+      await waitFor(() => Number(divider.getAttribute('aria-valuemax')) === 640 && width() > 0, 'The resized fixture did not settle');
+      const x = Math.round(pane.getBoundingClientRect().left);
+      const initialWidth = width();
+      let captured = 0;
+      divider.setPointerCapture = pointerId => { captured = pointerId; };
+      const pointer = (type: string, clientX: number) => act(async () => {
+        divider.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, isPrimary: true, pointerId: 3, pointerType: 'mouse', button: 0, clientX }));
+        await tick();
+      });
+      await pointer('pointerdown', x);
+      await pointer('pointermove', x - 80);
+      assert(captured === 3 && width() === initialWidth + 80 && centerWidth() === columnsWidth() - width(), 'Dragging did not lay out both panes at the pointer width');
+      await pointer('pointermove', x - 1500);
+      assert(width() === Number(divider.getAttribute('aria-valuemax')) && centerWidth() >= 560, 'Dragging squeezed the workspace past its minimum');
+      assert(localStorage.getItem(storageKey) === null, 'A pointer move wrote the preference');
+      await pointer('pointercancel', x - 1500);
+      assert(width() === initialWidth && localStorage.getItem(storageKey) === null, 'Cancel retained an unfinished drag');
+      await pointer('pointerdown', x);
+      await pointer('pointermove', x - 140);
+      await pointer('pointerup', x - 140);
+      const draggedWidth = initialWidth + 140;
+      assert(width() === draggedWidth && localStorage.getItem(storageKey) === String(draggedWidth), 'Releasing the divider did not remember its position');
+
+      await act(async () => { divider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true })); await tick(); });
+      const savedWidth = draggedWidth + 24;
+      assert(width() === savedWidth && localStorage.getItem(storageKey) === String(savedWidth), 'The keyboard did not resize and save the panel');
+      if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        assert(getComputedStyle(content).transitionDuration === '0s', 'Reduced motion left a panel animation enabled');
+      } else {
+        assert(getComputedStyle(content).transitionProperty === 'opacity', 'The panel animates properties that can change layout');
+      }
+      await click('shell:app.hideFiles');
+      assert(width() === 0 && centerWidth() === columnsWidth() && pane.inert, 'Closing the panel did not immediately release its layout width');
+      assert(content.getBoundingClientRect().width === savedWidth && input('[data-test-editor]') === editor, 'Closing reflowed or replaced the file editor');
+      await click('shell:app.showFiles');
+      assert(width() === savedWidth && centerWidth() === columnsWidth() - savedWidth, 'Opening did not immediately restore the target layout');
+      await resizeWindow(1150);
+      await waitFor(() => width() > 0 && width() < savedWidth, 'The panel did not clamp to the available workspace width');
+      await act(async () => { editor.focus(); await tick(); });
+      await resizeWindow(1040);
+      await waitFor(() => pane.inert && width() === 0, 'A window with insufficient width left the panel visible');
+      assert(document.querySelector('.file-pane-space-note')?.textContent === translate('shell:app.filesNeedSpace')
+        && document.activeElement === button('shell:app.hideFiles'), 'The collapsed panel lost its reason or keyboard focus');
+      assert(localStorage.getItem(storageKey) === String(savedWidth), 'Narrowing the window overwrote the preferred width');
+      await resizeWindow(1440);
+      await waitFor(() => width() === savedWidth, 'Expanding the window did not restore the preferred width');
+      assert(!pane.inert && input('[data-test-editor]') === editor && document.querySelector('.tree-row.selected')?.textContent?.includes(file.name)
+        && reads === 1, 'Auto-hiding replaced the selected file or read it again');
+      await click('shell:app.hideFiles');
+      await resizeWindow(1040);
+      await resizeWindow(1440);
+      await frames();
+      assert(width() === 0 && pane.inert, 'Resizing opened a panel the user had closed');
+
+      await render(<div />);
+      await render(<App />, 'user');
+      await waitFor(() => document.querySelector('.file-panel-transition')?.getBoundingClientRect().width === savedWidth, 'Reopening Ensemble did not read the width preference');
+    } finally {
+      if (previous === null) localStorage.removeItem(storageKey);
+      else localStorage.setItem(storageKey, previous);
+    }
+  },
   'UX2-SHELL: add-tab menus remain inside the workspace at both ends of the tab strip': async () => {
     const values = Array.from({ length: 12 }, (_, index) => ({ ...session, id: `menu-${index}`, title: `Independent task ${index}` }));
     const tabs = values.map(value => ({ id: `tab-${value.id}`, kind: 'agent' as const, sessionId: value.id }));
@@ -2045,8 +2194,8 @@ const cases: Record<string, () => Promise<void>> = {
       watchSessions: async () => {}, listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {},
     } as unknown as Window['workbench'];
     await render(<App />);
-    document.querySelector<HTMLElement>('.workbench')!.parentElement!.style.width = `${window.innerWidth}px`;
     await frames(); await click('shell:app.hideFiles');
+    document.querySelector<HTMLElement>('.workbench')!.parentElement!.style.width = `${window.innerWidth}px`;
     await waitFor(() => document.querySelector('.file-panel-transition')!.getBoundingClientRect().width < 1, 'The file panel did not finish closing');
     const checkMenu = async () => {
       await click('shell:app.addTab'); await frames();
@@ -2604,7 +2753,11 @@ fixture.runRendererRegressions = async selected => {
     host.style.cssText = 'display:flex;width:1100px;height:740px;min-height:0';
     try { await check(); results.push({ name }); }
     catch (error) { results.push({ name, error: error instanceof Error ? error.stack : String(error) }); }
-    finally { await act(async () => root.unmount()); host.remove(); }
+    finally {
+      await act(async () => root.unmount());
+      host.remove();
+      window.scrollTo(0, 0);
+    }
   }
   return results;
 };

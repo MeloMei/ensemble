@@ -1,9 +1,10 @@
 import { useTranslation } from 'react-i18next';
 import { useEffect, useRef } from 'react';
-import { Annotation, Compartment, EditorState, Transaction } from '@codemirror/state';
-import { EditorView, highlightActiveLine, keymap, lineNumbers } from '@codemirror/view';
+import { Annotation, Compartment, EditorSelection, EditorState, Transaction } from '@codemirror/state';
+import { EditorView, drawSelection, highlightActiveLine, keymap, lineNumbers } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { useAppearance } from './appearance';
+import type { FileReference } from './workspace-file-reference';
 
 const remoteUpdate = Annotation.define<boolean>();
 const editorTheme = (dark: boolean) => EditorView.theme({
@@ -20,8 +21,8 @@ const editorTheme = (dark: boolean) => EditorView.theme({
   '&.cm-focused': { outline: 'none' },
 }, { dark });
 
-export function CodeEditor({ value, onChange, readOnly = false, language = 'text' }: {
-  value: string; onChange(value: string): void; readOnly?: boolean; language?: string;
+export function CodeEditor({ value, onChange, readOnly = false, language = 'text', location }: {
+  value: string; onChange(value: string): void; readOnly?: boolean; language?: string; location?: FileReference;
 }) {
   const { t } = useTranslation('workspace');
   const { theme } = useAppearance();
@@ -37,7 +38,7 @@ export function CodeEditor({ value, onChange, readOnly = false, language = 'text
     const separator = initial.current.includes('\r\n') ? '\r\n' : initial.current.includes('\r') ? '\r' : '\n';
     const view = new EditorView({ parent: host.current, state: EditorState.create({
       doc: initial.current,
-      extensions: [lineNumbers(), highlightActiveLine(), history(), keymap.of([...defaultKeymap, ...historyKeymap]), appearance.current.of(editorTheme(theme === 'dark')),
+      extensions: [lineNumbers(), highlightActiveLine(), drawSelection(), history(), keymap.of([...defaultKeymap, ...historyKeymap]), appearance.current.of(editorTheme(theme === 'dark')),
         EditorState.lineSeparator.of(separator), permission.current.of([EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)]),
         accessibility.current.of(EditorView.contentAttributes.of({ 'aria-label': t('editor.label', { language }), spellcheck: 'false' })),
         EditorView.updateListener.of(update => {
@@ -66,5 +67,15 @@ export function CodeEditor({ value, onChange, readOnly = false, language = 'text
     view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value },
       annotations: [remoteUpdate.of(true), Transaction.addToHistory.of(false)] });
   }, [value]);
+  useEffect(() => {
+    const view = editor.current;
+    if (!view || location?.line === undefined) return;
+    const { doc } = view.state;
+    const first = doc.line(Math.min(location.line, doc.lines));
+    const start = first.from + Math.min((location.column ?? 1) - 1, first.length);
+    const last = location.endLine === undefined ? undefined : doc.line(Math.min(location.endLine, doc.lines));
+    const selection = last ? EditorSelection.range(start, last.to) : EditorSelection.cursor(start);
+    view.dispatch({ selection, effects: EditorView.scrollIntoView(start, { y: 'center' }) });
+  }, [location]);
   return <div className="code-editor-host" ref={host} style={{ height: '100%', minHeight: 180 }} />;
 }
