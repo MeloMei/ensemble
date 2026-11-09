@@ -132,11 +132,11 @@ export function expandConversation(conversation: ConversationIndex, expanded: Re
       const offset = insertion ? (index === insertion.start ? insertion.start : insertion.end) - insertion.index : 0;
       return conversation.at(index - offset);
     },
-    rowOfMessage(messageIndex: number) {
+    rowOfMessage(messageIndex: number, traceHeader = false) {
       const baseRow = conversation.rowOfMessage(messageIndex);
       if (baseRow < 0) return -1;
       const opened = byBaseRow.get(baseRow);
-      if (opened) return opened.start + 1 + messageIndex - opened.trace.start;
+      if (opened) return traceHeader ? opened.start : opened.start + 1 + messageIndex - opened.trace.start;
       const earlier = lastBefore(insertions, baseRow, item => item.index);
       return baseRow + (earlier ? earlier.end - earlier.index : 0);
     },

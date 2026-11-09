@@ -177,7 +177,7 @@ export function useSessionHistory(session: Session) {
   const messages = useMemo(() => indexPages(pages, 'chat', structure), [pages, structure]);
   const activities = useMemo(() => indexPages(pages, 'activity', structure), [pages, structure]);
   const conversation = useMemo(() => indexConversation(pages.map(page => page.conversation)), [pages]);
-  const locateMessage = useCallback(async (id: string) => {
+  const locateMessage = useCallback(async (id: string, reportError = true) => {
     const token = ++jumpGeneration.current;
     setJumping(false);
     setJumpError('');
@@ -187,12 +187,12 @@ export function useSessionHistory(session: Session) {
     setJumping(true);
     try {
       const page = await window.workbench.sessionHistoryAround(session.id, id, 100);
-      if (token !== jumpGeneration.current) return false;
+      if (token !== jumpGeneration.current || !page.messages.some(message => message.id === id)) return false;
       invalidatePages();
       setHistory({ ...page, pages: [messagePage(page.messages)], version: token });
-      return page.messages.some(message => message.id === id);
+      return true;
     } catch (failure) {
-      if (token === jumpGeneration.current) setJumpError(failure instanceof Error ? failure.message : String(failure));
+      if (token === jumpGeneration.current && reportError) setJumpError(failure instanceof Error ? failure.message : String(failure));
       return false;
     } finally {
       if (token === jumpGeneration.current) setJumping(false);
@@ -209,6 +209,7 @@ export function useSessionHistory(session: Session) {
     liveTailStart: history ? -1 : messages.length - live.tail.chat.length,
     beforeCursor: (history ?? live).beforeCursor, hasMore: (history ?? live).hasMore,
     hasAfter: history?.hasAfter ?? false, loading: paging || jumping, error: jumpError || pageError, showingHistory: Boolean(history),
+    tailReady: session.historyLoaded !== false && live.tail.messages === session.messages,
     waitingForTail: session.historyLoaded === false && !live.tail.messages.length,
     eventsFor: (nativeId: string) => pages.flatMap(page => page.nativeEvents.get(nativeId) ?? []),
     loadOlder: () => loadPage('before'), loadNewer: () => loadPage('after'), locateMessage, cancelJump, showLatest,

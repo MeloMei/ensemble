@@ -8,14 +8,14 @@ const BOTTOM_TOLERANCE = 40;
 const JUMP_CONTROL_DISTANCE = 120;
 const USER_INPUT_COOLDOWN = 150;
 
-export function useClaudeScrollPinning(dependencies: readonly unknown[], scrollToEnd?: (smooth: boolean) => void) {
+export function useClaudeScrollPinning(dependencies: readonly unknown[], scrollToEnd?: (smooth: boolean) => void, initiallyPinned = true) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [isPinned, setIsPinned] = useState(true);
+  const [isPinned, setIsPinned] = useState(initiallyPinned);
   const [showJumpControl, setShowJumpControl] = useState(false);
-  const pinned = useRef(true);
+  const pinned = useRef(initiallyPinned);
   const lastUserInputAt = useRef(Number.NEGATIVE_INFINITY);
   const programmaticScroll = useRef(false);
-  const navigationOwnsScroll = useRef(false);
+  const navigationOwnsScroll = useRef(!initiallyPinned);
   const followTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const scrollToEndRef = useRef(scrollToEnd);
   scrollToEndRef.current = scrollToEnd;
@@ -81,5 +81,6 @@ export function useClaudeScrollPinning(dependencies: readonly unknown[], scrollT
     return () => clearTimeout(followTimer.current);
   }, dependencies);
 
-  return { containerRef, isPinned, showJumpControl, markUserInput, pauseForNavigation, handleScroll, scrollToBottom };
+  const isFollowingOutput = useCallback(() => pinned.current, []);
+  return { containerRef, isPinned, isFollowingOutput, showJumpControl, markUserInput, pauseForNavigation, handleScroll, scrollToBottom };
 }
