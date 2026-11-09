@@ -129,10 +129,10 @@
 .chat-pane .trace-summary { display: flex; align-items: center; gap: 7px; margin-bottom: 14px; }
 .chat-pane .trace-heading.is-expanded .trace-summary { margin-bottom: 3px; }
 .chat-pane .trace-toggle,
-.chat-pane .trace-failure { display: flex; align-items: center; gap: 7px; min-height: 32px; padding: 4px 7px; border-radius: var(--radius-control); text-align: left; white-space: nowrap; }
+.chat-pane :is(.trace-failure, .trace-diff) { display: flex; align-items: center; gap: 7px; min-height: 32px; padding: 4px 7px; border-radius: var(--radius-control); text-align: left; white-space: nowrap; }
 .chat-pane .trace-toggle { min-width: 0; color: var(--muted); font-size: 12px; }
 .chat-pane .trace-toggle:hover,
-.chat-pane .trace-failure:hover { background: var(--selected); }
+.chat-pane :is(.trace-failure, .trace-diff):hover { background: var(--selected); }
 .chat-pane .trace-toggle strong { overflow: hidden; font-weight: 550; text-overflow: ellipsis; }
 .chat-pane .trace-symbol, .chat-pane .trace-chevron { flex-shrink: 0; color: var(--dim); }
 .chat-pane .trace-chevron { transition: transform var(--duration-fast) var(--ease-out); }
@@ -140,6 +140,7 @@
 .chat-pane .trace-count { color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; }
 .chat-pane .trace-live { color: var(--accent); font-size: 11px; }
 .chat-pane .trace-failure { flex-shrink: 0; color: var(--danger); font-size: 11px; }
+.chat-pane .trace-diff { flex-shrink: 0; color: var(--muted); font-size: 11px; }
 .chat-pane .message-process { position: relative; margin: 0; padding: 0 0 2px 24px; }
 .chat-pane .message-process::before { position: absolute; top: 0; bottom: 0; left: 8px; width: 1px; background: var(--border-strong); content: ""; }
 .chat-pane .message-process.process-end { margin-bottom: 18px; }
@@ -174,6 +175,9 @@
 .chat-pane .process-checklist + .process-output { margin-top: 13px; }
 .chat-pane .process-output > span { display: block; margin-bottom: 6px; color: var(--dim); font-size: 11px; }
 .chat-pane .process-output pre { max-height: 260px; margin: 0; padding: 10px 12px; overflow: auto; border-radius: var(--radius-control); color: var(--muted); background: var(--surface); font: 11px/1.8 "SFMono-Regular", Consolas, "Liberation Mono", monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-pane .process-output .turn-diff-patch { white-space: pre; overflow-wrap: normal; }
+.chat-pane .turn-diff-patch .added { color: var(--success); }
+.chat-pane .turn-diff-patch .removed { color: var(--danger); }
 .chat-pane .process-checklist { display: grid; gap: 8px; padding: 0; margin: 4px 0; list-style: none; }
 .chat-pane .process-checklist li { display: flex; align-items: baseline; gap: 10px; color: var(--text); font-size: 12px; line-height: 1.75; }
 .chat-pane .process-checklist .status { min-width: 50px; }

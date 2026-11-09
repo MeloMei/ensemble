@@ -4,6 +4,7 @@ interface TraceCounts {
   length: number;
   failures: number;
   lastFailure?: string;
+  lastDiff?: string;
 }
 export interface TraceEntry extends TraceCounts {
   kind: 'trace'; key: string; start: number;
@@ -26,6 +27,7 @@ export function conversationPage(messages: Message[], nextTraceKey?: string): Co
       };
       if (trace !== previous) spans.push(trace);
       trace.length++;
+      if (message.event.kind === 'diff') trace.lastDiff = message.id;
       if (message.event.status === 'failed') {
         trace.failures++;
         trace.lastFailure = message.id;
@@ -74,6 +76,7 @@ export function indexConversation(pages: ConversationPage[]) {
       mergedTraces.set(continuation.row, {
         length: earlier.length + head.length, failures: earlier.failures + head.failures,
         lastFailure: head.lastFailure ?? earlier.lastFailure,
+        lastDiff: head.lastDiff ?? earlier.lastDiff,
       });
     }
     if (page.spans.length > skipped) {

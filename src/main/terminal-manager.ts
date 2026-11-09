@@ -2,9 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import * as pty from '@lydell/node-pty';
-import type { TerminalInfo } from '../shared/types';
+import type { TerminalInfo, TerminalService } from '../shared/types';
 import type { TerminalOutputEvent } from '../shared/backend';
 import { TerminalOutputBuffer, TerminalOutputCoalescer } from './terminal-output';
+import { discoverTerminalServices } from './terminal-services';
 
 interface ManagedTerminal {
   info: TerminalInfo;
@@ -28,6 +29,7 @@ function signalTerminal(terminal: ManagedTerminal, signal: NodeJS.Signals): void
 
 export class TerminalManager {
   private readonly terminals = new Map<string, ManagedTerminal>();
+  private readonly serviceReads = new Map<string, { controller: AbortController; result: Promise<TerminalService[]> }>();
   private changeTimer?: ReturnType<typeof setTimeout>;
   private shuttingDown = false;
 
@@ -58,6 +60,7 @@ export class TerminalManager {
       terminal.output.append(data);
     }));
     terminal.disposables.push(child.onExit(({ exitCode, signal }) => {
+      this.serviceReads.get(info.id)?.controller.abort();
       clearTimeout(terminal.forceTimer);
       terminal.info.status = 'exited';
       terminal.info.exitCode = signal ? 128 + signal : exitCode;
@@ -78,6 +81,20 @@ export class TerminalManager {
     const terminal = this.terminals.get(id);
     if (!terminal) throw new Error('Terminal does not exist');
     return { ...terminal.info, ...terminal.history.snapshot() };
+  }
+
+  listServices(id: string): Promise<TerminalService[]> {
+    const terminal = this.terminals.get(id);
+    if (this.shuttingDown || terminal?.info.status !== 'running' || terminal.forceTimer) return Promise.resolve([]);
+    const active = this.serviceReads.get(id);
+    if (active) return active.result;
+    if (this.serviceReads.size >= 2) return Promise.resolve([]);
+    const controller = new AbortController();
+    const result = discoverTerminalServices(terminal.process.pid, process.pid, controller.signal).then(services =>
+      controller.signal.aborted || this.shuttingDown || terminal.info.status !== 'running' || terminal.forceTimer ? [] : services,
+    ).finally(() => this.serviceReads.delete(id));
+    this.serviceReads.set(id, { controller, result });
+    return result;
   }
 
   private running(id: string): ManagedTerminal {
@@ -112,6 +129,7 @@ export class TerminalManager {
 
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
+    for (const { controller } of this.serviceReads.values()) controller.abort();
     clearTimeout(this.changeTimer);
     this.changeTimer = undefined;
     const pending = [...this.terminals.values()].filter((terminal) => terminal.info.status === 'running');

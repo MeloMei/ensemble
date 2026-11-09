@@ -267,6 +267,7 @@ export async function createWorkbenchService(options: {
     handle('workbench:write-terminal', (_event, id: unknown, data: unknown) => terminalManager.write(idSchema.parse(id), z.string().max(65_536).parse(data)));
     handle('workbench:resize-terminal', (_event, id: unknown, columns: unknown, rows: unknown) => terminalManager.resize(idSchema.parse(id), z.number().int().min(2).max(1000).parse(columns), z.number().int().min(1).max(1000).parse(rows)));
     handle('workbench:stop-terminal', (_event, id: unknown) => terminalManager.stop(idSchema.parse(id)));
+    handle('workbench:list-terminal-services', (_event, id: unknown) => terminalManager.listServices(idSchema.parse(id)));
     handle('workbench:create-preview', (_event, workspaceId: unknown, input: unknown) => {
       const id = idSchema.parse(workspaceId);
       const url = new URL(z.string().url().max(4096).parse(input));
@@ -293,8 +294,17 @@ export async function createWorkbenchService(options: {
     handle('workbench:retry-step', (_event, id, stepId) => engine.retryWorkflowStep(idSchema.parse(id), idSchema.parse(stepId)));
     handle('workbench:clone-workflow', (_event, id) => engine.cloneWorkflow(idSchema.parse(id)));
     handle('workbench:resume-workflow', (_event, id) => engine.resumeWorkflow(idSchema.parse(id)));
-    handle('workbench:split-workspace', (_event, id, input) => engine.splitWorkspace(idSchema.parse(id), z.object({ tabId: idSchema.optional(), direction: z.enum(['horizontal', 'vertical']).optional(), ratio: z.number().min(0.2).max(0.8).optional() }).strict().parse(input)));
+    handle('workbench:split-workspace', (_event, id, input) => engine.splitWorkspace(idSchema.parse(id), z.object({
+      tabId: idSchema.optional(),
+      direction: z.enum(['horizontal', 'vertical']).optional(),
+      ratio: z.number().min(0.2).max(0.8).optional(),
+      placement: z.enum(['before', 'after']).optional(),
+      expectedLayout: z.object({ activeTabId: idSchema.nullable(), secondaryTabId: idSchema.nullable() }).strict().optional(),
+    }).strict().parse(input)));
     const workspaceCwd = (id: unknown) => engine.workspace(idSchema.parse(id)).cwd;
+    handle('workbench:git-branch-refs', (_event, id) => workspaceFiles.gitBranchRefs(workspaceCwd(id)));
+    handle('workbench:git-branch-comparison', (_event, id, targetRef) =>
+      workspaceFiles.gitBranchComparison(workspaceCwd(id), z.string().min(1).max(4096).parse(targetRef)));
     handle('workbench:write-file', (_event, id, input) => workspaceFiles.write(workspaceCwd(id), z.object({ path: cwdSchema, content: z.string().max(1_048_576), revision: idSchema }).strict().parse(input)));
     handle('workbench:git-mutate', (_event, id, input) => {
       const cwd = workspaceCwd(id);

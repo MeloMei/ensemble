@@ -158,10 +158,12 @@
 .review-editor .code-editor-host { height: 100%; }
 .review-diff { flex: 1; overflow: auto; min-height: 140px; padding: 7px 0; color: var(--text); font: 12px/1.75 'SFMono-Regular', Menlo, monospace; }
 .review-diff-line { --diff-line-bg: var(--editor-bg); display: flex; min-width: max-content; background: var(--diff-line-bg); }
-.review-diff-line > button { position: sticky; left: 0; display: flex; justify-content: space-between; width: 65px; min-width: 65px; padding: 0 5px; border: 0; border-right: 1px solid var(--border); border-radius: 0; background: var(--diff-line-bg); color: var(--dim); font: inherit; }
-.review-diff-line > button:disabled { opacity: 1; }
-.review-diff-line > button:hover:not(:disabled) { color: var(--accent); background: var(--accent-soft); }
-.review-diff-line > button span { min-width: 26px; text-align: right; }
+.review-diff-gutter { position: sticky; inset-inline-start: 0; display: flex; flex: 0 0 71px; border-inline-end: 1px solid var(--border); background: var(--diff-line-bg); }
+.review-diff-gutter > :is(button, span) { flex: 1 1 0; min-width: 0; padding: 0 4px; border: 0; border-radius: 0; background: transparent; color: var(--dim); font: inherit; text-align: end; }
+.review-diff-gutter > button { touch-action: none; user-select: none; }
+.review-diff-gutter > button:focus-visible { outline-offset: -2px; }
+.review-diff-gutter > button:hover:not(:disabled), .review-diff-gutter > button[aria-pressed=true] { color: var(--accent); background: var(--accent-soft); }
+.review-diff-line[data-selected] { background: color-mix(in srgb, var(--accent-soft) 72%, var(--diff-line-bg)); }
 .review-diff-line > code { padding: 0 11px; white-space: pre; }
 .review-diff-line.added { --diff-line-bg: var(--success-soft); color: var(--success); }
 .review-diff-line.removed { --diff-line-bg: var(--danger-soft); color: var(--danger); }
@@ -170,6 +172,9 @@
 .review-discard .danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 30%, var(--border)); background: var(--danger-soft); }
 .review-note-editor, .review-notes { padding: 10px 11px; border-top: 1px solid var(--border); background: var(--surface); font-size: 12px; }
 .review-note-editor { animation: review-reveal var(--duration-normal) var(--ease-out); }
+.review-diff > .review-note-editor { position: sticky; inset-inline-start: 0; border-block: 1px solid var(--border); font-family: var(--font-sans, system-ui); }
+.review-diff-hint { margin: 0; padding: 5px 10px; color: var(--muted); font: 11px/1.5 system-ui, sans-serif; }
+.review-note-editor > .review-diff-hint { padding: 0 0 7px; }
 .review-note-editor label { display: block; color: var(--muted); }
 .review-note-editor textarea, .review-commit-content textarea { display: block; width: 100%; min-height: 64px; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--bg); color: var(--text); padding: 8px 10px; margin: 7px 0; resize: vertical; font: inherit; line-height: 1.7; }
 .review-note-editor button { margin-right: 7px; }

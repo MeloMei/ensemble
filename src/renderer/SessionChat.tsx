@@ -15,7 +15,7 @@ import remarkGfm from 'remark-gfm';
 import {
   Activity, Archive, ArrowDown, ArrowUp, ArrowUpLeft, Check, ChevronDown,
   CircleAlert, CircleStop, Clock3, Copy, CornerDownLeft, FileText, FolderOpen,
-  GitFork, Image, ListChecks, LoaderCircle, MessageCircle, PanelsTopLeft,
+  GitCompareArrows, GitFork, Image, ListChecks, LoaderCircle, MessageCircle, PanelsTopLeft,
   Paperclip, Pause, Play, Search, ShieldCheck, TerminalSquare, Users, X, ArrowRightLeft,
 } from 'lucide-react';
 import type {
@@ -33,6 +33,7 @@ import { RollingText } from './ui-kit/RollingText';
 import { expandConversation, type TraceEntry } from './conversation-index';
 import { measureConversationRow, useReadingAnchor, useSessionReadingPosition } from './useSessionReadingPosition';
 import { WorkspaceFileNavigation, workspaceFileReference } from './workspace-file-reference';
+import { diffLines } from './review-notes';
 import './SessionChat.css';
 
 interface SessionChatProps {
@@ -1082,7 +1083,7 @@ export function SessionChat({
             style={{ transform: `translateY(${item.start}px)` }}>
           {row?.kind === 'trace' ? <TraceHeading trace={row} live={row.key === liveTrace?.key}
             addedEvents={addedToLiveTrace} expanded={chatRows.at(item.index + 1)?.kind === 'event'}
-            onToggle={expanded => chooseTrace(row, expanded)} onFailure={() => { if (row.lastFailure) inspectMessage(row.lastFailure); }} />
+            onToggle={expanded => chooseTrace(row, expanded)} onInspect={inspectMessage} />
         : row?.kind === 'event' && message?.event ? <TraceEventRow message={message} event={message.event}
             end={row.start === row.trace.start + row.trace.length - 1}
             entering={row.trace.key === liveTrace?.key && Boolean(addedEvents?.has(message.id))}
@@ -1239,12 +1240,13 @@ export function SessionChat({
   </section>;
 }
 
-function TraceHeading({ trace, live, addedEvents, expanded, onToggle, onFailure }: {
+function TraceHeading({ trace, live, addedEvents, expanded, onToggle, onInspect }: {
   trace: TraceEntry; live: boolean; addedEvents: number; expanded: boolean;
-  onToggle: (expanded: boolean) => void; onFailure: () => void;
+  onToggle: (expanded: boolean) => void; onInspect: (id: string) => void;
 }) {
   const { t } = useTranslation('workspace');
   const previousCount = useRef(trace.length);
+  const { lastDiff, lastFailure } = trace;
   const animate = live && (trace.length === previousCount.current || trace.length - previousCount.current === addedEvents);
   useLayoutEffect(() => { previousCount.current = trace.length; }, [trace.length]);
   return <div className={`messages trace-heading${expanded ? ' is-expanded' : ''}`}>
@@ -1258,7 +1260,10 @@ function TraceHeading({ trace, live, addedEvents, expanded, onToggle, onFailure 
         {live && <span className="trace-live">{t('chat.trace.live')}</span>}
         <ChevronDown className="trace-chevron" size={14} aria-hidden="true" />
       </button>
-      {trace.failures > 0 && <button className="trace-failure" title={t('chat.trace.locateFailure')} onClick={onFailure}>
+      {lastDiff && <button className="trace-diff" onClick={() => onInspect(lastDiff)}>
+        <GitCompareArrows size={13} aria-hidden="true" />{t('chat.trace.turnDiff')}
+      </button>}
+      {lastFailure && <button className="trace-failure" title={t('chat.trace.locateFailure')} onClick={() => onInspect(lastFailure)}>
         <CircleAlert size={13} aria-hidden="true" />
         {t('chat.trace.failed', { count: trace.failures, total: formatNumber(trace.failures) })}
       </button>}
@@ -1287,7 +1292,9 @@ function ProcessCard({ event, openSession, openNativeAgent, expanded, onExpanded
 }) {
   const { t } = useTranslation('workspace');
   const bodyId = useId();
-  const icon = event.kind === 'plan' ? <ListChecks size={15} />
+  const title = event.kind === 'diff' ? t('chat.trace.turnDiff') : event.title;
+  const icon = event.kind === 'diff' ? <GitCompareArrows size={15} />
+    : event.kind === 'plan' ? <ListChecks size={15} />
     : event.kind === 'subagent' || event.kind === 'task' ? <Users size={15} />
       : <TerminalSquare size={15} />;
 
@@ -1297,7 +1304,7 @@ function ProcessCard({ event, openSession, openNativeAgent, expanded, onExpanded
         {event.status === 'completed' ? <Check size={11} /> : event.status === 'failed' ? <CircleAlert size={13} /> : <span />}
       </span>
       <button className="process-toggle" aria-expanded={expanded} aria-controls={bodyId} onClick={() => onExpandedChange(!expanded)}>
-        <span className="process-symbol" aria-hidden="true">{icon}</span><strong title={event.title}>{event.title}</strong>
+        <span className="process-symbol" aria-hidden="true">{icon}</span><strong title={title}>{title}</strong>
         <Status value={event.status} /><ChevronDown className="process-chevron" size={14} />
       </button>
       {(event.sessionId || (event.kind === 'subagent' && event.nativeId)) && <div className="process-links">
@@ -1313,6 +1320,13 @@ function ProcessCard({ event, openSession, openNativeAgent, expanded, onExpanded
 
 function ProcessBody({ event }: { event: ProcessEvent }) {
   const { t } = useTranslation('workspace');
+  if (event.kind === 'diff') return <div className="process-body">
+    {event.output ? <div className="process-output">
+      <span>{t('chat.trace.turnDiffSource')}</span>
+      <pre className="turn-diff-patch" data-scroll-key={`${event.id}:output`}>{diffLines(event.output).map((line, index) =>
+        <span className={line.kind} key={index}>{line.text}{'\n'}</span>)}</pre>
+    </div> : <p className="process-empty">{t('chat.trace.turnDiffEmpty')}</p>}
+  </div>;
   return <div className="process-body">
     {event.input && <div className="process-output"><span>{t('common.input')}</span><pre data-scroll-key={`${event.id}:input`}>{event.input}</pre></div>}
     {event.entries?.length ? <ol className="process-checklist">

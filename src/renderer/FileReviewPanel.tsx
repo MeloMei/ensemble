@@ -5,10 +5,12 @@ import { useContext, useEffect, useLayoutEffect, useRef, useState, useSyncExtern
 import { FileCode2, Files, GitBranch, GitCompareArrows, GitPullRequest, LoaderCircle, Maximize2, MessageSquare, Minimize2, PanelRight, RefreshCw, Save, X } from 'lucide-react';
 import { z } from 'zod';
 import type { FileContent, FileDiff, FileEntry, GitCommitPreview, GitMutation, GitState, PullRequestReview, Session, Workspace } from '../shared/types';
+import { BranchComparison } from './BranchComparison';
 import { CodeEditor } from './CodeEditor';
+import { DiffReview } from './DiffReview';
 import { WorkspaceFileTree } from './WorkspaceFileTree';
 import { FileDraftStore } from './file-drafts';
-import { diffLines, reviewFeedback, reviewNoteSchema, type DiffLine, type ReviewNote } from './review-notes';
+import { diffRangeLines, reviewFeedback, reviewNoteSchema, type DiffNoteDraft, type ReviewNote } from './review-notes';
 import { IconButton, Modal, type Perform } from './ui';
 import { WorkspaceFileNavigation, type FileReference } from './workspace-file-reference';
 import './FileReviewPanel.css';
@@ -20,6 +22,9 @@ const fileDrafts = new FileDraftStore(summary => window.workbench.setUnsavedFile
 function persistedNotes(workspaceId: string): ReviewNote[] {
   try { return notesSchema.parse(JSON.parse(localStorage.getItem(`workbench:review:${workspaceId}`) ?? '[]')); }
   catch { return []; }
+}
+function matchesReviewRevision(diff: FileDiff, revision: string): boolean {
+  return !diff.binary && !diff.truncated && diff.revision === revision;
 }
 
 function revealSelectedDiff(layout: HTMLDivElement, inline: boolean) {
@@ -66,8 +71,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
   const [discard, setDiscard] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [review, setReview] = useState<PullRequestReview | null>(null);
-  const [noteLine, setNoteLine] = useState<DiffLine | null>(null);
-  const [noteBody, setNoteBody] = useState('');
+  const [noteDrafts, setNoteDrafts] = useState<ReadonlyMap<string, DiffNoteDraft>>(() => new Map());
   const [notes, setNotes] = useState({ workspaceId: workspace.id, items: persistedNotes(workspace.id) });
   const directoryGeneration = useRef(0);
   const fileGeneration = useRef(0);
@@ -156,7 +160,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
       setDiff(patch);
       if (file?.path !== filePath) setLoadedPath(null);
     }
-    setSelected({ path: filePath, mode }); setNoteLine(null); setNoteBody(''); setDiscard(null); setLocation(reference);
+    setSelected({ path: filePath, mode }); setDiscard(null); setLocation(reference);
     if (reference) setView('files');
   };
 
@@ -180,6 +184,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
   useEffect(() => {
     setMissingDirectory(false); setGit(null); setSelected(null); setLoadedPath(null); setDiff(null);
     setPreview(null); setReview(null); setNotes({ workspaceId: workspace.id, items: persistedNotes(workspace.id) });
+    setNoteDrafts(new Map());
     return () => { directoryGeneration.current++; fileGeneration.current++; };
   }, [workspace.id]);
   useEffect(() => { run('refresh', () => refresh()); }, [workspace.id, refreshKey]);
@@ -197,20 +202,37 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
     setGit(updated); setDiscard(null); setPreview(null);
     if (selected?.path === filePath) await load(filePath, 'diff');
   });
-  const addNote = () => {
-    if (!selected || !diff?.revision || !noteLine || !noteBody.trim()) return;
+  const updateNoteDraft = (path: string, update: (current: DiffNoteDraft | undefined) => DiffNoteDraft | undefined) => {
+    setNoteDrafts(current => {
+      const previous = current.get(path);
+      const draft = update(previous);
+      if (draft === previous) return current;
+      const next = new Map(current);
+      if (draft) next.set(path, draft); else next.delete(path);
+      return next;
+    });
+  };
+  const addNote = (draft: DiffNoteDraft) => {
+    if (!selected || !diff || !matchesReviewRevision(diff, draft.revision) || !draft.body.trim() || busy || operations.current) return;
     if (currentNotes.length >= 200) { setError({ key: 'workspace:files.notesLimit' }); return; }
-    const lineNumber = noteLine.kind === 'removed' ? noteLine.oldLine : noteLine.newLine;
-    if (!lineNumber) return;
-    const note: ReviewNote = { id: crypto.randomUUID(), filePath: selected.path, lineNumber, body: noteBody.trim(),
-      side: noteLine.kind === 'removed' ? 'original' : 'modified', scope: noteLine.scope,
-      revision: diff.revision, createdAt: new Date().toISOString() };
-    setNotes({ workspaceId: workspace.id, items: [...currentNotes, note] }); setNoteLine(null); setNoteBody('');
+    const filePath = selected.path;
+    run('save-note', async () => {
+      const latest = await window.workbench.fileDiff(workspace.id, filePath);
+      if (!matchesReviewRevision(latest, draft.revision)) {
+        setDiff(current => current === diff ? latest : current);
+        throw new Error(t('files.notesOutdated', { path: filePath }));
+      }
+      const { side, scope } = draft.range.anchor;
+      const note: ReviewNote = { id: crypto.randomUUID(), filePath, ...diffRangeLines(draft.range), body: draft.body.trim(),
+        side, scope, revision: draft.revision, createdAt: new Date().toISOString() };
+      setNotes(current => current.workspaceId === workspace.id ? { ...current, items: [...current.items, note] } : current);
+      updateNoteDraft(filePath, current => current === draft ? undefined : current);
+    });
   };
   const sendNotes = () => run('feedback', async () => {
     for (const filePath of new Set(currentNotes.map(note => note.filePath))) {
       const current = await window.workbench.fileDiff(workspace.id, filePath);
-      if (current.truncated || currentNotes.some(note => note.filePath === filePath && note.revision !== current.revision)) {
+      if (currentNotes.some(note => note.filePath === filePath && !matchesReviewRevision(current, note.revision))) {
         throw new Error(t('files.notesOutdated', { path: filePath }));
       }
     }
@@ -232,6 +254,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
       <button disabled={missingDirectory} className={view === 'pr' ? 'active' : ''} aria-pressed={view === 'pr'} onClick={() => { setView('pr'); run('pr', refreshPullRequest); }}><GitPullRequest size={13} />PR / CI</button>
     </div>
     {!missingDirectory && <div className="file-branch"><GitBranch size={13} /><span>{git?.available ? git.branch : t('files.notGitLabel')}</span>
+      {view === 'changes' && <BranchComparison workspaceId={workspace.id} />}
       {git?.available && <button className="review-text-button" disabled={!!busy || dirty} onClick={() => run('preview', async () => setPreview(await window.workbench.gitCommitPreview(workspace.id)))}>{t('files.commitPreview')}</button>}
     </div>}
     {error && <div className="pane-note error-text" role="alert">{typeof error === 'string' ? error : renderDisplayText('', error)}</div>}
@@ -284,27 +307,16 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
         }} language={file.language} readOnly={!!busy} location={location} />
       </div>}
       {diff && <>
-        {diff.binary ? <div className="pane-note">{t('files.binaryDiff')}</div> : <div className="review-diff" aria-label={t('files.annotatedDiff')}>
-          {diffLines(diff.patch).map((line, index) => <div key={index} className={`review-diff-line ${line.kind}`}>
-            <button aria-label={line.kind === 'header' ? t('files.diffHeader', { scope: t(`files.scope.${line.scope}`) }) : t('files.annotateLine', { scope: t(`files.scope.${line.scope}`), side: t(line.kind === 'removed' ? 'files.side.original' : 'files.side.modified'), line: line.kind === 'removed' ? line.oldLine : line.newLine })}
-              disabled={(!line.oldLine && !line.newLine) || !diff.revision || diff.truncated}
-              onClick={() => { setNoteLine(line); setNoteBody(''); }}><span>{line.oldLine}</span><span>{line.newLine}</span></button>
-            <code>{line.text || ' '}</code>
-          </div>)}
-        </div>}
-        {diff.truncated && <p className="pane-note">{t('files.truncatedDiff')}</p>}
+        <DiffReview key={JSON.stringify([selected.path, diff.revision])} diff={diff} busy={busy} draft={noteDrafts.get(selected.path)}
+          onDraftChange={draft => updateNoteDraft(selected.path, () => draft)} onSave={addNote} />
         {diff.patch && diff.revision && !diff.truncated && git?.changes.some(change => change.path === selected.path && change.status[1] !== ' ' && change.status[1] !== '?') && <div className="review-discard">
           {discard === selected.path ? <><span>{t('files.discardQuestion')}</span><button className="danger" disabled={!!busy} onClick={() => mutate('discard', selected.path, diff.revision)}>{t('files.confirmDiscard')}</button><button onClick={() => setDiscard(null)}>{t('common.cancel')}</button></> : <button onClick={() => setDiscard(selected.path)}>{t('files.discard')}</button>}
-        </div>}
-        {noteLine && <div className="review-note-editor"><label>{t(`files.scope.${noteLine.scope}`)} · {noteLine.kind === 'removed' ? t('files.originalLine', { line: noteLine.oldLine }) : t('files.modifiedLine', { line: noteLine.newLine })}
-          <textarea aria-label={t('files.lineNote')} value={noteBody} onChange={event => setNoteBody(event.target.value)} maxLength={10_000} /></label>
-          <button disabled={!noteBody.trim()} onClick={addNote}>{t('files.saveNote')}</button><button onClick={() => setNoteLine(null)}>{t('common.cancel')}</button>
         </div>}
       </>}
     </section>}
     </div>
     {!!currentNotes.length && <section className="review-notes"><strong><MessageSquare size={12} />{t('files.localNotes', { count: currentNotes.length })}</strong>
-      {currentNotes.map(note => <div key={note.id}><small>{note.filePath}:{note.lineNumber} · {t(`files.scope.${note.scope}`)} · {t(`files.side.${note.side}`)}</small><p>{note.body}</p><button onClick={() => setNotes({ workspaceId: workspace.id, items: currentNotes.filter(item => item.id !== note.id) })}>{t('common.delete')}</button></div>)}
+      {currentNotes.map(note => <div key={note.id}><small>{note.filePath}:{note.startLine !== undefined && note.startLine !== note.lineNumber ? `${note.startLine}–` : ''}{note.lineNumber} · {t(`files.scope.${note.scope}`)} · {t(`files.side.${note.side}`)}</small><p>{note.body}</p><button onClick={() => setNotes({ workspaceId: workspace.id, items: currentNotes.filter(item => item.id !== note.id) })}>{t('common.delete')}</button></div>)}
       <button disabled={!onFeedback || !sessions.length || !!busy} onClick={sendNotes}>{t('files.notesToDraft')}</button>
     </section>}
     {preview && <Modal title={t('files.commitTitle')} subtitle={t('files.commitDescription')} busy={busy} onClose={() => setPreview(null)}><div className="review-commit-content">

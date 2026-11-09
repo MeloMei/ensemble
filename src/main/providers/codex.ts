@@ -323,6 +323,7 @@ async function runCodex(connection: CodexSessionConnection, context: TurnContext
   const text = new Map<string, string>();
   const activities = new Set<string>();
   const items = new Map<string, JsonObject>();
+  let turnDiff: string | undefined;
   const showItem = (item: JsonObject, completed = true) => {
     if (typeof item.id !== 'string') return;
     const itemId = item.id;
@@ -366,6 +367,14 @@ async function runCodex(connection: CodexSessionConnection, context: TurnContext
     const notificationTurnId = typeof params.turnId === 'string' ? params.turnId : eventTurn.id;
     if (turnId && notificationTurnId && notificationTurnId !== turnId) return;
     if (message.method === 'turn/completed') { completeTurn(eventTurn as unknown as CodexTurn, true); return; }
+    if (message.method === 'turn/diff/updated' && params.turnId === turnId && typeof params.diff === 'string') {
+      const output = processText(params.diff);
+      if (output !== turnDiff) {
+        turnDiff = output;
+        emitProcess(context, { kind: 'diff', nativeId: turnId, title: 'Turn diff', status: 'completed', output });
+      }
+      return;
+    }
     if (message.method === 'turn/plan/updated' && Array.isArray(params.plan)) {
       emitProcess(context, { kind: 'plan', nativeId: `${turnId}:plan`, title: 'Codex 任务计划', status: params.plan.every(raw => object(raw).status === 'completed') ? 'completed' : 'running',
         output: processText(params.explanation), entries: params.plan.map(raw => { const entry = object(raw); return { text: String(entry.step ?? ''), status: entry.status === 'completed' ? 'completed' as const : ['inProgress', 'in_progress'].includes(String(entry.status)) ? 'running' as const : 'pending' as const }; }) });
