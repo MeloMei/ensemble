@@ -7,7 +7,7 @@ import { WorkbenchEngine } from './engine';
 import { StateStore } from './store';
 import { DiagnosticJournal, withProviderDiagnostics } from './diagnostics';
 import type { ProviderAdapter, TurnContext } from './providers/types';
-import { PROMPT_TEXT_LIMIT, type CreateSessionInput } from '../shared/types';
+import { PROMPT_TEXT_LIMIT, type CreateSessionInput, type SideQuestionInput } from '../shared/types';
 import { commandHash } from './session-commands';
 
 async function until(predicate: () => boolean): Promise<void> {
@@ -72,6 +72,73 @@ test('first-task draft rejects invalid text and models while legacy create-sessi
     assert.equal(store.receipt('command:legacy-create')?.hash, commandHash('create-session', input));
     assert.equal(await engine.createSession({ ...input, commandId: 'legacy-create' }), id);
   } finally { await engine.shutdown(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('side questions atomically queue one bounded reference without interrupting the source or replacing its split', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'ensemble-side-question-'));
+  const store = new StateStore(join(directory, 'state.json'));
+  const engine = new WorkbenchEngine(store, '', () => {});
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const seen: { prompt: string; model?: string; permission?: string; effort?: string }[] = [];
+  engine.setProviders([adapter(async context => {
+    seen.push({ prompt: context.prompt, model: context.session.modelId, permission: context.session.settings?.permission, effort: context.session.settings?.effort });
+    if (context.prompt !== 'Source turn') return;
+    context.emit({ type: 'text', itemId: 'answer', text: 'Only this sentence. The rest of the response stays in the source.' });
+    context.emit({ type: 'structured', event: { id: 'trace', kind: 'tool', title: 'Inspect the source', status: 'completed',
+      input: 'Private trace input', output: 'Private trace output' } });
+    await gate;
+  })], [], []);
+  try {
+    const sourceId = await engine.createSession({ title: 'Source', cwd: directory, providerId: 'test' });
+    engine.updateSession(sourceId, { settings: { permission: 'read-only', effort: 'low' } });
+    engine.sendPrompt(sourceId, { text: 'Source turn' }, 'source-turn');
+    await until(() => engine.getSession(sourceId).messages.some(message => Boolean(message.event)));
+    const source = engine.getSession(sourceId);
+    const answer = source.messages.find(message => message.role === 'assistant')!;
+    const trace = source.messages.find(message => message.event)!;
+    const workspace = store.state.workspaces[0];
+    const activeTab = workspace.activeTabId;
+    const selected: SideQuestionInput = { question: 'What does that mean?', reference: { kind: 'answer', messageId: answer.id, excerpt: 'Only this sentence.' } };
+    await assert.rejects(engine.askSideQuestion(sourceId, { ...selected, reference: { kind: 'trace', messageId: answer.id } }, 'wrong-reference'), /引用/);
+    assert.equal(store.state.sessions.length, 1);
+    const atomic = store.atomic.bind(store);
+    store.atomic = operation => atomic((state, transaction) => operation(state, {
+      ...transaction, putReceipt: () => { throw new Error('side-question receipt write failed'); },
+    }));
+    try { await assert.rejects(engine.askSideQuestion(sourceId, selected, 'side-answer'), /receipt write failed/); }
+    finally { store.atomic = atomic; }
+    assert.equal(store.state.sessions.length, 1);
+    assert.equal(workspace.secondaryTabId, undefined);
+    const [first, replay] = await Promise.all([
+      engine.askSideQuestion(sourceId, selected, 'side-answer'),
+      engine.askSideQuestion(sourceId, selected, 'side-answer'),
+    ]);
+    assert.deepEqual(replay, first);
+    assert(first.inSplit && first.waitingForProject);
+    const split = workspace.secondaryTabId;
+    assert.equal(workspace.tabs.find(tab => tab.id === split && tab.kind === 'agent')?.kind, 'agent');
+    const second = await engine.askSideQuestion(sourceId, { question: 'Why use that tool?', reference: { kind: 'trace', messageId: trace.id } }, 'side-trace');
+    assert(!second.inSplit && second.waitingForProject);
+    assert.equal(workspace.secondaryTabId, split);
+    assert.equal(workspace.activeTabId, activeTab);
+    assert.equal(engine.getSession(sourceId).status, 'running');
+    assert.equal(engine.getSession(first.sessionId).queue?.length, 1);
+    assert.equal(engine.getSession(second.sessionId).queue?.length, 1);
+    assert.equal(engine.getSession(first.sessionId).waitingForProject, true);
+    assert.equal(seen.length, 1);
+    release();
+    await until(() => seen.length === 3);
+    await engine.waitSession(first.sessionId);
+    await engine.waitSession(second.sessionId);
+    assert.deepEqual(seen.slice(1), [
+      { prompt: 'What does that mean?\n\nReference from the source session (quoted for context only):\n> Only this sentence.', model: 'm1', permission: 'read-only', effort: 'low' },
+      { prompt: 'Why use that tool?\n\nReference from the source session (quoted for context only):\n> Inspect the source', model: 'm1', permission: 'read-only', effort: 'low' },
+    ]);
+    assert.equal(engine.getSession(first.sessionId).attempts?.length, 1);
+    assert.equal(engine.getSession(second.sessionId).attempts?.length, 1);
+    assert.equal(engine.getSession(first.sessionId).waitingForProject, undefined);
+  } finally { release(); await engine.shutdown(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test('ordinary command receipts survive response loss, restart and identical text sent twice', async () => {

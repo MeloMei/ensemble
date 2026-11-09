@@ -1,0 +1,51 @@
+.chat-pane .side-question-trigger {
+  color: var(--accent);
+}
+.side-question {
+  position: absolute;
+  z-index: 12;
+  inset-block-start: 56px;
+  inset-inline-end: 10px;
+  width: min(350px, calc(100% - 20px));
+  max-height: calc(100% - 66px);
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-overlay);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-popover);
+  color: var(--text);
+}
+.side-question > header, .side-question h3 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.side-question > header { justify-content: space-between; }
+.side-question h3 { font-size: 13px; font-weight: 600; }
+.side-question h3 > svg { color: var(--accent); }
+.side-question blockquote {
+  max-height: 110px;
+  overflow: auto;
+  margin: 8px 0 2px;
+  padding: 7px 9px;
+  border-inline-start: 2px solid var(--accent);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.side-question-locate {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 0;
+  color: var(--accent);
+  font-size: 11px;
+}
+.side-question form { display: grid; gap: 8px; margin-top: 6px; }
+.side-question form .button { justify-self: end; }
+.side-question [role="status"] { margin-block: 5px; color: var(--muted); font-size: 12px; }

@@ -148,6 +148,7 @@ export interface Session {
   queue?: SessionQueueItem[];
   queuePaused?: boolean;
   queueHoldReason?: string;
+  waitingForProject?: true;
   attention?: SessionAttention;
 }
 
@@ -291,6 +292,7 @@ export interface WorkbenchAPI {
   updateSession(sessionId: string, input: SessionUpdate): Promise<void>;
   forkSession(sessionId: string, beforeMessageId?: string): Promise<string>;
   continueSession(sessionId: string, target: SessionContinuationTarget): Promise<string>;
+  askSideQuestion(sessionId: string, input: SideQuestionInput, commandId?: string): Promise<SideQuestionReceipt>;
   rewindSession(sessionId: string, userMessageId: string): Promise<PromptInput>;
   retryWorkflowStep(workflowId: string, stepId: string): Promise<void>;
   cloneWorkflow(workflowId: string): Promise<string>;
@@ -317,6 +319,11 @@ export interface PromptAttachment {
   size: number; sha256: string; ownedPath: string;
 }
 export const PROMPT_TEXT_LIMIT = 200_000;
+export const SIDE_QUESTION_LIMIT = 4000;
+export const SIDE_QUESTION_REFERENCE_LIMIT = 1200;
+export type SideQuestionReference = { kind: 'answer'; messageId: string; excerpt: string } | { kind: 'trace'; messageId: string };
+export interface SideQuestionInput { question: string; reference: SideQuestionReference }
+export interface SideQuestionReceipt { sessionId: string; inSplit: boolean; waitingForProject: boolean }
 export interface PromptInput { text: string; attachments?: PromptAttachment[] }
 export interface CreateSessionInput { title: string; providerId: string; cwd: string; modelId?: string; commandId?: string; initialDraft?: PromptInput['text'] }
 export interface SessionContinuationTarget { providerId: string; modelId?: string }

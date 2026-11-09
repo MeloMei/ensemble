@@ -18,7 +18,7 @@ import { loadPluginProviders } from './providers/plugins';
 import { TerminalManager } from './terminal-manager';
 import { MissingWorkspaceDirectoryError, WorkspaceFiles } from './workspace-files';
 import type { Snapshot } from '../shared/types';
-import { PROMPT_TEXT_LIMIT } from '../shared/types';
+import { PROMPT_TEXT_LIMIT, SIDE_QUESTION_LIMIT, SIDE_QUESTION_REFERENCE_LIMIT } from '../shared/types';
 import type { TerminalOutputEvent } from '../shared/backend';
 import { AttachmentService } from './attachment-service';
 import { RuntimeSettings, readDeepSeekBalance } from './runtime-settings';
@@ -55,6 +55,13 @@ const pageLimitSchema = z.number().int().min(1).max(200).optional();
 const messageCursorSchema = z.string().min(1).max(4096);
 const sessionInputSchema = z.object({ title: z.string().max(200), providerId: idSchema, cwd: cwdSchema, modelId: modelIdSchema, commandId: commandIdSchema, initialDraft: draftInputSchema.shape.text.optional() }).strict();
 const continuationTargetSchema = sessionInputSchema.pick({ providerId: true, modelId: true });
+const sideQuestionSchema = z.object({
+  question: z.string().trim().min(1).max(SIDE_QUESTION_LIMIT),
+  reference: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('answer'), messageId: idSchema, excerpt: z.string().trim().min(1).max(SIDE_QUESTION_REFERENCE_LIMIT) }).strict(),
+    z.object({ kind: z.literal('trace'), messageId: idSchema }).strict(),
+  ]),
+}).strict();
 const workflowSchema = z.object({
   name: z.string().trim().min(1).max(200), cwd: cwdSchema,
   steps: z.array(z.object({ id: idSchema, title: z.string().trim().min(1).max(200), providerId: idSchema, modelId: modelIdSchema, prompt: promptSchema, dependsOn: z.array(idSchema).max(50) }).strict()).min(1).max(50),
@@ -289,6 +296,7 @@ export async function createWorkbenchService(options: {
     handle('workbench:update-session', (_event, id, input) => engine.updateSession(idSchema.parse(id), sessionUpdateSchema.parse(input)));
     handle('workbench:fork-session', (_event, id, before) => engine.forkSession(idSchema.parse(id), idSchema.optional().parse(before)));
     handle('workbench:continue-session', (_event, id, target) => engine.forkSession(idSchema.parse(id), undefined, continuationTargetSchema.parse(target)));
+    handle('workbench:ask-side-question', (_event, id, input, commandId) => engine.askSideQuestion(idSchema.parse(id), sideQuestionSchema.parse(input), commandIdSchema.parse(commandId)));
     handle('workbench:rewind-session', (_event, id, messageId) => engine.rewindSession(idSchema.parse(id), idSchema.parse(messageId)));
     handle('workbench:retry-step', (_event, id, stepId) => engine.retryWorkflowStep(idSchema.parse(id), idSchema.parse(stepId)));
     handle('workbench:clone-workflow', (_event, id) => engine.cloneWorkflow(idSchema.parse(id)));

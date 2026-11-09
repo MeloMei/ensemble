@@ -197,6 +197,77 @@ const cases: Record<string, () => Promise<void>> = {
       'File navigation discarded the draft, read an unrelated file, or switched the conversation');
     await act(async () => { view.dispatch({ changes: { from: 0, to: 'Draft: '.length } }); await tick(); });
   },
+  'SIDE-QUESTION: selected answers and Trace titles support a reliable independent follow-up': async () => {
+    const response: Message = { id: 'side-answer', role: 'assistant', text: 'An earlier sentence. Quote just this. An extra sentence.', createdAt: session.createdAt };
+    const event: Message = { id: 'side-trace', role: 'activity', text: 'Trace title', createdAt: session.createdAt,
+      event: { id: 'trace', kind: 'tool', title: 'Trace title', status: 'running', input: 'Hidden input', output: 'Hidden output' } };
+    const source: Session = { ...session, id: 'source-side-question', status: 'running', messages: [response, event] };
+    const sent: Parameters<Window['workbench']['askSideQuestion']>[] = [];
+    const opened: string[] = [];
+    window.workbench = {
+      commandReceipt: async () => undefined,
+      askSideQuestion: async (...args: Parameters<Window['workbench']['askSideQuestion']>) => {
+        sent.push(args);
+        if (sent.length === 1) throw new Error('fixture response lost');
+        return { sessionId: 'child-side-question', inSplit: false, waitingForProject: true };
+      },
+    } as unknown as Window['workbench'];
+    const show = (overrides: Partial<Parameters<typeof SessionChat>[0]> = {}) => render(chat({
+      session: source, draft: { text: 'Keep the main draft' }, openSession: id => { opened.push(id); }, ...overrides,
+    }));
+    await show();
+    await waitFor(() => Boolean(document.querySelector('[data-message-id="side-trace"] .side-question-trigger')), 'The current Trace had no explicit follow-up action');
+    const main = input('.composer textarea');
+    const panel = () => document.querySelector<HTMLElement>('.side-question');
+    const question = () => input('.side-question textarea');
+    const chosen = document.querySelector('[data-message-id="side-answer"] .markdown-message p')!.firstChild!;
+    await act(async () => {
+      const range = document.createRange();
+      const start = chosen.textContent!.indexOf('Quote');
+      range.setStart(chosen, start);
+      range.setEnd(chosen, start + 'Quote just this.'.length);
+      const selection = window.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.dispatchEvent(new Event('selectionchange'));
+      await tick();
+    });
+    const answerAction = document.querySelector<HTMLButtonElement>('[data-message-id="side-answer"] .side-question-trigger');
+    assert(answerAction, 'Selecting rendered answer text did not offer a follow-up');
+    await act(async () => { answerAction.click(); await tick(); });
+    assert(panel()?.querySelector('blockquote')?.textContent === 'Quote just this.' && document.activeElement === question(), 'The selected quote or input focus was lost');
+    await click('workspace:chat.sideQuestion.locate');
+    await waitFor(() => Boolean(document.querySelector('[data-message-id="side-answer"].conversation-match')), 'The reference did not locate the original answer');
+    await act(async () => { question().dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await tick(); });
+    assert(!panel() && (document.activeElement === answerAction || document.activeElement === document.querySelector('.message-scroll')), 'Escape did not close and restore focus to the conversation');
+    assert(sent.length === 0 && main.value === 'Keep the main draft' && input('.composer textarea') === main, 'Opening or closing the side question created work or replaced the main composer');
+
+    const traceAction = document.querySelector<HTMLButtonElement>('[data-message-id="side-trace"] .side-question-trigger')!;
+    await act(async () => { traceAction.click(); await tick(); });
+    assert(panel()?.querySelector('blockquote')?.textContent === event.event!.title && !panel()?.textContent?.includes('Hidden'), 'The Trace quotation exposed details outside the title');
+    await change(question(), 'Why was this step needed?');
+    await show({ connected: false });
+    assert(button('workspace:chat.sideQuestion.send').disabled && question().value === 'Why was this step needed?', 'A disconnect enabled sending or erased the question');
+    await show();
+    await click('workspace:chat.sideQuestion.send');
+    await waitFor(() => Boolean(panel()?.querySelector('[role=alert]')), 'A failed send did not retain a retry');
+    assert(Number(sent.length) === 1 && question().value === 'Why was this step needed?' && (question() as HTMLTextAreaElement).readOnly,
+      'A failed send lost the accepted command payload');
+    await click('workspace:chat.sideQuestion.retry');
+    await waitFor(() => Boolean(panel()?.querySelector('[role=status]')), 'Retry did not reveal the queued new tab');
+    assert(Number(sent.length) === 2 && sent[0][2] === sent[1][2] && JSON.stringify(sent[1][1]) === JSON.stringify({
+      question: 'Why was this step needed?', reference: { kind: 'trace', messageId: event.id },
+    }), 'Retry changed the durable command or copied hidden output');
+    assert(button('workspace:chat.sideQuestion.openTab').disabled, 'The tab was offered before its session snapshot arrived');
+    await show({ sessions: [source, { ...session, id: 'child-side-question' }] });
+    await click('workspace:chat.sideQuestion.openTab');
+    assert(JSON.stringify(opened) === JSON.stringify(['child-side-question']) && !panel(), 'Opening the child tab did not use the existing session route');
+    assert(document.activeElement === document.querySelector('[data-message-id="side-trace"] .side-question-trigger'), 'Closing after reconnect did not restore focus to the recreated Trace action');
+    await show({ readOnly: true });
+    assert(!document.querySelector('.side-question-trigger'), 'Read-only history exposed the follow-up action');
+    await show({ provider: { ...provider, available: false } });
+    assert(!document.querySelector('.side-question-trigger'), 'An unavailable runtime exposed the follow-up action');
+  },
   'RUNTIME-CONTINUATION: a different Agent receives an editable draft only after explicit creation': async () => {
     const target: ProviderInfo = { ...provider, id: 'claude', name: 'Claude Code', defaultModelId: 'default', models: [
       { id: 'default', name: 'Default model', free: true }, { id: 'selected', name: 'Selected model', free: true },
