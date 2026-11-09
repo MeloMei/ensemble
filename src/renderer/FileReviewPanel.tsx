@@ -1,7 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import { formatDate, renderDisplayText } from '../shared/i18n';
 import type { DisplayText } from '../shared/display-text';
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useContext, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { FileCode2, Files, GitBranch, GitCompareArrows, GitPullRequest, LoaderCircle, Maximize2, MessageSquare, Minimize2, PanelRight, RefreshCw, Save, X } from 'lucide-react';
 import { z } from 'zod';
 import type { FileContent, FileDiff, FileEntry, GitCommitPreview, GitMutation, GitState, PullRequestReview, Session, Workspace } from '../shared/types';
@@ -10,6 +10,7 @@ import { WorkspaceFileTree } from './WorkspaceFileTree';
 import { FileDraftStore } from './file-drafts';
 import { diffLines, reviewFeedback, reviewNoteSchema, type DiffLine, type ReviewNote } from './review-notes';
 import { IconButton, Modal, type Perform } from './ui';
+import { WorkspaceFileNavigation, type FileReference } from './workspace-file-reference';
 import './FileReviewPanel.css';
 
 const notesSchema = z.array(reviewNoteSchema).max(200);
@@ -25,6 +26,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
   workspace: Workspace; refreshKey: string; perform: Perform; sessions?: Session[]; onFeedback?(text: string): void; onEditProject?(): void;
 }) {
   const { t } = useTranslation('workspace');
+  const navigation = useContext(WorkspaceFileNavigation);
   const workspaceKey = JSON.stringify([workspace.id, workspace.cwd]);
   const [view, setView] = useState<'files' | 'changes' | 'pr'>('files');
   const [rootListing, setRootListing] = useState<{ workspaceKey: string; entries: FileEntry[]; revision: number }>();
@@ -33,6 +35,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
   const [git, setGit] = useState<GitState | null>(null);
   const [selected, setSelected] = useState<{ path: string; mode: 'content' | 'diff' } | null>(null);
   const [loadedPath, setLoadedPath] = useState<string | null>(null);
+  const [location, setLocation] = useState<FileReference>();
   useSyncExternalStore(fileDrafts.subscribe, fileDrafts.getSnapshot);
   const buffer = loadedPath === null ? undefined : fileDrafts.get(workspace.id, loadedPath);
   const file = buffer?.original ?? null;
@@ -84,7 +87,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
   const refreshPullRequest = async () => {
     setReview(await window.workbench.reviewPullRequest(workspace.id));
   };
-  const load = async (filePath: string, mode: 'content' | 'diff', force = false) => {
+  const load = async (filePath: string, mode: 'content' | 'diff', force = false, reference?: FileReference) => {
     if (dirty && !force) throw new Error(t('files.saveBeforeOpen'));
     const token = ++fileGeneration.current;
     if (mode === 'content') {
@@ -117,8 +120,26 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
       setDiff(patch);
       if (file?.path !== filePath) setLoadedPath(null);
     }
-    setSelected({ path: filePath, mode }); setNoteLine(null); setNoteBody(''); setDiscard(null);
+    setSelected({ path: filePath, mode }); setNoteLine(null); setNoteBody(''); setDiscard(null); setLocation(reference);
+    if (reference) setView('files');
   };
+
+  const request = navigation?.request;
+  useEffect(() => {
+    if (!request || request.workspaceId !== workspace.id || busy) return;
+    let current = true;
+    queueMicrotask(() => {
+      if (!current) return;
+      navigation?.consume(request);
+      if (selected?.mode === 'content' && selected.path === request.path && file) {
+        setView('files');
+        setLocation(request);
+        return;
+      }
+      run('open-reference', () => load(request.path, 'content', false, request));
+    });
+    return () => { current = false; };
+  }, [request, busy, workspace.id]);
 
   useEffect(() => {
     setMissingDirectory(false); setGit(null); setSelected(null); setLoadedPath(null); setDiff(null);
@@ -221,7 +242,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
       {file && <div className="review-editor" hidden={selected.mode !== 'content'} onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === 's') { event.preventDefault(); if (dirty && !busy) save(); } }}>
         <CodeEditor key={`${workspace.id}:${file.path}`} value={draft} onChange={text => {
           fileDrafts.edit(workspace.id, file.path, text);
-        }} language={file.language} readOnly={!!busy} />
+        }} language={file.language} readOnly={!!busy} location={location} />
       </div>}
       {diff && <>
         {diff.binary ? <div className="pane-note">{t('files.binaryDiff')}</div> : <div className="review-diff" aria-label={t('files.annotatedDiff')}>
