@@ -94,6 +94,8 @@ The **Files** panel edits real project files. Expand folders in place and search
 
 Drag the file panel’s left edge to resize it, or focus the divider and press the left or right arrow key. Ensemble remembers your preferred width. If the window gets too narrow, it temporarily hides the panel and restores it when there is room.
 
+In a diff, click a line number to leave a note. Drag along the original or modified line numbers, or focus one and press Shift + ↑/↓, to select a range within one hunk. Saved notes can be added to the current agent draft.
+
 ## Session drafts
 
 Unsent text and selected attachments are saved with their session. Closing the window waits for pending draft saves. If saving fails or cannot be confirmed, keep the window open and retry after resolving the error; choosing **Quit anyway** can discard the unsaved changes.

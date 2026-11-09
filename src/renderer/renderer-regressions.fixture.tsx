@@ -1372,6 +1372,101 @@ const cases: Record<string, () => Promise<void>> = {
     await waitFor(() => open('src/lib') && Boolean(row(target)), 'Returning to the workspace lost its expanded paths');
     assert(opened.length === 1, 'Restoring the tree reopened a file without a click');
   },
+  'DIFF-NOTES: pointer and keyboard select a range and preserve its text when the diff changes': async () => {
+    const filePath = 'range.ts';
+    const legacyPath = 'legacy.ts';
+    const storageKey = `workbench:review:${workspace.id}`;
+    const previous = localStorage.getItem(storageKey);
+    const legacy = { id: 'old', filePath: legacyPath, lineNumber: 7, body: 'Original single-line note',
+      side: 'original', scope: 'staged', revision: 'legacy', createdAt: 'now' };
+    localStorage.setItem(storageKey, JSON.stringify([legacy]));
+    const patch = ['Working tree changes', 'diff --git a/range.ts b/range.ts', '@@ -4,3 +8,3 @@', ' first', '-old', '+new', ' last',
+      '@@ -20 +30 @@', '-later', '+different'].join('\n');
+    let diff = { path: filePath, patch, binary: false, truncated: false, revision: 'r1' };
+    const git = { available: true, branch: 'fixture', changes: [{ path: filePath, status: 'MM', staged: true }] };
+    const feedback: string[] = [];
+    window.workbench = {
+      listFiles: async () => [], gitState: async () => git,
+      fileDiff: async (_id: string, path: string) => path === legacyPath ? { ...diff, path, revision: 'legacy' } : diff,
+      gitMutate: async () => { diff = { ...diff, revision: 'r2' }; return git; },
+    } as unknown as Window['workbench'];
+    const number = (side: 'original' | 'modified', line: number) => {
+      const control = Array.from(document.querySelectorAll<HTMLButtonElement>(`.review-diff-gutter button[data-side="${side}"]`))
+        .find(button => button.textContent === String(line));
+      assert(control, `Missing ${side} line ${line}`);
+      return control;
+    };
+    const mouse = (type: string, control: HTMLButtonElement) => {
+      const bounds = control.getBoundingClientRect();
+      const x = bounds.x + bounds.width / 2, y = bounds.y + bounds.height / 2;
+      assert(document.elementFromPoint(x, y)?.closest('button') === control, `Line ${control.textContent} is outside the fixture viewport`);
+      return act(async () => {
+        await rendererInput({ type, x, y,
+          button: 'left', buttons: type === 'mouseReleased' ? 0 : 1,
+          ...(type === 'mouseMoved' ? { force: .5 } : { clickCount: 1 }) });
+      });
+    };
+    const editor = () => input('.review-note-editor textarea');
+    const highlight = () => Array.from(document.querySelectorAll('.review-diff-gutter button[aria-pressed="true"]'))
+      .map(row => row.textContent).join(',');
+    const persisted = () => JSON.parse(localStorage.getItem(storageKey) ?? '[]') as Array<{ filePath: string; startLine?: number; lineNumber: number; side: string; scope: string; revision: string }>;
+    const extend = async (line: number) => {
+      const control = number('modified', line);
+      await act(async () => {
+        control.focus();
+        control.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', shiftKey: true, bubbles: true, cancelable: true }));
+        await tick();
+      });
+    };
+    try {
+      await render(<FileReviewPanel workspace={workspace} refreshKey="diff" perform={perform} sessions={[session]} onFeedback={value => feedback.push(value)} />);
+      await settle();
+      await act(async () => { document.querySelector<HTMLButtonElement>('.file-view-tabs button:nth-child(2)')!.click(); await tick(); });
+      await act(async () => { document.querySelector<HTMLButtonElement>(`.review-change-row .tree-row[title="${filePath}"]`)!.click(); await tick(); });
+      await settle();
+      assert(document.querySelector('.review-notes')?.textContent?.includes(`${legacyPath}:7`), 'The saved single-line note did not load');
+      await mouse('mousePressed', number('original', 4));
+      await mouse('mouseReleased', number('original', 4));
+      await waitFor(() => highlight() === '4' && Boolean(document.querySelector('.review-diff .review-note-editor')), 'A click did not open a single-line note');
+      await click('workspace:common.cancel');
+      await act(async () => { number('original', 6).scrollIntoView({ block: 'nearest' }); await tick(); });
+      await mouse('mousePressed', number('original', 4));
+      await mouse('mouseMoved', number('original', 6));
+      await waitFor(() => highlight() === '4,5,6', () => `Dragging highlighted ${highlight()} instead of the original-side range`);
+      await mouse('mouseReleased', number('original', 6));
+      const draft = 'Keep this text while I select lines';
+      assert(editor().closest('form')?.previousElementSibling === number('original', 6).closest('[data-diff-row]'), 'The note editor did not open directly below the selected range');
+      await change(editor(), draft);
+      await extend(8);
+      assert(highlight() === '8,9' && document.activeElement === number('modified', 9) && editor().value === draft, 'Keyboard range selection lost its side, focus, or draft text');
+      await click('workspace:files.stage'); await settle();
+      assert(editor().value === draft && button('workspace:files.saveNote').disabled && highlight() === '', 'A Git mutation attached the draft to a newer diff without reselection');
+      await extend(8);
+      diff = { ...diff, revision: 'r3' };
+      await click('workspace:files.saveNote'); await settle();
+      assert(persisted().length === 1 && editor().value === draft && button('workspace:files.saveNote').disabled,
+        'Saving against a changed revision wrote a note or erased the draft');
+      await extend(8);
+      await click('workspace:files.saveNote'); await settle();
+      const saved = persisted().find(note => note.filePath === filePath);
+      assert(saved?.startLine === 8 && saved.lineNumber === 9 && saved.side === 'modified' && saved.scope === 'working' && saved.revision === 'r3',
+        'The saved range lost its file, side, scope, revision, or endpoints');
+      await click('workspace:files.notesToDraft'); await settle();
+      assert(feedback.length === 1 && feedback[0].includes('File: legacy.ts\nLine: 7') && feedback[0].includes('File: range.ts\nLines: 8-9')
+        && feedback[0].includes('Diff: working; side: modified; revision: r3'), 'Feedback did not retain both exact single-line and range references');
+      diff = { ...diff, truncated: true, revision: 'r4' };
+      await click('workspace:files.reload'); await settle();
+      assert(!document.querySelector('.review-diff-gutter button'), 'Truncated diff still offers note selection');
+      await click('workspace:files.notesToDraft'); await settle();
+      assert(feedback.length === 1, 'An outdated note was added to the agent draft');
+      diff = { ...diff, truncated: false, binary: true, revision: 'r5' };
+      await click('workspace:files.reload'); await settle();
+      assert(!document.querySelector('.review-diff-gutter button') && !document.querySelector('.review-note-editor'), 'Binary diff still offers notes');
+    } finally {
+      if (previous === null) localStorage.removeItem(storageKey);
+      else localStorage.setItem(storageKey, previous);
+    }
+  },
   'UX2-FILES-PR: refreshing the PR view rereads its checks without background GitHub requests': async () => {
     let reviewReads = 0, fileReads = 0;
     window.workbench = {
