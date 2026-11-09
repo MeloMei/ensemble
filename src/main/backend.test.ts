@@ -7,9 +7,9 @@ import { createServer } from 'node:net';
 import { startBackend } from './backend-server';
 import { BackendClient, connectBackend } from './backend-client';
 import { createWorkbenchService } from './workbench-service';
-import type { Snapshot } from '../shared/types';
+import type { PromptAttachment, Snapshot } from '../shared/types';
 import type { CollaborationArtifactVersion } from '../shared/collaboration';
-import type { LoadedPromptAttachment } from './providers/types';
+import type { LoadedPromptAttachment, ProviderAdapter } from './providers/types';
 
 test('backend restarts on a free port after stale or invalid discovery without displacing an owner', async () => {
   const dataPath = await mkdtemp(join(tmpdir(), 'workbench-port-recovery-'));
@@ -54,6 +54,91 @@ test('file reads distinguish missing content from other filesystem and path erro
     await assert.rejects(service.call('workbench:read-file', [workspace, '../outside.txt']), /outside the workspace/);
     await rm(join(dataPath, 'notes.txt'));
     assert.equal(await service.call('workbench:read-file', [workspace, 'notes.txt']), null);
+  } finally { await service.shutdown(); await rm(dataPath, { recursive: true, force: true }); }
+});
+
+test('continuation saves a text draft in a new runtime and keeps the source and same-runtime fork intact', async () => {
+  const dataPath = await realpath(await mkdtemp(join(tmpdir(), 'workbench-continuation-')));
+  const published: Snapshot[] = [];
+  let executions = 0;
+  const runtime = (id: string, available: boolean, models: string[]): ProviderAdapter => ({
+    info: { id, name: id, source: 'builtin', available, detail: '', capabilities: { resume: true, approvals: true },
+      defaultModelId: models[0], models: models.map(model => ({ id: model, name: model, free: true })) },
+    async run() { executions++; },
+  });
+  const options = { dataPath, command: process.execPath, bridgePath: join(dataPath, 'bridge.cjs'),
+    publish(snapshot: Snapshot) { published.push(structuredClone(snapshot)); },
+    providers: [runtime('source', true, ['source-default', 'source-selected']), runtime('target', true, ['target-default', 'target-selected']), runtime('unavailable', false, [])],
+  };
+  let service = await createWorkbenchService(options);
+  try {
+    const sourceId = await service.engine.createSession({ title: 'Review change', cwd: dataPath, providerId: 'source', modelId: 'source-selected' });
+    const target = { providerId: 'target', modelId: 'target-selected' };
+    const continueWith = (input: unknown = target) => service.call('workbench:continue-session', [sourceId, input]) as Promise<string>;
+    await assert.rejects(continueWith(), /没有可接续的文本/);
+    const attachment: PromptAttachment = { id: 'notes', name: 'notes.txt', kind: 'text', mimeType: 'text/plain', size: 5, sha256: 'b'.repeat(64), ownedPath: join(dataPath, 'notes.txt') };
+    const createdAt = new Date().toISOString();
+    service.store.atomic(state => {
+      const source = state.sessions.find(session => session.id === sourceId)!;
+      source.externalId = 'native-thread';
+      source.status = 'running';
+      source.settings = { permission: 'read-only', effort: 'low', skillIds: ['source-skill'] };
+      source.messages = [
+        { id: 'user', role: 'user', text: 'Inspect the change', createdAt, nativeTurnId: 'native-turn', attachments: [attachment] },
+        { id: 'assistant', role: 'assistant', text: 'The review is ready', createdAt, attachments: [attachment] },
+        { id: 'activity', role: 'activity', text: 'INTERNAL TOOL OUTPUT', createdAt },
+      ];
+      source.draft = { text: 'UNSENT SOURCE DRAFT' };
+      source.queue = [{ id: 'next', commandId: 'next', input: { text: 'QUEUED SOURCE TASK' }, createdAt, updatedAt: createdAt }];
+      source.queuePaused = true;
+    });
+    await assert.rejects(continueWith(), /当前任务结束/);
+    service.store.atomic(state => { state.sessions.find(session => session.id === sourceId)!.status = 'completed'; });
+    const source = service.engine.getSession(sourceId);
+    await assert.rejects(continueWith({ providerId: 'unavailable' }), /目前不可用/);
+    await assert.rejects(continueWith({ providerId: 'source' }), /另一个 Agent/);
+    await assert.rejects(continueWith({ ...target, modelId: 'source-selected' }), /所选模型/);
+    await assert.rejects(continueWith({ ...target, settings: source.settings }), /settings/);
+    assert.equal(service.snapshot().sessions.length, 1);
+    assert.equal(service.snapshot().workspaces[0].tabs.length, 1);
+
+    published.length = 0;
+    const forkId = await service.call('workbench:fork-session', [sourceId, 'user']) as string;
+    assert.equal(published.length, 1);
+    const fork = published[0].sessions.find(session => session.id === forkId)!;
+    assert.equal(fork.modelId, 'source-selected');
+    assert.deepEqual(fork.settings, source.settings);
+    assert.deepEqual(fork.draft?.attachments, [attachment]);
+    assert.doesNotMatch(fork.draft!.text, /review is ready/);
+
+    published.length = 0;
+    const continuedId = await continueWith();
+    assert.equal(published.length, 1);
+    const continued = published[0].sessions.find(session => session.id === continuedId)!;
+    assert.match(continued.title, /^target ↪ Review change$/);
+    assert.equal(continued.providerId, 'target');
+    assert.equal(continued.modelId, 'target-selected');
+    assert.equal(continued.settings, undefined);
+    assert.equal(continued.externalId, undefined);
+    assert.equal(continued.status, 'idle');
+    assert.deepEqual(continued.messages, []);
+    assert.deepEqual(continued.attempts, []);
+    assert.equal(continued.queue, undefined);
+    assert.equal(continued.draft?.attachments, undefined);
+    assert.match(continued.draft!.text, /Inspect the change[\s\S]*The review is ready/);
+    assert.doesNotMatch(continued.draft!.text, /INTERNAL|UNSENT|QUEUED|native-/);
+    const project = published[0].workspaces[0];
+    assert.equal(continued.cwd, source.cwd);
+    assert.deepEqual(project.tabs.map(tab => tab.kind === 'agent' && tab.sessionId), [sourceId, forkId, continuedId]);
+    assert.equal(project.activeTabId, project.tabs[2].id);
+    assert.deepEqual(service.engine.getSession(sourceId), source);
+
+    await service.shutdown();
+    service = await createWorkbenchService(options);
+    assert.deepEqual(service.engine.getSession(continuedId).draft, continued.draft);
+    assert.equal(service.engine.getSession(sourceId).externalId, 'native-thread');
+    assert.equal(service.engine.getSession(sourceId).messages[0].nativeTurnId, 'native-turn');
+    assert.equal(executions, 0);
   } finally { await service.shutdown(); await rm(dataPath, { recursive: true, force: true }); }
 });
 

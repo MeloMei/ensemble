@@ -1,5 +1,9 @@
 import type { Message } from './types';
 
+export function hasConversationText(message: Message): boolean {
+  return message.role !== 'activity' && Boolean(message.text.trim());
+}
+
 export function searchableMessageText(message: Message): string {
   const event = message.event;
   return [message.text, ...(message.attachments ?? []).map(attachment => attachment.name),

@@ -131,6 +131,68 @@ async function graphReady(count: number) {
 }
 
 const cases: Record<string, () => Promise<void>> = {
+  'RUNTIME-CONTINUATION: a different Agent receives an editable draft only after explicit creation': async () => {
+    const target: ProviderInfo = { ...provider, id: 'claude', name: 'Claude Code', defaultModelId: 'default', models: [
+      { id: 'default', name: 'Default model', free: true }, { id: 'selected', name: 'Selected model', free: true },
+    ] };
+    const unavailable = { ...provider, id: 'pi', name: 'Pi', available: false };
+    const source = { ...session, messages: messageRange(0, 2), status: 'completed' as const };
+    const sourceTab = { kind: 'agent' as const, id: 'source-tab', sessionId: source.id };
+    let snapshot: Snapshot = { ...collaborationSnapshot([]), sessions: [{ ...source, status: 'running' }],
+      providers: [provider, target, unavailable], workspaces: [{ ...workspace, tabs: [sourceTab], activeTabId: sourceTab.id }] };
+    let publish = (_value: Snapshot) => {};
+    const commands: Parameters<Window['workbench']['continueSession']>[] = [];
+    let sends = 0;
+    const draft = { text: 'Review this continuation' };
+    window.workbench = {
+      ...applicationUpdateApi,
+      snapshot: async () => snapshot, subscribe: (listener: typeof publish) => { publish = listener; return () => {}; },
+      getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
+      onLanguageChanged: () => () => {}, watchSessions: async () => {}, listFiles: async () => [], gitState: async () => ({ available: false }),
+      setUnsavedFiles: () => {}, saveSessionDraft: async () => {},
+      sendPrompt: async () => { sends++; }, sendMessage: async () => { sends++; },
+      continueSession: async (...args: Parameters<Window['workbench']['continueSession']>) => {
+        commands.push(args);
+        const [, selection] = args;
+        const continued = { ...session, id: 'continued', title: 'Claude Code ↪ Session', ...selection, messages: [], draft };
+        const tab = { kind: 'agent' as const, id: 'continued-tab', sessionId: continued.id };
+        snapshot = { ...snapshot, sessions: [source, continued], workspaces: [{ ...workspace, tabs: [sourceTab, tab], activeTabId: tab.id }] };
+        publish(snapshot);
+        return continued.id;
+      },
+    } as unknown as Window['workbench'];
+    await render(<LanguageProvider initial={{ preference: 'en', language: 'en' }}><App /></LanguageProvider>);
+    await waitFor(() => Boolean(document.querySelector('.composer textarea')), 'The source session did not load');
+    const action = 'workspace:chat.continueWithAgent';
+    assert(button(action).disabled, 'A running session could be handed off');
+    snapshot = { ...snapshot, sessions: [{ ...source, messages: [] }] };
+    await act(async () => { publish(snapshot); await tick(); });
+    assert(button(action).disabled, 'An empty conversation could create a handoff');
+    snapshot = { ...snapshot, sessions: [source] };
+    await act(async () => { publish(snapshot); await tick(); });
+
+    const trigger = button(action);
+    trigger.focus();
+    await click(action);
+    assert(button('workspace:chat.continueCreateDraft').disabled, 'The source Agent was implicitly selected');
+    await click('shell:common.cancel');
+    assert(document.activeElement === trigger && Number(commands.length) === 0, 'Cancel lost focus or created a session');
+    await click(action);
+    const modalControl = (key: string) => {
+      const control = document.querySelector<HTMLButtonElement>(`dialog[open] [role="combobox"][aria-label="${CSS.escape(translate(key))}"]`);
+      assert(control, `Missing continuation selector ${key}`);
+      return control;
+    };
+    const menu = await openSelect(modalControl('shell:common.agent'));
+    assert(!menu.querySelector('[data-value="codex"]') && menu.querySelector('[data-value="pi"]')?.hasAttribute('data-disabled'), 'The source Agent was offered or an unavailable Agent could be selected');
+    await act(async () => { menu.querySelector<HTMLElement>('[data-value="claude"]')!.click(); await tick(); });
+    await chooseOption(modalControl('shell:provider.model'), 'selected');
+    assert(Number(commands.length) === 0 && sends === 0, 'Selecting a target created or sent a draft');
+    await click('workspace:chat.continueCreateDraft');
+    await waitFor(() => input('.composer textarea').value === draft.text, 'The new tab did not show the continuation draft');
+    assert(Number(commands.length) === 1 && JSON.stringify(commands[0]) === JSON.stringify([source.id, { providerId: target.id, modelId: 'selected' }]), 'The selected Runtime and model were not used');
+    assert(!input('.composer textarea').disabled && !document.querySelector('dialog[open]') && sends === 0, 'Creating a draft sent a prompt or left the draft locked');
+  },
   'FIRST-RUN: missing runtimes show official guides and refresh preserves a cancelled directory choice and draft': async () => {
     let providers: ProviderInfo[] = [];
     let refreshes = 0;

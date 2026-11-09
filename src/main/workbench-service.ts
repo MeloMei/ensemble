@@ -54,6 +54,7 @@ const commandIdSchema = z.string().min(1).max(200).optional();
 const pageLimitSchema = z.number().int().min(1).max(200).optional();
 const messageCursorSchema = z.string().min(1).max(4096);
 const sessionInputSchema = z.object({ title: z.string().max(200), providerId: idSchema, cwd: cwdSchema, modelId: modelIdSchema, commandId: commandIdSchema, initialDraft: draftInputSchema.shape.text.optional() }).strict();
+const continuationTargetSchema = sessionInputSchema.pick({ providerId: true, modelId: true });
 const workflowSchema = z.object({
   name: z.string().trim().min(1).max(200), cwd: cwdSchema,
   steps: z.array(z.object({ id: idSchema, title: z.string().trim().min(1).max(200), providerId: idSchema, modelId: modelIdSchema, prompt: promptSchema, dependsOn: z.array(idSchema).max(50) }).strict()).min(1).max(50),
@@ -287,6 +288,7 @@ export async function createWorkbenchService(options: {
     handle('workbench:save-session-draft', (_event, id, input) => engine.saveSessionDraft(idSchema.parse(id), draftInputSchema.parse(input)));
     handle('workbench:update-session', (_event, id, input) => engine.updateSession(idSchema.parse(id), sessionUpdateSchema.parse(input)));
     handle('workbench:fork-session', (_event, id, before) => engine.forkSession(idSchema.parse(id), idSchema.optional().parse(before)));
+    handle('workbench:continue-session', (_event, id, target) => engine.forkSession(idSchema.parse(id), undefined, continuationTargetSchema.parse(target)));
     handle('workbench:rewind-session', (_event, id, messageId) => engine.rewindSession(idSchema.parse(id), idSchema.parse(messageId)));
     handle('workbench:retry-step', (_event, id, stepId) => engine.retryWorkflowStep(idSchema.parse(id), idSchema.parse(stepId)));
     handle('workbench:clone-workflow', (_event, id) => engine.cloneWorkflow(idSchema.parse(id)));

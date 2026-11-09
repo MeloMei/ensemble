@@ -1,5 +1,6 @@
 import { AgentIcon } from './AgentIcon';
 import { useTranslation } from 'react-i18next';
+import { hasConversationText } from '../shared/message-text';
 import { formatDate, formatNumber, renderDisplayText } from '../shared/i18n';
 import { sessionComposerActivity } from '../shared/session-composer-activity';
 import { validQuestionAnswers } from '../shared/question-answers';
@@ -15,12 +16,12 @@ import {
   Activity, Archive, ArrowDown, ArrowUp, ArrowUpLeft, Check, ChevronDown,
   CircleAlert, CircleStop, Clock3, Copy, CornerDownLeft, FileText, FolderOpen,
   GitFork, Image, ListChecks, LoaderCircle, MessageCircle, PanelsTopLeft,
-  Paperclip, Pause, Play, Search, ShieldCheck, TerminalSquare, Users, X,
+  Paperclip, Pause, Play, Search, ShieldCheck, TerminalSquare, Users, X, ArrowRightLeft,
 } from 'lucide-react';
 import type {
   Approval, Message, ProcessEvent, PromptAttachment, PromptInput, ProviderInfo, Session, SessionSkillAssignmentReceipt, SkillInfo, UsageRecord,
 } from '../shared/types';
-import { IconButton, Modal, Status, modelName, pathName, type Perform } from './ui';
+import { BusyIcon, IconButton, Modal, ModelField, ProviderSelect, Status, defaultModelId, modelName, pathName, validModelSelection, type Perform } from './ui';
 import { SPRING_SNAPPY } from './vendor/open-claude-ui/ClaudeMotionPresets';
 import { useClaudeScrollPinning } from './vendor/open-claude-ui/useClaudeScrollPinning';
 import { useSessionHistory, type IndexedMessages } from './useSessionHistory';
@@ -34,6 +35,7 @@ import './SessionChat.css';
 interface SessionChatProps {
   session: Session;
   provider?: ProviderInfo;
+  providers?: ProviderInfo[];
   perform: Perform;
   pending: Set<string>;
   draft: PromptInput;
@@ -274,6 +276,64 @@ export function SessionSettingsPanel({ session, workspaceId, visible, perform, o
         <GitFork size={13} />{t('chat.forkCurrent')}</button>
     </div>
   </div>;
+}
+
+function SessionContinuation({ session, providers, connected, perform }: {
+  session: Session;
+  providers: ProviderInfo[];
+  connected: boolean;
+  perform: Perform;
+}) {
+  const { t } = useTranslation('workspace');
+  const [open, setOpen] = useState(false);
+  const [selection, setSelection] = useState<{ providerId: string; modelId?: string }>({ providerId: '' });
+  const [busy, setBusy] = useState(false);
+  const inFlight = useRef(false);
+  const alternatives = providers.filter(provider => provider.id !== session.providerId);
+  const hasText = session.messages.some(hasConversationText) || Boolean(session.historyCursor);
+  const unavailable = !alternatives.some(provider => provider.available);
+  const disabled = !connected || session.historyLoaded === false || activeStatuses.has(session.status) || !hasText || unavailable;
+  const provider = alternatives.find(item => item.id === selection.providerId);
+  const title = t('chat.continueWithAgent');
+  const hint = activeStatuses.has(session.status) ? t('chat.continueAfterTask')
+    : !hasText ? t('chat.continueNoText') : unavailable ? t('chat.continueNoAgent') : title;
+  const close = () => { setOpen(false); setSelection({ providerId: '' }); };
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    if (disabled || inFlight.current || !validModelSelection(provider, selection.modelId)) return;
+    inFlight.current = true;
+    setBusy(true);
+    void perform(`continue-session-${session.id}`, async () => {
+      try {
+        await window.workbench.continueSession(session.id, selection);
+        close();
+      } finally {
+        inFlight.current = false;
+        setBusy(false);
+      }
+    });
+  };
+  return <>
+    <IconButton label={title} title={hint} disabled={disabled || busy} onClick={() => setOpen(true)}>
+      <ArrowRightLeft size={15} />
+    </IconButton>
+    {open && <Modal title={title} subtitle={t('chat.continueDraftNote')} busy={busy} onClose={close}>
+      <form onSubmit={submit}>
+        <label>{t('shell:common.agent')}
+          <ProviderSelect providers={alternatives} value={selection.providerId} disabled={disabled || busy}
+            onChange={providerId => setSelection({ providerId, modelId: defaultModelId(alternatives.find(item => item.id === providerId)) })} />
+        </label>
+        <ModelField provider={provider} value={selection.modelId} disabled={disabled || busy}
+          onChange={modelId => setSelection(current => ({ ...current, modelId: modelId || undefined }))} />
+        <div className="modal-actions">
+          <button type="button" className="button subtle" disabled={busy} onClick={close}>{t('shell:common.cancel')}</button>
+          <button className="button primary" disabled={disabled || busy || !validModelSelection(provider, selection.modelId)}>
+            <BusyIcon busy={busy}><ArrowRightLeft size={14} /></BusyIcon>{t('chat.continueCreateDraft')}
+          </button>
+        </div>
+      </form>
+    </Modal>}
+  </>;
 }
 
 
@@ -533,7 +593,7 @@ interface TraceChoices {
 const traceChoicesBySession = new Map<string, TraceChoices>();
 
 export function SessionChat({
-  session, provider, perform, pending, draft, draftError, onDraftChange, sessions = [], openSession, connected = true, readOnly = false,
+  session, provider, providers, perform, pending, draft, draftError, onDraftChange, sessions = [], openSession, connected = true, readOnly = false,
 }: SessionChatProps) {
   const { t } = useTranslation('workspace');
   const [showActivity, setShowActivity] = useState(false);
@@ -827,6 +887,7 @@ export function SessionChat({
       </div>
       <Status value={session.status} />
       <div className="chat-toolbar-actions">
+        {!readOnly && providers && <SessionContinuation session={session} providers={providers} connected={connected} perform={perform} />}
         <IconButton label={find === null ? t('chat.find') : t('chat.closeFind')} aria-pressed={find !== null}
           onClick={() => find === null ? setFind('') : closeFind()}><Search size={15} /></IconButton>
         <Tooltip label={t('chat.activity')}><button className={`text-button chat-activity-button ${showActivity ? 'selected' : ''}`} aria-label={t('chat.activity')}
