@@ -1,5 +1,5 @@
 import type { SessionStreamPatch, SnapshotFrame } from '../shared/backend';
-import type { Message, Session, Snapshot } from '../shared/types';
+import type { Message, ProcessEvent, Session, Snapshot } from '../shared/types';
 import { sessionComposerActivity } from '../shared/session-composer-activity';
 
 export const SESSION_TAIL_LIMIT = 100;
@@ -34,13 +34,23 @@ export class SnapshotProjection {
     const nextSessions = new Map<string, SessionFingerprint>();
     for (const session of source.sessions) {
       const watched = this.watched.has(session.id);
-      const messages: Message[] = watched ? session.messages.slice(-SESSION_TAIL_LIMIT) : [];
+      const tail = session.messages.slice(-SESSION_TAIL_LIMIT);
+      const messages: Message[] = watched ? tail : [];
+      let trace: ProcessEvent | undefined;
+      for (let index = tail.length - 1; index >= 0; index--) {
+        trace = tail[index].event;
+        if (trace?.title.trim()) break;
+      }
+      const traceTitle = trace?.title.trim().replace(/\s+/g, ' ');
       const { messages: _messages, ...metadata } = session;
       const summary = { ...metadata, messageCount: session.messages.length,
         attempts: session.attempts?.slice(-32).map(attempt => ({ ...attempt, prompt: '' })),
         draft: watched ? session.draft : undefined,
         queue: watched ? session.queue : session.queue?.map(item => ({ ...item, input: { text: '' } })),
         composerActivity: watched ? sessionComposerActivity(session.messages) : undefined,
+        latestTrace: trace && traceTitle ? {
+          title: traceTitle.length > 160 ? traceTitle.slice(0, 159).trimEnd() + '…' : traceTitle, status: trace.status,
+        } : undefined,
         historyLoaded: watched,
         historyCursor: messages.length && messages.length < session.messages.length ? messages[0].id : undefined };
       const summaryFingerprint = JSON.stringify(summary);

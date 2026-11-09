@@ -5,7 +5,7 @@ import { formatDate, formatNumber, renderDisplayText } from '../shared/i18n';
 import { sessionComposerActivity } from '../shared/session-composer-activity';
 import { validQuestionAnswers } from '../shared/question-answers';
 import { ATTACHMENT_LIMITS, attachmentLimitIssue } from '../shared/prompt-attachments';
-import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type Ref } from 'react';
+import { Fragment, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type Ref } from 'react';
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { AppSelect } from './AppSelect';
@@ -28,6 +28,7 @@ import { useSessionHistory, type IndexedMessages } from './useSessionHistory';
 import { promptCommandInput, runSessionCommand, runSessionStopCommand } from './session-command';
 import { sessionIsUnread } from './session-attention';
 import { Tooltip } from './Tooltip';
+import { DetailCard } from './ui-kit/DetailCard';
 import { RollingText } from './ui-kit/RollingText';
 import { expandConversation, type TraceEntry } from './conversation-index';
 import './SessionChat.css';
@@ -427,19 +428,40 @@ function SessionProgress({ status }: { status: Session['status'] }) {
   return <div className={`running-indicator is-${status}`} role="status">{state.icon}<span>{state.text}</span></div>;
 }
 
-function UsageBadge({ usage }: { usage?: UsageRecord }) {
+function UsageBadge({ records = [] }: { records?: UsageRecord[] }) {
   const { t } = useTranslation('workspace');
+  let usage = records.at(-1);
+  for (let index = records.length - 1; index >= 0; index--) {
+    const record = records[index];
+    if (record.scope === 'context' && (record.contextUsed !== undefined || (record.contextSize ?? 0) > 0)) {
+      usage = record;
+      break;
+    }
+  }
   if (!usage) return null;
   if (usage.scope === 'context') {
-    const known = usage.contextUsed !== undefined && usage.contextSize !== undefined && usage.contextSize > 0;
-    return <span className="session-usage" title={known
-      ? t('usage.contextCapacity', { used: formatNumber(usage.contextUsed!), size: formatNumber(usage.contextSize!) })
-      : t('usage.contextTokens', { used: usage.contextUsed === undefined ? '—' : formatNumber(usage.contextUsed) })}>
-      {known && <span className="context-meter" aria-hidden="true">
-        <span style={{ width: `${Math.min(100, Math.max(0, usage.contextUsed! / usage.contextSize! * 100))}%` }} />
-      </span>}
-      {t('usage.contextUsed', { used: usage.contextUsed === undefined ? '—' : formatNumber(usage.contextUsed) })}
-    </span>;
+    const { contextUsed, contextSize } = usage;
+    const capacity = contextSize !== undefined && contextSize > 0 ? contextSize : undefined;
+    const ratio = contextUsed !== undefined && capacity !== undefined ? contextUsed / capacity : undefined;
+    const values = [
+      contextUsed === undefined ? undefined : { label: t('usage.contextUsedLabel'), value: formatNumber(contextUsed) },
+      capacity === undefined ? undefined : { label: t('usage.contextLimit'), value: formatNumber(capacity) },
+      ratio === undefined ? undefined : { label: t('usage.contextShare'), value: formatNumber(ratio, { style: 'percent', maximumFractionDigits: 1 }) },
+    ].filter(row => row !== undefined);
+    if (!values.length) return null;
+    const tone = ratio !== undefined && ratio >= .9 ? 'danger' : ratio !== undefined && ratio >= .75 ? 'warning' : 'normal';
+    return <DetailCard side="top" title={t('usage.contextHeading')}
+      description={values.map(row => `${row.label} ${row.value}`).join(' · ')}
+      details={values.map(row => <Fragment key={row.label}><dt>{row.label}</dt><dd className="context-usage-value"><RollingText value={row.value} /></dd></Fragment>)}>
+      <span className={`session-usage context-usage-trigger is-${tone}`} tabIndex={0} aria-label={t('usage.contextHeading')}>
+        <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+          <circle className="context-usage-track" cx="7" cy="7" r="5.25" />
+          {ratio !== undefined && <circle className="context-usage-fill" cx="7" cy="7" r="5.25" pathLength="100"
+            strokeDasharray={`${Math.min(100, Math.max(0, ratio * 100))} 100`} transform="rotate(-90 7 7)" />}
+        </svg>
+        {t('usage.contextLabel')}
+      </span>
+    </DetailCard>;
   }
   return <span className="session-usage">{t('usage.outputTokens', { tokens: usage.outputTokens === undefined ? '—' : formatNumber(usage.outputTokens) })}</span>;
 }
@@ -1069,7 +1091,7 @@ export function SessionChat({
         </div>
         <div className="composer-caption">
           <span className="composer-project" title={session.cwd}><FolderOpen size={12} />{pathName(session.cwd)}</span>
-          <UsageBadge usage={session.usage?.at(-1)} />
+          <UsageBadge records={session.usage} />
           <span className="composer-shortcut"><CornerDownLeft size={11} />{active || session.queuePaused ? t('chat.queueNextTurn') : t('chat.send')}<span>·</span>{t('chat.newLine')}</span>
         </div>
         {!connected && <p className="composer-note" role="status"><CircleAlert size={13} />{t('chat.connectionUnavailable')}</p>}

@@ -85,6 +85,16 @@ const perform: Perform = (_key, action) => { const operation = action().then(() 
 async function render(element: ReactElement, reducedMotion: 'always' | 'user' = 'always') { await act(async () => { root.render(<I18nextProvider i18n={i18n}><AppearanceProvider><OverlayProvider><TooltipProvider><MotionConfig reducedMotion={reducedMotion}>{element}</MotionConfig></TooltipProvider></OverlayProvider></AppearanceProvider></I18nextProvider>); await tick(); }); }
 async function click(key: string) { await act(async () => { button(key).click(); await tick(); }); }
 async function settle() { await act(async () => { await Promise.all(operations); await tick(); }); }
+function rendererInput(event: Record<string, string | number>) {
+  const host = window as unknown as {
+    dispatchRendererInput: (event: string) => void;
+    completeRendererInput: (error?: string) => void;
+  };
+  return new Promise<void>((resolve, reject) => {
+    host.completeRendererInput = error => { if (error) reject(new Error(error)); else resolve(); };
+    host.dispatchRendererInput(JSON.stringify(event));
+  });
+}
 async function openSelect(control: HTMLButtonElement) {
   await act(async () => { control.focus(); control.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await tick(); });
   await waitFor(() => Boolean(document.querySelector('[role=listbox][data-state=open]')), 'The application select menu did not open');
@@ -1277,6 +1287,90 @@ const cases: Record<string, () => Promise<void>> = {
     assert(Number(summary.count) === 0 && !document.querySelector('[data-test-editor]'), 'Confirmed missing file retained its dirty inspector');
     await click('b.txt'); assert(input('[data-test-editor]').value === 'original', 'Discard still blocked browsing another file');
   },
+  'HOVER-01: session previews preserve selection and context usage updates in place': async () => {
+    const sourceTab = { kind: 'agent' as const, id: 'source-tab', sessionId: session.id };
+    const otherTab = { kind: 'agent' as const, id: 'other-tab', sessionId: 'other-session' };
+    const sideProject = { ...workspace, id: 'side-project', name: 'Other project', cwd: '/other' };
+    const source = { ...session, usage: [
+      { id: 'context', scope: 'context' as const, source: 'fixture', contextUsed: 56, contextSize: 100, createdAt: 'now' },
+      { id: 'turn', scope: 'turn' as const, source: 'fixture', outputTokens: 16, createdAt: 'now' },
+    ] };
+    let snapshot: Snapshot = { ...collaborationSnapshot([]), sessions: [
+      source, { ...session, id: otherTab.sessionId, title: 'Other session' },
+      { ...session, id: 'outside', title: 'Outside session', cwd: sideProject.cwd, status: 'waiting_approval', historyLoaded: false,
+        approvals: [{ id: 'approval', sessionId: 'outside', title: 'Approve', detail: 'detail', choices: [] }],
+        latestTrace: { title: 'npm run build', status: 'running' } },
+    ], providers: [provider], workspaces: [{ ...workspace, tabs: [sourceTab, otherTab], activeTabId: sourceTab.id }, sideProject] };
+    let publish = (_value: Snapshot) => {};
+    const activations: string[] = [];
+    const watches: string[][] = [];
+    const seen: string[] = [];
+    window.workbench = {
+      ...applicationUpdateApi,
+      snapshot: async () => snapshot, subscribe: (listener: typeof publish) => { publish = listener; return () => {}; },
+      getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
+      onLanguageChanged: () => () => {}, watchSessions: async (ids: string[]) => { watches.push(ids); },
+      markSessionSeen: async (id: string) => { seen.push(id); },
+      activateTab: async (_id: string, tabId: string) => { activations.push(tabId); },
+      listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {},
+    } as unknown as Window['workbench'];
+    await render(<LanguageProvider initial={{ preference: 'en', language: 'en' }}><App /></LanguageProvider>, 'user');
+    await waitFor(() => Boolean(document.querySelector('.context-usage-trigger')), 'The current context usage was missing');
+    const card = () => document.querySelector<HTMLElement>('.ui-detail-card:not([data-state=closed])');
+    const move = async (target: Element, vertical = .5) => {
+      const { x, y, width, height } = target.getBoundingClientRect();
+      await act(async () => {
+        await rendererInput({ type: 'mouseMoved', x: Math.floor(x + width / 2), y: Math.floor(y + height * vertical) });
+        await tick();
+      });
+    };
+    const rows = [sideProject, workspace].map(project => document.querySelector<HTMLElement>(`[data-workspace-id="${project.id}"]`)!);
+    await move(rows[0]);
+    assert(!card(), 'The first hover skipped its dwell time');
+    await waitFor(() => card()?.textContent?.includes('npm run build') === true, 'The unwatched session did not show its Trace summary', 120);
+    assert(card()?.dataset.state === 'delayed-open' && card()?.textContent?.includes('Pending approvals'), 'The delayed card omitted the approval');
+    assert(card()!.getBoundingClientRect().left >= rows[0].getBoundingClientRect().right, 'The project card covered its trigger');
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    assert((getComputedStyle(card()!).animationName === 'none') === reduced, 'The detail card ignored reduced motion');
+    const firstBounds = rows[0].getBoundingClientRect();
+    const nextBounds = rows[1].getBoundingClientRect();
+    const intoNextRow = nextBounds.top > firstBounds.top;
+    await move(rows[1], intoNextRow ? .1 : .9);
+    await move(rows[1], .5);
+    await move(rows[1], intoNextRow ? .8 : .2);
+    await waitFor(() => card()?.querySelector('.ui-detail-card-title')?.textContent === source.title,
+      () => `The adjacent project did not open a new card (${rows[0].dataset.state} → ${rows[1].dataset.state})`, 22);
+    assert(card()?.dataset.state === 'instant-open', 'The adjacent project waited through the full delay');
+    assert(!watches.flat().includes('outside') && !seen.includes('outside') && activations.length === 0, 'Hover activated or marked another session as seen');
+
+    const tab = [...document.querySelectorAll<HTMLButtonElement>('.tab-select')].find(item => item.textContent === 'Other session')!;
+    await act(async () => { tab.focus(); await tick(); });
+    await waitFor(() => card()?.querySelector('.ui-detail-card-title')?.textContent === 'Other session', 'Keyboard focus did not show the tab preview');
+    assert(tab.getAttribute('aria-describedby') && document.activeElement === tab, 'The card did not describe the focused tab');
+    await act(async () => {
+      for (const type of ['keyDown', 'keyUp']) await rendererInput({ type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    });
+    assert(!card() && document.activeElement === tab, 'Escape did not dismiss the preview in place');
+    await act(async () => { tab.click(); await tick(); });
+    assert(activations.join() === otherTab.id, 'The Session tab lost its click action');
+
+    const badge = document.querySelector<HTMLElement>('.context-usage-trigger')!;
+    await act(async () => { badge.focus(); await tick(); });
+    await waitFor(() => card()?.textContent?.includes('56%') === true, 'The context card omitted the used fraction');
+    const usageCard = card()!;
+    const updateUsage = async (contextUsed: number, contextSize?: number) => {
+      const updated = { ...source, usage: [{ ...source.usage[0], contextUsed, contextSize }, source.usage[1]] };
+      snapshot = { ...snapshot, sessions: [updated, ...snapshot.sessions.slice(1)] };
+      await act(async () => { publish(snapshot); await tick(); });
+    };
+    await updateUsage(57, 100);
+    assert(card() === usageCard && usageCard.textContent?.includes('57%'), 'A new value replaced or closed the context card');
+    const visual = usageCard.querySelector('.ui-rolling-text-visual');
+    assert(Boolean(visual?.querySelector('.ui-rolling-text-change')) !== reduced, 'The context value did not follow the rolling motion preference');
+    if (!reduced) assert(visual?.firstChild?.textContent === '5' && visual?.querySelector('.ui-rolling-text-entering')?.textContent === '7', 'The unchanged digit rolled with the changed digit');
+    await updateUsage(57);
+    assert(card() === usageCard && usageCard.querySelectorAll('dt').length === 1 && !usageCard.textContent?.includes('%'), 'The card invented a percentage without a reported limit');
+  },
   'UI-05: inline session controls preserve drafts, capabilities and partial settings updates': async () => {
     const writes: Record<string, unknown>[] = [];
     let sends = 0;
@@ -1325,17 +1419,9 @@ const cases: Record<string, () => Promise<void>> = {
       assert(option && !option.disabled, `Missing selectable model ${label}`);
       await act(async () => { option.click(); await tick(); });
     };
-    const composerHost = window as unknown as {
-      dispatchComposerInput: (event: string) => void;
-      completeComposerInput: (error?: string) => void;
-    };
-    const composerInput = (event: Record<string, string | number>) => new Promise<void>((resolve, reject) => {
-      composerHost.completeComposerInput = error => { if (error) reject(new Error(error)); else resolve(); };
-      composerHost.dispatchComposerInput(JSON.stringify(event));
-    });
     const key = async (name: string, windowsVirtualKeyCode: number) => {
       await act(async () => {
-        for (const type of ['keyDown', 'keyUp']) await composerInput({ type, key: name, code: name, windowsVirtualKeyCode });
+        for (const type of ['keyDown', 'keyUp']) await rendererInput({ type, key: name, code: name, windowsVirtualKeyCode });
       });
     };
     window.workbench = {
@@ -1390,7 +1476,7 @@ const cases: Record<string, () => Promise<void>> = {
     const drag = async (type: string, fraction: number) => {
       const bounds = track.getBoundingClientRect();
       await act(async () => {
-        await composerInput({ type, x: bounds.left + bounds.width * fraction, y: bounds.top + bounds.height / 2,
+        await rendererInput({ type, x: bounds.left + bounds.width * fraction, y: bounds.top + bounds.height / 2,
           button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, ...(type === 'mouseMoved' ? { force: .5 } : { clickCount: 1 }) });
       });
     };

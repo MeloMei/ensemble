@@ -39,14 +39,14 @@ test('actual renderer components preserve approval, draft, recovery and settings
         await window.loadFile(${JSON.stringify(path.join(directory, 'index.html'))});
         const prefixes = ${JSON.stringify(selectedCases ?? null)};
         const names = await window.webContents.executeJavaScript('window.rendererRegressionNames');
-        const usesComposerInput = names.some(name => name.startsWith('UI-05:') && (!prefixes || prefixes.some(prefix => name.startsWith(prefix))));
-        if (usesComposerInput || ${JSON.stringify(process.env.ENSEMBLE_REDUCED_MOTION === '1')}) window.webContents.debugger.attach('1.3');
+        const usesRendererInput = names.some(name => /^(HOVER-01|UI-05):/.test(name) && (!prefixes || prefixes.some(prefix => name.startsWith(prefix))));
+        if (usesRendererInput || ${JSON.stringify(process.env.ENSEMBLE_REDUCED_MOTION === '1')}) window.webContents.debugger.attach('1.3');
         if (${JSON.stringify(process.env.ENSEMBLE_REDUCED_MOTION === '1')}) {
           await window.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', {features: [{name: 'prefers-reduced-motion', value: 'reduce'}]});
         }
-        if (usesComposerInput) {
+        if (usesRendererInput) {
           window.webContents.debugger.on('message', async (_event, method, params) => {
-            if (method !== 'Runtime.bindingCalled' || params.name !== 'dispatchComposerInput') return;
+            if (method !== 'Runtime.bindingCalled' || params.name !== 'dispatchRendererInput') return;
             const event = JSON.parse(params.payload);
             let error;
             try {
@@ -55,9 +55,9 @@ test('actual renderer components preserve approval, draft, recovery and settings
             } catch (failure) {
               error = String(failure);
             }
-            await window.webContents.executeJavaScript('window.completeComposerInput(' + JSON.stringify(error) + ')');
+            await window.webContents.executeJavaScript('window.completeRendererInput(' + JSON.stringify(error) + ')');
           });
-          await window.webContents.debugger.sendCommand('Runtime.addBinding', {name: 'dispatchComposerInput'});
+          await window.webContents.debugger.sendCommand('Runtime.addBinding', {name: 'dispatchRendererInput'});
         }
         const results = [];
         for (const name of names) {

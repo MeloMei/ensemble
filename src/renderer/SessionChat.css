@@ -279,8 +279,13 @@
 .chat-pane .composer-shortcut { display: flex; align-items: center; gap: 5px; margin-left: auto; white-space: nowrap; }
 .chat-pane .composer-shortcut > span { color: var(--border-strong); }
 .chat-pane .session-usage { display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.chat-pane .context-meter { display: block; width: 27px; height: 4px; overflow: hidden; border-radius: 3px; background: var(--border); }
-.chat-pane .context-meter > span { display: block; height: 100%; border-radius: 3px; background: var(--accent); }
+.context-usage-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: var(--radius-control); }
+.context-usage-trigger svg { color: var(--accent); fill: none; }
+.context-usage-trigger.is-warning svg { color: var(--warning); }
+.context-usage-trigger.is-danger svg { color: var(--danger); }
+.context-usage-track { stroke: var(--border-strong); }
+.context-usage-fill { stroke: currentColor; }
+.context-usage-value { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .chat-pane .composer-note { display: flex; align-items: flex-start; gap: 6px; margin: 6px 4px 0; color: var(--warning); font-size: 11px; line-height: 1.7; }
 .chat-pane .composer-note svg { margin-top: 3px; }
 .chat-pane .attachments-strip { display: flex; flex-wrap: wrap; gap: 7px; margin: 10px 0 0; }

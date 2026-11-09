@@ -96,6 +96,27 @@ test('subscribed projections exclude unrelated history and send only changed mes
     subscribedBytes: Buffer.byteLength(first), deltaBytes: Buffer.byteLength(JSON.stringify(delta)), fullEncodeMs: fullMs, projectionAndEncodeMs: projectionMs }));
 });
 
+test('an unwatched session publishes one bounded Trace summary without its history', () => {
+  const unwatched = session('unwatched', 3);
+  const latest = { id: 'tool', kind: 'tool' as const, title: `npm run test\n${'extra '.repeat(40)}`,
+    status: 'running' as const, input: 'PRIVATE_INPUT', output: 'PRIVATE_OUTPUT' };
+  unwatched.messages[0].event = { ...latest, title: 'Earlier tool' };
+  unwatched.messages[1].event = latest;
+  const source = snapshot([unwatched]);
+  const projection = new SnapshotProjection('backend', 'subscriber', new Set());
+  const replica = new SnapshotReplica();
+  const initial = replica.apply(wire(projection.frame(source, 1)!))!.sessions[0];
+  assert.deepEqual(initial.messages, []);
+  assert.equal(initial.latestTrace?.status, 'running');
+  assert.match(initial.latestTrace?.title ?? '', /^npm run test extra .*…$/);
+  assert.ok(initial.latestTrace!.title.length <= 160);
+  assert(!JSON.stringify(initial).includes('PRIVATE_'));
+  unwatched.messages[1].event = { ...latest, status: 'completed' };
+  const updated = replica.apply(wire(projection.frame(source, 2)!))!.sessions[0];
+  assert.equal(updated.latestTrace?.status, 'completed');
+  assert.deepEqual(updated.messages, []);
+});
+
 test('a watched composer retains live activity beyond the message tail', () => {
   const watched = session('watched', 101);
   watched.status = 'running';
