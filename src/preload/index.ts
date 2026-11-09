@@ -150,6 +150,7 @@ const api: WorkbenchAPI = {
   updateSession: (id, input) => ipcRenderer.invoke('workbench:update-session', id, input),
   forkSession: (id, before) => ipcRenderer.invoke('workbench:fork-session', id, before),
   continueSession: (id, target) => ipcRenderer.invoke('workbench:continue-session', id, target),
+  askSideQuestion: (id, input, commandId) => ipcRenderer.invoke('workbench:ask-side-question', id, input, commandId),
   rewindSession: async (id, messageId) => { await drafts.flush(id); return ipcRenderer.invoke('workbench:rewind-session', id, messageId); },
   retryWorkflowStep: (id, stepId) => ipcRenderer.invoke('workbench:retry-step', id, stepId),
   cloneWorkflow: id => ipcRenderer.invoke('workbench:clone-workflow', id),

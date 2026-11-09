@@ -73,7 +73,7 @@ const savedSchema = record({
     draft: promptInputSchema.optional(),
     queue: z.array(z.object({ id: z.string(), commandId: z.string(), input: z.object({ text: z.string(), attachments: z.array(attachmentSchema).optional() }).strict(), modelId: z.string().optional(),
       settings: z.object({ effort: z.string().optional(), permission: z.enum(['review', 'read-only']).optional(), skillIds: z.array(z.string()).optional() }).strict().optional(), createdAt: z.string(), updatedAt: z.string() }).strict()).optional(),
-    queuePaused: z.boolean().optional(), queueHoldReason: z.string().optional(),
+    queuePaused: z.boolean().optional(), queueHoldReason: z.string().optional(), waitingForProject: z.literal(true).optional(),
     attention: z.object({ revision: z.number().int().positive(), seenRevision: z.number().int().nonnegative(),
       reason: z.enum(['approval', 'result', 'failure']), updatedAt: z.string(), sourceId: z.string().optional() }).strict().optional(),
     attempts: z.array(record({ id: z.string(), status: sessionStatus, prompt: z.string(), userMessageId: z.string(), retryOf: z.string().optional(), startedAt: z.string(), endedAt: z.string().optional(), error: z.string().optional(),

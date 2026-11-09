@@ -34,6 +34,8 @@ import { expandConversation, type TraceEntry } from './conversation-index';
 import { measureConversationRow, useReadingAnchor, useSessionReadingPosition } from './useSessionReadingPosition';
 import { WorkspaceFileNavigation, workspaceFileReference } from './workspace-file-reference';
 import { diffLines } from './review-notes';
+import { questionExcerpt } from '../shared/side-question';
+import { SideQuestion, SideQuestionAction, useAnswerQuestionSelection, type SideQuestionOrigin } from './SideQuestion';
 import './SessionChat.css';
 
 interface SessionChatProps {
@@ -522,6 +524,7 @@ function PromptQueue({ session, provider, pending, perform, connected }: Pick<Se
       </button>
     </header>
     {session.queuePaused && <p className="queue-paused"><Pause size={12} />{t('chat.queuePaused')}{session.queueHoldReason && <span>{session.queueHoldReason}</span>}</p>}
+    {!session.queuePaused && session.waitingForProject && <p className="queue-paused" role="status"><Clock3 size={12} />{t('chat.sideQuestion.waiting')}</p>}
     <ol>{queue.map(item => {
       const changing = pending.has(`queue-item-${item.id}`);
       return <li key={item.id} data-queue-id={item.id}>
@@ -651,6 +654,8 @@ export function SessionChat({
   const [searching, setSearching] = useState(false);
   const [scrollTarget, setScrollTarget] = useState<{ id: string; attention?: boolean }>();
   const [inspectedMessageId, setInspectedMessageId] = useState<string>();
+  const [sideQuestion, setSideQuestion] = useState<SideQuestionOrigin>();
+  const [sideQuestionJump, setSideQuestionJump] = useState<string>();
   const handledAttention = useRef<SessionAttentionOpen>(undefined);
   const [sendError, setSendError] = useState('');
   const [readingAnchor, setReadingAnchor] = useReadingAnchor(session.id);
@@ -697,6 +702,7 @@ export function SessionChat({
 
   const active = activeStatuses.has(session.status);
   const historyReady = session.historyLoaded !== false;
+  const canAskSideQuestion = !readOnly && !session.archived && connected && historyReady && Boolean(provider?.available);
   const busy = pending.has(`send-${session.id}`);
   const settingsBusy = pending.has(`session-settings-${session.id}`);
   const history = useSessionHistory(session);
@@ -807,6 +813,20 @@ export function SessionChat({
     setInspectedMessageId(id);
     setScrollTarget({ id, attention });
   };
+  const answerReference = useAnswerQuestionSelection(scroll, canAskSideQuestion);
+  const openSideQuestion = (origin: SideQuestionOrigin) => setSideQuestion(current => current ?? origin);
+  const closeSideQuestion = () => {
+    setSideQuestion(undefined);
+    const original = sideQuestion?.trigger;
+    const current = sideQuestion && scroll.current?.querySelector<HTMLButtonElement>(
+      `[data-message-id="${CSS.escape(sideQuestion.reference.messageId)}"] .side-question-trigger`);
+    (original?.isConnected ? original : current ?? scroll.current)?.focus({ preventScroll: true });
+  };
+  useEffect(() => {
+    if (!sideQuestionJump || messages.indexOf(sideQuestionJump) < 0) return;
+    inspectMessage(sideQuestionJump);
+    setSideQuestionJump(undefined);
+  }, [messages, sideQuestionJump]);
   const rowCount = chatRows.length + 1;
   const rowSource = useRef(chatRows);
   rowSource.current = chatRows;
@@ -853,6 +873,13 @@ export function SessionChat({
   });
   const markReadingInput = () => { cancelReadingRestore(); markUserInput(); };
   const closeFind = () => { history.cancelJump(); setScrollTarget(undefined); setRevealedMatch(undefined); setFind(null); };
+  const locateSideQuestionSource = async (id: string) => {
+    closeFind();
+    cancelReadingRestore();
+    if (!await history.locateMessage(id, false)) return false;
+    setSideQuestionJump(id);
+    return true;
+  };
   const showLatestOutput = (smooth = false) => {
     cancelReadingRestore();
     setRestoredTrace(undefined);
@@ -1093,7 +1120,10 @@ export function SessionChat({
             onExpandedChange={expanded => {
               if (!expanded && inspectedMessageId === message.id) setInspectedMessageId(undefined);
               chooseEvent(message.id, expanded);
-            }} openSession={openSession} openNativeAgent={setNativeAgentId} />
+            }} openSession={openSession} openNativeAgent={setNativeAgentId}
+            onAsk={canAskSideQuestion && message.event.title.trim() ? trigger => openSideQuestion({
+              reference: { kind: 'trace', messageId: message.id }, excerpt: questionExcerpt(message.event!.title), trigger,
+            }) : undefined} />
         : message ? <div className="messages"><article data-message-id={message.id}
               className={`message message-${message.role}${selectedMatch?.id === message.id || inspectedMessageId === message.id ? ' conversation-match' : ''}`}>
               {message.role === 'user'
@@ -1118,6 +1148,7 @@ export function SessionChat({
                     </div>
                     <div className="message-tools">
                       <CopyAnswer message={message} perform={perform} />
+                      {answerReference?.messageId === message.id && <SideQuestionAction onClick={trigger => openSideQuestion({ reference: answerReference, excerpt: answerReference.excerpt, trigger })} />}
                       {!readOnly && !active && <button onClick={() => void perform('fork-session',
                         async () => openSession(await window.workbench.forkSession(session.id, message.id)))}>
                         <GitFork size={12} />{t('chat.forkHere')}</button>}
@@ -1211,6 +1242,9 @@ export function SessionChat({
       </div>}
     </div>
 
+    {!readOnly && sideQuestion && <SideQuestion sessionId={session.id} origin={sideQuestion} enabled={canAskSideQuestion}
+      onClose={closeSideQuestion} locateSource={locateSideQuestionSource} openSession={openSession}
+      canOpenSession={id => connected && sessions.some(item => item.id === id)} />}
     {!readOnly && rewindMessage && <Modal title={t('chat.rewindTitle')} subtitle={t('chat.rewindDescription')}
       onClose={() => setRewindMessage(undefined)}>
       <div className="modal-actions">
@@ -1283,12 +1317,13 @@ function TraceEventRow({ message, end, entering, matched, ...card }: Parameters<
   </div>;
 }
 
-function ProcessCard({ event, openSession, openNativeAgent, expanded, onExpandedChange }: {
+function ProcessCard({ event, openSession, openNativeAgent, expanded, onExpandedChange, onAsk }: {
   event: ProcessEvent;
   openSession: (id: string) => void;
   openNativeAgent: (id: string) => void;
   expanded: boolean;
   onExpandedChange: (expanded: boolean) => void;
+  onAsk?: (trigger: HTMLButtonElement) => void;
 }) {
   const { t } = useTranslation('workspace');
   const bodyId = useId();
@@ -1307,7 +1342,8 @@ function ProcessCard({ event, openSession, openNativeAgent, expanded, onExpanded
         <span className="process-symbol" aria-hidden="true">{icon}</span><strong title={title}>{title}</strong>
         <Status value={event.status} /><ChevronDown className="process-chevron" size={14} />
       </button>
-      {(event.sessionId || (event.kind === 'subagent' && event.nativeId)) && <div className="process-links">
+      {(onAsk || event.sessionId || (event.kind === 'subagent' && event.nativeId)) && <div className="process-links">
+        {onAsk && <SideQuestionAction onClick={onAsk} />}
         {event.sessionId && <button onClick={() => openSession(event.sessionId!)}>{t('chat.openChild')}<ArrowUpLeft size={12} /></button>}
         {event.kind === 'subagent' && event.nativeId && <button onClick={() => openNativeAgent(event.nativeId!)}>{t('chat.openNative')}<ArrowUpLeft size={12} /></button>}
       </div>}
