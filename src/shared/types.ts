@@ -328,7 +328,7 @@ export interface SessionUpdate { title?: string; archived?: boolean; settings?: 
 export interface SessionSkillAssignment { skillId: string; enabled: boolean }
 export interface SessionSkillAssignmentReceipt { skillIds: string[]; updatedAt: string }
 export interface ProcessEvent {
-  id: string; kind: 'tool' | 'plan' | 'task' | 'subagent'; title: string;
+  id: string; kind: 'tool' | 'plan' | 'task' | 'subagent' | 'diff'; title: string;
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
   nativeId?: string; parentId?: string; input?: string; output?: string; sessionId?: string;
   entries?: { text: string; status: 'pending' | 'running' | 'completed' | 'cancelled' }[];
