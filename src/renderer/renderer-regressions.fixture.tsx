@@ -1740,7 +1740,8 @@ const cases: Record<string, () => Promise<void>> = {
 
     const search = await expand();
     const catalog = persistentPanel.querySelector('.composer-model-catalog-content')!;
-    await waitFor(() => !catalog.getAnimations().some(animation => animation.playState === 'running'), 'The model catalog did not finish expanding');
+    await frames(2);
+    await waitFor(() => [catalog, persistentPanel].every(element => !element.getAnimations().some(animation => animation.playState === 'running')), 'The model picker did not finish expanding');
     const expandedBounds = persistentPanel.getBoundingClientRect();
     await change(search, 'no matching model');
     assert(picker()?.querySelector('.composer-model-empty')?.textContent === translate('workspace:chat.noMatchingModels'), 'The model search did not report no results');
