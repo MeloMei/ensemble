@@ -2431,6 +2431,136 @@ const cases: Record<string, () => Promise<void>> = {
     await show({ ...session, queue: [] });
     assert(!document.querySelector('.composer-dock'), 'An empty session displays a composer dock');
   },
+  'SPLIT-DROP: session tabs preview four edges and preserve physical panes on focus changes': async () => {
+    const primarySession = { ...session, title: 'Primary split session' };
+    const otherSession = { ...session, id: 'other-split-session', title: 'Other split session' };
+    const primary = { kind: 'agent' as const, id: 'primary-split-tab', sessionId: primarySession.id };
+    const other = { kind: 'agent' as const, id: 'other-split-tab', sessionId: otherSession.id };
+    const sideProject = { ...workspace, id: 'side-split-project', name: 'Side project', cwd: '/side-split' };
+    let current: Workspace = { ...workspace, tabs: [primary, other], activeTabId: primary.id, splitRatio: 0.6 };
+    let snapshot: Snapshot = { ...collaborationSnapshot([]), providers: [provider], sessions: [primarySession, otherSession], workspaces: [current, sideProject] };
+    let publish = (_value: Snapshot) => {};
+    const writes: Parameters<Window['workbench']['splitWorkspace']>[] = [];
+    window.workbench = {
+      ...applicationUpdateApi,
+      snapshot: async () => snapshot, subscribe: (listener: typeof publish) => { publish = listener; return () => {}; },
+      getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
+      watchSessions: async () => {}, listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {},
+      splitWorkspace: async (...args: Parameters<Window['workbench']['splitWorkspace']>) => { writes.push(args); },
+      activateTab: async (id: string, tabId: string) => {
+        assert(id === workspace.id && tabId === other.id, 'Focus used the wrong tab');
+        await showWorkspace({ activeTabId: other.id, secondaryTabId: primary.id, secondaryPlacement: 'after' });
+      },
+    } as unknown as Window['workbench'];
+    async function showWorkspace(patch: Partial<Workspace>) {
+      current = { ...current, ...patch };
+      snapshot = { ...snapshot, workspaces: [current, sideProject] };
+      publish(snapshot);
+      await tick();
+    }
+    await render(<App />);
+    await waitFor(() => document.querySelectorAll('.workspace-tabs .tab-select').length === 2, 'Split tabs did not load');
+    const tab = (title: string) => [...document.querySelectorAll<HTMLButtonElement>('.workspace-tabs .tab-select')].find(item => item.textContent?.startsWith(title))!;
+    const source = tab(otherSession.title);
+    const active = tab(primarySession.title);
+    const close = source.parentElement!.querySelector('.tab-close')!;
+    const target = () => document.querySelector<HTMLElement>('.workspace-split-drop');
+    const preview = () => target()?.querySelector<HTMLElement>('.workspace-split-preview');
+    const panes = () => [...document.querySelectorAll<HTMLElement>('.workspace-dual > .tab-content')];
+    const paneTitles = () => panes().map(item => item.querySelector('.chat-toolbar h2')?.textContent).join('|');
+    await act(async () => { await showWorkspace({ secondaryTabId: other.id }); });
+    assert(paneTitles() === `${primarySession.title}|${otherSession.title}`, 'A saved split without placement did not restore the original order');
+    await act(async () => { await showWorkspace({ secondaryTabId: undefined }); });
+    const fire = async (element: Element, type: string, transfer: DataTransfer, x = .5, y = .5) => {
+      const rect = element.getBoundingClientRect();
+      await act(async () => {
+        element.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: transfer,
+          clientX: rect.left + rect.width * x, clientY: rect.top + rect.height * y }));
+        await tick();
+      });
+    };
+    assert(source.draggable && !active.draggable && !(close as HTMLElement).draggable, 'The drag source includes an active or close button');
+    await fire(active, 'dragstart', new DataTransfer());
+    await fire(close, 'dragstart', new DataTransfer());
+    assert(!target(), 'A non-draggable control enabled split drop');
+    const file = new DataTransfer();
+    file.items.add(new File(['fixture'], 'file.txt'));
+    await fire(document.querySelector('.workspace-dual')!, 'dragover', file, .03, .5);
+    assert(!target() && writes.length === 0, 'A file drag was claimed by the split target');
+
+    const canceled = new DataTransfer();
+    await fire(source, 'dragstart', canceled);
+    const paneOverlay = document.createElement('div');
+    Object.assign(paneOverlay.style, { position: 'absolute', inset: '0', zIndex: '12' });
+    panes()[0].append(paneOverlay);
+    const targetBounds = target()!.getBoundingClientRect();
+    assert(document.elementFromPoint(targetBounds.left + targetBounds.width / 2, targetBounds.top + targetBounds.height / 2) === target(), 'Pane overlay blocked the split drop target');
+    paneOverlay.remove();
+    await fire(target()!, 'dragover', canceled, .03, .5);
+    assert(preview()?.dataset.edge === 'left' && writes.length === 0, 'Hover changed the workspace before release');
+    await fire(source, 'dragend', canceled);
+    assert(!target() && writes.length === 0, 'Ending the drag without a drop changed the workspace');
+
+    const stale = new DataTransfer();
+    await fire(source, 'dragstart', stale);
+    await act(async () => { await showWorkspace({ secondaryTabId: other.id }); });
+    await fire(target()!, 'drop', stale, .03, .5);
+    assert(JSON.stringify(writes.at(-1)?.[1].expectedLayout) === JSON.stringify({ activeTabId: primary.id, secondaryTabId: null }), 'Drop did not retain the layout from drag start');
+    writes.length = 0;
+    await act(async () => { await showWorkspace({ secondaryTabId: undefined }); });
+
+    const centered = new DataTransfer();
+    await fire(source, 'dragstart', centered);
+    await fire(target()!, 'dragover', centered);
+    assert(!preview(), 'The center accepted a split preview');
+    await fire(target()!, 'drop', centered);
+    await fire(source, 'dragend', centered);
+    assert(writes.length === 0, 'Dropping in the center changed the workspace');
+
+    for (const [edge, x, y, direction, placement] of [
+      ['right', .97, .5, 'horizontal', 'after'], ['bottom', .5, .97, 'vertical', 'after'],
+      ['top', .5, .03, 'vertical', 'before'], ['left', .03, .5, 'horizontal', 'before'],
+    ] as const) {
+      const transfer = new DataTransfer();
+      const count: number = writes.length;
+      const expectedLayout = { activeTabId: current.activeTabId, secondaryTabId: current.secondaryTabId ?? null };
+      await fire(source, 'dragstart', transfer);
+      await fire(target()!, 'dragover', transfer, x, y);
+      assert(preview()?.dataset.edge === edge && writes.length === count, `The ${edge} preview saved before release`);
+      assert(preview()?.style.getPropertyValue('--split-preview-size') === (placement === 'before' ? '60%' : '40%'), 'Preview did not use the saved physical ratio');
+      await fire(target()!, 'drop', transfer, x, y);
+      assert(!target() && writes.length === count + 1 && JSON.stringify(writes.at(-1)) === JSON.stringify([workspace.id, { tabId: other.id, direction, placement, expectedLayout }]), `The ${edge} drop requested the wrong split`);
+      await act(async () => { await showWorkspace({ secondaryTabId: other.id, secondaryPlacement: placement, splitDirection: direction }); });
+      assert(paneTitles() === (placement === 'before' ? `${otherSession.title}|${primarySession.title}` : `${primarySession.title}|${otherSession.title}`), `The ${edge} drop rendered the wrong physical order`);
+      const [first, second] = panes().map(pane => pane.getBoundingClientRect());
+      assert(direction === 'horizontal' ? first.right <= second.left : first.bottom <= second.top, `The ${edge} drop used the wrong axis`);
+    }
+
+    const unchanged = new DataTransfer();
+    await fire(source, 'dragstart', unchanged);
+    await fire(target()!, 'dragover', unchanged, .03, .5);
+    assert(!preview(), 'The same tab and edge offered a duplicate split');
+    await fire(target()!, 'drop', unchanged, .03, .5);
+    await fire(source, 'dragend', unchanged);
+    assert(Number(writes.length) === 4, 'Dropping the already placed tab wrote a duplicate split');
+
+    const firstPane = panes()[0];
+    const secondPane = panes()[1];
+    await act(async () => { source.click(); await tick(); });
+    assert(panes()[0] === firstPane && panes()[1] === secondPane
+      && paneTitles() === `${otherSession.title}|${primarySession.title}`
+      && source.getAttribute('aria-current') === 'page', 'Focusing the split tab mirrored or remounted the panes');
+    const divider = document.querySelector('[role=separator].split-handle')!;
+    assert(divider.getAttribute('aria-valuenow') === '60', 'Focus changed the physical pane ratio');
+    await act(async () => { divider.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowRight' })); await tick(); });
+    assert(writes.at(-1)?.[1].tabId === primary.id && writes.at(-1)?.[1].ratio === 0.65, 'The divider shortcut stopped updating the same physical ratio');
+
+    for (const id of [sideProject.id, workspace.id]) {
+      await act(async () => { document.querySelector<HTMLButtonElement>(`button[data-workspace-id="${id}"]`)!.click(); await tick(); });
+    }
+    assert(paneTitles() === `${otherSession.title}|${primarySession.title}`
+      && source.getAttribute('aria-current') === 'page', 'Returning to the project changed the saved physical order or focus');
+  },
   'FILE-PANE-WIDTH: the divider follows the pointer and restores the preferred width and selected file': async () => {
     const snapshot: Snapshot = { ...collaborationSnapshot([]), sessions: [session], providers: [provider],
       workspaces: [{ ...workspace, tabs: [{ kind: 'agent', id: 'file-pane-tab', sessionId: session.id }], activeTabId: 'file-pane-tab' }] };
