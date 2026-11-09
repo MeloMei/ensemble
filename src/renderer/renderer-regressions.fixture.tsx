@@ -2652,6 +2652,51 @@ const cases: Record<string, () => Promise<void>> = {
     await waitFor(() => creations.length === 3, 'The next creation did not start');
     assert(creations[2].mode === 'directory' && creations[2].commandId !== creations[1].commandId, 'An independent creation reused the completed intent');
   },
+  'TERMINAL-SERVICES: confirmed local listeners open HTTP previews only on click': async () => {
+    if (!navigator.platform.startsWith('Mac')) return;
+    const info = { id: 'service-terminal', workspaceId: workspace.id, title: 'Terminal', status: 'running' as const, exitCode: null, output: '', outputOffset: 0 };
+    const listener = { host: '127.0.0.1' as const, port: 49321 };
+    const previews: [string, string][] = [];
+    let observed = true;
+    let scans = 0;
+    let hold = false;
+    const pendingScan = deferred<typeof listener[]>();
+    window.workbench = {
+      onTerminalOutput: () => () => {}, resizeTerminal: async () => {},
+      listTerminalServices: async (id: string) => {
+        assert(id === info.id, 'Service discovery used a different terminal');
+        scans++;
+        return hold ? pendingScan.promise : observed ? [listener] : [];
+      },
+      createPreview: async (id: string, url: string) => { previews.push([id, url]); },
+    } as unknown as Window['workbench'];
+    const preview = () => document.querySelector<HTMLButtonElement>('.terminal-service-previews button');
+    const clickPreview = async () => act(async () => { preview()!.click(); await tick(); });
+    await render(<TerminalPane info={info} cwd={workspace.cwd} perform={perform} />);
+    await waitFor(() => scans === 1, 'The visible terminal did not request listeners');
+    assert(!preview() && !previews.length, 'One observation showed or opened a preview');
+    await waitFor(() => Boolean(preview()), 'A listener present in two reads did not appear', 250);
+    assert(!previews.length && preview()?.textContent === '127.0.0.1:49321', 'Discovering a listener opened a preview or showed a different address');
+    observed = false;
+    await clickPreview(); await settle();
+    assert(!previews.length && errors.some(error => error.includes(translate('workspace:terminal.listenerUnavailable'))),
+      'A listener that disappeared before the click still opened a preview');
+    observed = true;
+    await clickPreview(); await settle();
+    assert(JSON.stringify(previews) === JSON.stringify([[workspace.id, 'http://127.0.0.1:49321']]), 'Clicking a confirmed listener did not open the loopback HTTP URL');
+    observed = false;
+    await waitFor(() => Boolean(document.querySelector('.terminal-service-closed')), 'A closed listener did not briefly remain visible', 450);
+    assert(!preview(), 'A closed listener still offers a preview');
+
+    const beforePending = scans;
+    hold = true;
+    await waitFor(() => scans > beforePending, 'The next scheduled read did not start', 250);
+    const atUnmount = scans;
+    await render(<div />);
+    await act(async () => { pendingScan.resolve([listener]); await tick(); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 1600)); });
+    assert(scans === atUnmount && previews.length === 1, 'An old terminal view continued discovery or opened a preview');
+  },
   'UX2-FILES-TERMINAL: replacement tails and gap recovery stay ordered behind pending terminal writes': async () => {
     const originalOpen = Terminal.prototype.open;
     let terminal: Terminal | undefined, listener!: Parameters<Window['workbench']['onTerminalOutput']>[1];
