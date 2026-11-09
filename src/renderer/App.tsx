@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import {
   Archive, ArrowUpRight, CheckCircle2, ChevronRight, Circle, CircleAlert, CircleDot,
   Folder, GitBranch, Globe, History, Layers2, LoaderCircle, MessageSquare,
@@ -23,6 +23,7 @@ import { Tooltip } from './Tooltip';
 import './features.css';
 import { SessionChat } from './SessionChat';
 import { SessionDetailCard } from './SessionDetailCard';
+import { WorkspaceFileNavigation, type WorkspaceFileRequest } from './workspace-file-reference';
 import { FirstTask } from './FirstTask';
 import { TerminalPane } from './TerminalPane';
 import { WorkflowEditor, WorkflowView } from './WorkflowViews';
@@ -83,6 +84,7 @@ export function App() {
   const draftReady = useRef(new Set<string>());
   draftReady.current = new Set((snapshot?.sessions ?? []).filter(session => session.historyLoaded !== false).map(session => session.id));
   const [draftErrors, setDraftErrors] = useState<Record<string, string>>({});
+  const [fileRequest, setFileRequest] = useState<WorkspaceFileRequest>();
   const [pending, setPending] = useState<Set<string>>(new Set());
   const [toast, setToast] = useState('');
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -270,7 +272,17 @@ export function App() {
     </div>
   </section>);
 
-  return <div className="workbench">
+  const fileNavigation = useMemo<React.ContextType<typeof WorkspaceFileNavigation>>(() => page === 'workspace' && workspace && connected ? {
+    cwd: workspace.cwd,
+    open: reference => {
+      setFileRequest({ ...reference, workspaceId: workspace.id });
+      setRightPane(true);
+    },
+    request: fileRequest,
+    consume: request => setFileRequest(current => current === request ? undefined : current),
+  } : null, [page, workspace?.cwd, workspace?.id, connected, fileRequest]);
+
+  return <WorkspaceFileNavigation.Provider value={fileNavigation}><div className="workbench">
     <aside className="workspace-sidebar"><div className="sidebar-titlebar"><img className="brand-symbol" src={ensembleLogo} alt="" /><span>{PRODUCT_NAME}<span className="brand-period">.</span></span></div>
       <nav className="sidebar-navigation" aria-label={t('app.navigation')}><button className="new-workspace-button" onClick={() => setDialog('workspace')}><Plus size={17} /><span>{t('app.newWorkspace')}</span></button><button className={page === 'workspace' ? 'selected' : ''} aria-current={page === 'workspace' ? 'page' : undefined} onClick={() => setPage('workspace')}><LayoutGrid size={17} /><span>{t('app.workspace')}</span><small>{workspaces.length || ''}</small></button><button className={page === 'history' ? 'selected' : ''} aria-current={page === 'history' ? 'page' : undefined} onClick={() => setPage('history')}><History size={17} />{t('app.history')}</button><button className={page === 'collaboration' ? 'selected' : ''} aria-current={page === 'collaboration' ? 'page' : undefined} onClick={() => setPage('collaboration')}><Network size={17} />{t('app.collaboration')}</button><button className={page === 'workflows' ? 'selected' : ''} aria-current={page === 'workflows' ? 'page' : undefined} onClick={() => setPage('workflows')}><GitBranch size={17} />{t('app.workflows')}</button></nav>
       <motion.div className="workspace-sidebar-scroll" layoutScroll>{sidebarItems}</motion.div>
@@ -327,7 +339,7 @@ export function App() {
     {dialog === 'preview' && workspace && <PreviewDialog workspace={workspace} pending={pending} perform={perform} onClose={() => setDialog(null)} />}
     {dialog === 'codex' && <CodexDialog initialCwd={workspace?.cwd ?? ''} pending={pending} perform={perform} onClose={() => setDialog(null)} />}
     {toast && <ErrorToast message={toast} onDismiss={() => setToast('')} />}
-  </div>;
+  </div></WorkspaceFileNavigation.Provider>;
 }
 
 function NewWorkspaceDialog({ pending, perform, onClose, onCreated }: { pending: Set<string>; perform: Perform; onClose: () => void; onCreated: (id: string) => void }) {

@@ -5,6 +5,7 @@ import React, { act, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { I18nextProvider } from 'react-i18next';
 import { MotionConfig } from 'framer-motion';
+import { EditorView } from '@codemirror/view';
 import { i18n, translate } from '../shared/i18n';
 import type { DiagnosticEntry, FileContent, McpSettingsView, Message, PromptInput, ProviderInfo, Session, Snapshot, UnsavedFileSummary, Workflow, WorkflowInput, Workspace, WorkspaceManagement } from '../shared/types';
 import type { BackendConnectionState, SessionHistoryWindow } from '../shared/backend';
@@ -141,6 +142,61 @@ async function graphReady(count: number) {
 }
 
 const cases: Record<string, () => Promise<void>> = {
+  'FILE-REF-01: links from chat reveal the exact file and preserve unsaved edits': async () => {
+    const tab = { kind: 'agent' as const, id: 'file-reference-tab', sessionId: session.id };
+    const answer: Message = { ...messageRange(0, 1)[0], text: [
+      'See `src/view.ts:40:3`, [these lines](file:///fixture/src/view.ts#L42-L45), or [other file](./src/other.ts:8).',
+      '[External](https://example.com/docs#L12) · [outside](file:///fixture-sibling/out.ts#L12) · `../other.ts:8`.',
+      '```\nsrc/view.ts:56\n```',
+    ].join('\n\n') };
+    const fileText = Array.from({ length: 80 }, (_, index) => `Line ${index + 1}`).join('\n');
+    const snapshot: Snapshot = { ...collaborationSnapshot([]), sessions: [{ ...session, messages: [answer] }],
+      providers: [provider], workspaces: [{ ...workspace, tabs: [tab], activeTabId: tab.id }] };
+    const reads: string[] = [];
+    window.workbench = {
+      ...applicationUpdateApi,
+      snapshot: async () => snapshot, subscribe: () => () => {},
+      getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
+      onLanguageChanged: () => () => {}, watchSessions: async () => {},
+      listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {},
+      readFile: async (_id: string, path: string) => {
+        reads.push(path);
+        return { path, content: fileText, size: fileText.length, language: 'TypeScript', revision: 'file-reference-r1' };
+      },
+    } as unknown as Window['workbench'];
+    await render(<LanguageProvider initial={{ preference: 'en', language: 'en' }}><div style={{ width: 1180 }}><App /></div></LanguageProvider>);
+    await waitFor(() => document.querySelectorAll('.markdown-file-link').length === 3, 'The answer did not expose exactly the in-project file references');
+    assert(document.querySelector('.markdown-message a[href="https://example.com/docs#L12"]') && !document.querySelector('.markdown-message pre button'),
+      'External links or code examples were changed');
+    const openReference = async (label: string) => {
+      const link = [...document.querySelectorAll<HTMLButtonElement>('.markdown-file-link')].find(item => item.textContent === label);
+      assert(link, `Missing workspace reference ${label}`);
+      await act(async () => { link.click(); await tick(); });
+    };
+    await click('app.hideFiles');
+    await openReference('src/view.ts:40:3');
+    assert(document.querySelector('.file-panel-transition')?.getAttribute('aria-hidden') === 'false', 'The reference did not reopen the file pane');
+    const editor = () => {
+      const element = document.querySelector<HTMLElement>('.review-editor .cm-editor');
+      return element && EditorView.findFromDOM(element);
+    };
+    await waitFor(() => editor()?.state.doc.lineAt(editor()!.state.selection.main.head).number === 40, 'The editor did not jump to line 40');
+    const view = editor()!;
+    assert(view.state.selection.main.head === view.state.doc.line(40).from + 2
+      && view.dom.querySelector('.cm-activeLine')?.textContent === 'Line 40' && reads.join() === 'src/view.ts',
+    'The target column or active line was incorrect');
+    await act(async () => { view.dispatch({ changes: { from: 0, insert: 'Draft: ' } }); await tick(); });
+    await openReference('these lines');
+    const selection = view.state.selection.main;
+    assert(editor() === view && reads.length === 1 && view.state.doc.toString().startsWith('Draft: ')
+      && selection.from === view.state.doc.line(42).from && selection.to === view.state.doc.line(45).to,
+    'Jumping to a range in the open file did not preserve its draft or select the range');
+    await openReference('other file');
+    await waitFor(() => document.body.textContent?.includes(translate('workspace:files.saveBeforeOpen')) === true, 'A dirty editor did not block opening a different file');
+    assert(editor() === view && reads.length === 1 && document.querySelector('.tab-select[aria-current="page"]')?.textContent?.includes(session.title),
+      'File navigation discarded the draft, read an unrelated file, or switched the conversation');
+    await act(async () => { view.dispatch({ changes: { from: 0, to: 'Draft: '.length } }); await tick(); });
+  },
   'RUNTIME-CONTINUATION: a different Agent receives an editable draft only after explicit creation': async () => {
     const target: ProviderInfo = { ...provider, id: 'claude', name: 'Claude Code', defaultModelId: 'default', models: [
       { id: 'default', name: 'Default model', free: true }, { id: 'selected', name: 'Selected model', free: true },
@@ -2511,7 +2567,11 @@ fixture.runRendererRegressions = async selected => {
     host.style.cssText = 'display:flex;width:1100px;height:740px;min-height:0';
     try { await check(); results.push({ name }); }
     catch (error) { results.push({ name, error: error instanceof Error ? error.stack : String(error) }); }
-    finally { await act(async () => root.unmount()); host.remove(); }
+    finally {
+      await act(async () => root.unmount());
+      host.remove();
+      window.scrollTo(0, 0);
+    }
   }
   return results;
 };

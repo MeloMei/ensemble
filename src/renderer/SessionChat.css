@@ -94,6 +94,17 @@
 .chat-pane .markdown-message strong { color: var(--text); font-weight: 600; }
 .chat-pane .markdown-message a { color: var(--accent); text-underline-offset: 3px; }
 .chat-pane .markdown-message code { padding: 2px 5px; border: 1px solid var(--border); border-radius: 5px; color: var(--text); background: var(--surface); font-size: .84em; }
+.chat-pane .markdown-message .markdown-file-link {
+  max-width: 100%;
+  padding: 0;
+  border-radius: var(--radius-control);
+  color: var(--accent);
+  text-align: start;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  overflow-wrap: anywhere;
+}
+.chat-pane .markdown-message .markdown-file-link code { color: inherit; }
 .chat-pane .markdown-message pre { max-width: 100%; overflow: auto; margin: 17px 0; padding: 16px 18px; border: 1px solid var(--border); border-radius: var(--radius-panel); background: var(--surface); line-height: 1.75; }
 .chat-pane .markdown-message pre code { padding: 0; border: 0; border-radius: 0; color: var(--text); background: none; white-space: pre; font-size: 12px; }
 .chat-pane .markdown-message blockquote { margin: 17px 0; padding: 3px 16px; border-left: 2px solid var(--accent); color: var(--muted); }
