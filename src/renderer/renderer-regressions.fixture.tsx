@@ -1412,6 +1412,99 @@ const cases: Record<string, () => Promise<void>> = {
     assert(button('shell:workflow.resume').disabled, 'Updated recovery candidates retained old confirmation');
     failResume = false;
   },
+  'COMMAND-01: the command palette searches and routes without moving focus or its viewport': async () => {
+    const other = { ...workspace, id: 'other-project', name: 'Design project', cwd: '/projects/design-system' };
+    const runtimeSession = { ...session, title: 'Trace runtime', cwd: workspace.cwd };
+    let snapshot: Snapshot = { ...collaborationSnapshot([]), sessions: [runtimeSession], providers: [provider], workspaces: [workspace, other] };
+    let publish = (_value: Snapshot) => {};
+    const opened: string[][] = [];
+    const terminals: string[] = [];
+    window.workbench = {
+      ...applicationUpdateApi,
+      snapshot: async () => snapshot, subscribe: (listener: typeof publish) => { publish = listener; return () => {}; },
+      getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
+      onLanguageChanged: () => () => {}, watchSessions: async () => {}, markSessionSeen: async () => {},
+      listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {},
+      createTerminal: async (id: string) => { terminals.push(id); },
+      openSessionTab: async (workspaceId: string, sessionId: string) => {
+        opened.push([workspaceId, sessionId]);
+        const tab = { kind: 'agent' as const, id: 'command-session-tab', sessionId };
+        snapshot = { ...snapshot, workspaces: [{ ...workspace, tabs: [tab], activeTabId: tab.id }, other] };
+        publish(snapshot);
+      },
+    } as unknown as Window['workbench'];
+    await render(<LanguageProvider initial={{ preference: 'en', language: 'en' }}><App /></LanguageProvider>, 'user');
+    const host = document.querySelector<HTMLElement>('.workbench')!.parentElement!;
+    await act(async () => { host.style.width = '1380px'; await tick(); });
+    const trigger = button('shell:commandPalette.trigger');
+    const modal = () => document.querySelector<HTMLElement>('dialog[open] .command-palette');
+    const search = () => input('.command-palette input[role=combobox]');
+    const active = () => document.getElementById(search().getAttribute('aria-activedescendant') ?? '');
+    const key = async (name: string, code: string, windowsVirtualKeyCode: number, modifiers = 0) => {
+      await act(async () => {
+        for (const type of ['rawKeyDown', 'keyUp']) await rendererInput({ type, key: name, code, windowsVirtualKeyCode, modifiers });
+      });
+    };
+    const shortcut = () => key('k', 'KeyK', 75, navigator.platform.startsWith('Mac') ? 4 : 2);
+    const escape = () => key('Escape', 'Escape', 27);
+    const enter = () => key('Enter', 'Enter', 13);
+    const run = async (query: string) => {
+      await click('shell:commandPalette.trigger');
+      await change(search(), query);
+      assert(active(), `The palette did not find ${query}`);
+      await enter();
+      assert(!modal(), `The palette remained open after ${query}`);
+    };
+    const source = button('shell:app.history');
+    await act(async () => { source.focus(); });
+    await shortcut();
+    const panel = modal();
+    assert(panel && document.activeElement === search(), 'The global shortcut did not open and focus the palette');
+    const initialSearch = search();
+    const initialRow = active();
+    const bounds = [panel.offsetTop, panel.offsetHeight];
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      assert(getComputedStyle(panel).transform === 'none', 'The palette entered with motion when reduced motion was enabled');
+    }
+    await key('ArrowDown', 'ArrowDown', 40);
+    assert(active() !== initialRow && document.activeElement === initialSearch, 'ArrowDown did not move the active row with focus in search');
+    await key('ArrowUp', 'ArrowUp', 38);
+    assert(active() === initialRow, 'Moving selection recreated the first row');
+    await change(initialSearch, 'no matching thing');
+    assert(modal() === panel && search() === initialSearch && document.activeElement === initialSearch && !active()
+      && panel.offsetTop === bounds[0] && panel.offsetHeight === bounds[1], 'Filtering changed the dialog, focus, or bounds');
+    assert(panel.querySelector('[role=status]')?.textContent === translate('shell:commandPalette.empty'), 'Empty search results were not announced');
+    await escape();
+    assert(!modal() && document.activeElement === source, 'Escape did not close and restore the shortcut source');
+
+    await run('design-system');
+    assert(document.querySelector('.workspace-heading h1')?.textContent === other.name && document.activeElement === trigger, 'A project result did not select the existing project or restore focus');
+    await run('codex trace runtime');
+    await waitFor(() => document.querySelector('.chat-toolbar h2')?.textContent === runtimeSession.title, 'The session result did not open the existing session tab');
+    assert(JSON.stringify(opened) === JSON.stringify([[workspace.id, runtimeSession.id]]), 'The session result used the wrong project or opened twice');
+
+    await click('shell:app.hideFiles');
+    assert(document.querySelector('.file-panel-transition')?.getAttribute('aria-hidden') === 'true', 'The file panel did not start hidden');
+    await run('open files');
+    assert(document.querySelector('.file-panel-transition')?.getAttribute('aria-hidden') === 'false', 'Open files did not show the existing file panel');
+    await run('open local terminal');
+    assert(JSON.stringify(terminals) === JSON.stringify([workspace.id]), 'The terminal command was not routed to the current project');
+
+    for (const [query, title] of [['new project', 'shell:app.newWorkspace'], ['new agent', 'shell:app.newAgentSession'], ['settings', 'shell:preferences.title']]) {
+      await run(query);
+      assert(document.querySelector('dialog[open]')?.getAttribute('aria-label') === translate(title), `The palette did not route ${query} to its existing dialog`);
+      await shortcut();
+      assert(!modal(), 'The shortcut opened a second dialog over a current modal');
+      await escape();
+    }
+    await act(async () => { await i18n.changeLanguage('zh-CN'); });
+    try {
+      await click('shell:commandPalette.trigger');
+      await change(search(), '打开文件');
+      assert(active()?.textContent?.includes('打开文件'), 'The localized action was not searchable');
+      await escape();
+    } finally { await act(async () => { await i18n.changeLanguage('en'); }); }
+  },
   'UI-04: explicit discard handles deleted files while preserving other I/O failures': async () => {
     let readState: 'present' | 'missing' | 'denied' = 'present';
     let summary: UnsavedFileSummary = { count: 0, names: [] };
