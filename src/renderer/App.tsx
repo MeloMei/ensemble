@@ -2,7 +2,7 @@ import { useTranslation } from 'react-i18next';
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import {
   Archive, ArrowUpRight, CheckCircle2, ChevronRight, Circle, CircleAlert, CircleDot,
-  Folder, GitBranch, Globe, History, Layers2, LoaderCircle, MessageSquare,
+  Folder, GitBranch, Globe, History, Inbox, Layers2, LoaderCircle, MessageSquare,
   Network, PanelRight, Pin, Plus, Search, Settings2, TerminalSquare, X, LayoutGrid, FolderOpen,
 } from 'lucide-react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
@@ -10,7 +10,7 @@ import { SPRING_SNAPPY, motionPopover } from './vendor/open-claude-ui/ClaudeMoti
 import type { PromptInput, ProviderInfo, Session, Snapshot, Workspace, WorkspaceTab } from '../shared/types';
 import type { BackendConnectionState } from '../shared/backend';
 import { recoverSessionCommands, runSessionCommand } from './session-command';
-import { sessionAttentionReason, sessionIsUnread } from './session-attention';
+import { sessionAttentionReason, sessionIsUnread, type SessionAttentionOpen } from './session-attention';
 import { PRODUCT_NAME } from '../shared/app-identity';
 import ensembleLogo from '../../docs/brand/ensemble-avatar.png';
 import { AgentIcon } from './AgentIcon';
@@ -24,6 +24,7 @@ import { AppSelect } from './AppSelect';
 import { Tooltip } from './Tooltip';
 import './features.css';
 import { SessionChat } from './SessionChat';
+import { SessionAttentionInbox } from './SessionAttentionInbox';
 import { SessionDetailCard } from './SessionDetailCard';
 import { WorkspaceFileNavigation, type WorkspaceFileRequest } from './workspace-file-reference';
 import { FirstTask } from './FirstTask';
@@ -31,7 +32,7 @@ import { TerminalPane } from './TerminalPane';
 import { WorkflowEditor, WorkflowView } from './WorkflowViews';
 import { BusyIcon, DirectoryField, EmptyState, ErrorToast, IconButton, Modal, ModelField, ProviderSelect, Status, statusLabel, defaultModelId, pathName, relativeTime, validModelSelection, type Perform } from './ui';
 
-type Page = 'workspace' | 'history' | 'workflows' | 'collaboration';
+type Page = 'workspace' | 'attention' | 'history' | 'workflows' | 'collaboration';
 type Dialog = 'workspace' | 'agent' | 'preview' | 'codex' | 'settings' | null;
 const CollaborationViews = lazy(() => import('./CollaborationViews').then(module => ({ default: module.CollaborationViews })));
 
@@ -64,6 +65,10 @@ export function App() {
   const [loadError, setLoadError] = useState('');
   const applicationReady = useRef(false);
   const [page, setPage] = useState<Page>('workspace');
+  const [attentionOpen, setAttentionOpen] = useState<SessionAttentionOpen>();
+  const onAttentionOpened = useCallback((request: SessionAttentionOpen) => {
+    setAttentionOpen(current => current === request ? undefined : current);
+  }, []);
   const [readingSessionId, setReadingSessionId] = useState<string | null>(null);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [workflowId, setWorkflowId] = useState<string | null>(null);
@@ -190,18 +195,22 @@ export function App() {
   const visibleArchives = archivedWorkspaces.filter(matchesSearch);
   const refreshKey = sessions.filter(session => session.cwd === workspace?.cwd).map(session => `${session.id}:${session.status}`).join('|');
 
-  const selectWorkspace = useCallback((id: string) => { setReadingSessionId(null); setWorkspaceId(id); setPage('workspace'); setTabMenu(false); }, []);
-  const openSession = useCallback((id: string, readOnly = false) => {
+  const selectWorkspace = useCallback((id: string) => { setAttentionOpen(undefined); setReadingSessionId(null); setWorkspaceId(id); setPage('workspace'); setTabMenu(false); }, []);
+  const openSession = useCallback((id: string, readOnly = false, fromAttention = false) => {
     void perform(`open-session-${id}`, async () => {
       const current = await window.workbench.snapshot();
       const session = current.sessions.find(item => item.id === id);
       if (!session) throw new Error(t('app.sessionMissing'));
       const destination = current.workspaces.find(item => !item.archived && item.cwd === session.cwd)?.id;
+      const reason = fromAttention ? sessionAttentionReason(session) : undefined;
+      const request = reason ? { sessionId: id, reason, revision: session.attention?.revision, approvalId: session.approvals.at(-1)?.id } : undefined;
       if (readOnly || !destination) {
+        setAttentionOpen(request);
         setReadingSessionId(id); setPage('history'); setDialog(null); return;
       }
       await window.workbench.openSessionTab(destination, id);
       selectWorkspace(destination);
+      setAttentionOpen(request);
       setDialog(null);
     });
   }, [perform, selectWorkspace, t]);
@@ -217,7 +226,9 @@ export function App() {
   const renderTab = (tab?: WorkspaceTab) => {
     const tabSession = tab?.kind === 'agent' ? sessions.find(item => item.id === tab.sessionId) : undefined;
     const tabTerminal = tab?.kind === 'terminal' ? snapshot?.terminals.find(item => item.id === tab.terminalId) : undefined;
-    if (tabSession && workspace) return <SessionChat key={tabSession.id} session={tabSession} sessions={sessions} openSession={openSession} connected={connected} provider={providers.find(item => item.id === tabSession.providerId)} providers={providers} perform={perform} pending={pending} draft={drafts[tabSession.id] ?? tabSession.draft ?? { text: '' }} draftError={draftErrors[tabSession.id]} onDraftChange={(value, expected) => updateDraft(tabSession.id, value, expected)} />;
+    if (tabSession && workspace) return <SessionChat key={tabSession.id} session={tabSession} sessions={sessions} openSession={openSession} connected={connected} provider={providers.find(item => item.id === tabSession.providerId)} providers={providers} perform={perform} pending={pending} draft={drafts[tabSession.id] ?? tabSession.draft ?? { text: '' }} draftError={draftErrors[tabSession.id]} onDraftChange={(value, expected) => updateDraft(tabSession.id, value, expected)}
+      attentionOpen={tab?.id === activeTab?.id && attentionOpen?.sessionId === tabSession.id ? attentionOpen : undefined}
+      onAttentionOpened={onAttentionOpened} />;
     if (tabTerminal && workspace) return <TerminalPane key={tabTerminal.id} info={tabTerminal} cwd={workspace.cwd} perform={perform} />;
     if (tab?.kind === 'preview') return <PreviewPane key={tab.id} tab={tab} />;
     return <EmptyState icon={<Layers2 size={28} />} title={t('app.projectReady')} action={<div className="empty-actions"><button className="button" onClick={openAgentDialog}><Plus size={14} />{t('app.addAgent')}</button><button className="button subtle" disabled={pending.has('create-terminal')} onClick={openLocalTerminal}><TerminalSquare size={14} />{t('app.openTerminal')}</button></div>}>{t('app.projectReadyNote')}</EmptyState>;
@@ -305,12 +316,15 @@ export function App() {
           ] : []),
           { id: 'settings', label: t('preferences.open'), icon: <Settings2 size={16} aria-hidden="true" />, run: () => openSettings() },
         ]} />
-      <nav className="sidebar-navigation" aria-label={t('app.navigation')}><button className="new-workspace-button" onClick={() => setDialog('workspace')}><Plus size={17} /><span>{t('app.newWorkspace')}</span></button><button className={page === 'workspace' ? 'selected' : ''} aria-current={page === 'workspace' ? 'page' : undefined} onClick={() => setPage('workspace')}><LayoutGrid size={17} /><span>{t('app.workspace')}</span><small>{workspaces.length || ''}</small></button><button className={page === 'history' ? 'selected' : ''} aria-current={page === 'history' ? 'page' : undefined} onClick={() => setPage('history')}><History size={17} />{t('app.history')}</button><button className={page === 'collaboration' ? 'selected' : ''} aria-current={page === 'collaboration' ? 'page' : undefined} onClick={() => setPage('collaboration')}><Network size={17} />{t('app.collaboration')}</button><button className={page === 'workflows' ? 'selected' : ''} aria-current={page === 'workflows' ? 'page' : undefined} onClick={() => setPage('workflows')}><GitBranch size={17} />{t('app.workflows')}</button></nav>
+      <nav className="sidebar-navigation" aria-label={t('app.navigation')}><button className="new-workspace-button" onClick={() => setDialog('workspace')}><Plus size={17} /><span>{t('app.newWorkspace')}</span></button><button className={page === 'workspace' ? 'selected' : ''} aria-current={page === 'workspace' ? 'page' : undefined} onClick={() => setPage('workspace')}><LayoutGrid size={17} /><span>{t('app.workspace')}</span><small>{workspaces.length || ''}</small></button>
+        <button className={page === 'attention' ? 'selected' : ''} aria-current={page === 'attention' ? 'page' : undefined}
+          onClick={() => { setAttentionOpen(undefined); setPage('attention'); }}><Inbox size={17} />{t('attention.inboxTitle')}</button>
+        <button className={page === 'history' ? 'selected' : ''} aria-current={page === 'history' ? 'page' : undefined} onClick={() => setPage('history')}><History size={17} />{t('app.history')}</button><button className={page === 'collaboration' ? 'selected' : ''} aria-current={page === 'collaboration' ? 'page' : undefined} onClick={() => setPage('collaboration')}><Network size={17} />{t('app.collaboration')}</button><button className={page === 'workflows' ? 'selected' : ''} aria-current={page === 'workflows' ? 'page' : undefined} onClick={() => setPage('workflows')}><GitBranch size={17} />{t('app.workflows')}</button></nav>
       <motion.div className="workspace-sidebar-scroll" layoutScroll>{sidebarItems}</motion.div>
       <div className={`sidebar-connection connection-${connected ? 'connected' : connection.status}`}><i /><span>{connected ? t('app.connected') : t(`connection.${connection.status}`)}</span><small>{t('app.thisMachine')}</small></div><footer className="sidebar-footer"><button onClick={() => setDialog('workspace')}><Plus size={15} />{t('app.addProject')}</button><IconButton label={t('preferences.open')} onClick={() => openSettings()}><Settings2 size={16} /></IconButton></footer>
     </aside>
 
-    <main className={`main-workspace ${page === 'workspace' && workspace && rightPane ? 'with-file-panel' : ''}`}><header className="workspace-header"><div className="workspace-heading">{page === 'workspace' && workspace ? <><FolderOpen size={16} /><h1 title={workspace.name}>{workspace.name}</h1><span title={workspace.cwd}>{pathName(workspace.cwd)}</span><IconButton label={workspace.pinned ? t('app.unpin') : t('app.pin')} aria-pressed={workspace.pinned} onClick={() => void perform('pin-workspace', () => window.workbench.updateWorkspace(workspace.id, { pinned: !workspace.pinned }))}><Pin size={13} fill={workspace.pinned ? 'currentColor' : 'none'} /></IconButton></> : <h1>{{ workspace: PRODUCT_NAME, history: t('app.history'), workflows: t('app.workflows'), collaboration: t('app.agentCollaboration') }[page]}</h1>}</div>
+    <main className={`main-workspace ${page === 'workspace' && workspace && rightPane ? 'with-file-panel' : ''}`}><header className="workspace-header"><div className="workspace-heading">{page === 'workspace' && workspace ? <><FolderOpen size={16} /><h1 title={workspace.name}>{workspace.name}</h1><span title={workspace.cwd}>{pathName(workspace.cwd)}</span><IconButton label={workspace.pinned ? t('app.unpin') : t('app.pin')} aria-pressed={workspace.pinned} onClick={() => void perform('pin-workspace', () => window.workbench.updateWorkspace(workspace.id, { pinned: !workspace.pinned }))}><Pin size={13} fill={workspace.pinned ? 'currentColor' : 'none'} /></IconButton></> : <h1>{{ workspace: PRODUCT_NAME, attention: t('attention.inboxTitle'), history: t('app.history'), workflows: t('app.workflows'), collaboration: t('app.agentCollaboration') }[page]}</h1>}</div>
       <div className="workspace-header-actions">{page === 'workspace' && workspace && <><Tooltip label={t('app.collaboration')}><button className="header-button" aria-label={t('app.collaboration')} title={t('app.collaboration')} onClick={() => setPage('collaboration')}><Network size={14} /><span>{t('app.collaboration')}</span></button></Tooltip><button className="header-button" disabled={workspace.tabs.length < 2} onClick={() => void perform('split', () => window.workbench.splitWorkspace(workspace.id, secondaryTab ? {} : { tabId: workspace.tabs.find(tab => tab.id !== activeTab?.id)?.id, direction: 'horizontal' }))}>{secondaryTab ? t('app.mergePanes') : t('app.splitPanes')}</button>{secondaryTab && <button className="header-button" onClick={() => void perform('split-direction', () => window.workbench.splitWorkspace(workspace.id, { tabId: secondaryTab.id, direction: workspace.splitDirection === 'vertical' ? 'horizontal' : 'vertical' }))}>{t('app.changeDirection')}</button>}</>}<span className="local-indicator"><i />{t('app.local')}</span>{page === 'workspace' && <Tooltip label={t('app.openCodex')}><button className="header-button" onClick={() => setDialog('codex')} aria-label={t('app.openCodex')} title={t('app.openCodexHint')}><ArrowUpRight size={13} /><span>Codex App</span></button></Tooltip>}{page === 'workspace' && workspace && <>
         {filePane.requested && filePane.tooNarrow && <span className="file-pane-space-note" id={`${filePane.id}-space`} role="status">{t('app.filesNeedSpace')}</span>}
         <IconButton id={`${filePane.id}-toggle`} label={filePane.requested ? t('app.hideFiles') : t('app.showFiles')}
@@ -350,11 +364,15 @@ export function App() {
         </div><WorkspaceFilePane id={filePane.id} visible={filePane.visible} width={filePane.width} limit={filePane.limit} onResize={filePane.rememberWidth}>
           <FileReviewPanel key={JSON.stringify([workspace.id, workspace.cwd])} workspace={workspace} onEditProject={connected ? () => projectManagement.open(workspace, 'edit') : undefined} refreshKey={refreshKey} perform={perform} sessions={sessions} onFeedback={activeSession ? text => { const draft = currentDrafts.current[activeSession.id] ?? activeSession.draft ?? { text: '' }; updateDraft(activeSession.id, { ...draft, text: [draft.text, text].filter(Boolean).join('\n\n') }); } : undefined} />
         </WorkspaceFilePane></div> : <FirstTask providers={providers} connected={connected} perform={perform} pending={pending} />)}
+        {page === 'attention' && <SessionAttentionInbox sessions={sessions} workspaces={snapshot.workspaces} pending={pending}
+          openSession={id => openSession(id, false, true)} />}
         {page === 'history' && (readingSession ? <section className="history-session-view">
           <header className="history-session-toolbar"><span>{t('history.readOnly')}</span><button className="header-button" onClick={() => setReadingSessionId(null)}><X size={13} />{t('history.closeSession')}</button></header>
           <SessionChat key={readingSession.id} session={readingSession} readOnly connected={connected} sessions={sessions}
             provider={providers.find(provider => provider.id === readingSession.providerId)} perform={perform} pending={pending}
-            draft={{ text: '' }} onDraftChange={() => {}} openSession={id => openSession(id, true)} />
+            draft={{ text: '' }} onDraftChange={() => {}} openSession={id => openSession(id, true)}
+            attentionOpen={attentionOpen?.sessionId === readingSession.id ? attentionOpen : undefined}
+            onAttentionOpened={onAttentionOpened} />
         </section> : <HistoryView sessions={sessions} providers={providers} openSession={openSession} perform={perform} />)}
         {page === 'collaboration' && <Suspense fallback={<div className="loading-view"><LoaderCircle className="spin" size={23} /><p>{t('app.loadingCollaboration')}</p></div>}><CollaborationViews snapshot={snapshot} perform={perform} pending={pending} openSession={openSession} initialCwd={workspace?.cwd} openProviderSettings={() => openSettings('providers')} /></Suspense>}
         {page === 'workflows' && <div className="split-page"><aside className="item-sidebar"><div className="sidebar-heading"><h2>{t('app.workflows')}</h2><IconButton label={t('workflow.new')} onClick={() => setNewWorkflow(true)}><Plus size={17} /></IconButton></div><p className="sidebar-subtitle">{t('workflow.dependenciesNote')}</p><div className="item-list">{workflows.map(item => <button key={item.id} className={`list-item ${item.id === workflow?.id && !newWorkflow ? 'selected' : ''}`} onClick={() => { setWorkflowId(item.id); setNewWorkflow(false); }}><strong>{item.name}</strong><div><span>{t('workflow.stepCount', { count: item.steps.length })}</span><Status value={item.status} /></div></button>)}</div><button className="sidebar-action" onClick={() => setNewWorkflow(true)}><Plus size={14} />{t('workflow.new')}</button></aside>{newWorkflow ? <WorkflowEditor providers={providers} perform={perform} pending={pending} onClose={() => setNewWorkflow(false)} onCreated={id => { setWorkflowId(id); setNewWorkflow(false); }} /> : workflow ? <WorkflowView workflow={workflow} providers={providers} sessions={sessions} perform={perform} pending={pending} openSession={openSession} openWorkflow={id => { setWorkflowId(id); setNewWorkflow(false); }} /> : <EmptyState icon={<GitBranch size={28} />} title={t('workflow.empty')} action={<button className="button" onClick={() => setNewWorkflow(true)}><Plus size={14} />{t('workflow.new')}</button>}>{t('workflow.emptyNote')}</EmptyState>}</div>}

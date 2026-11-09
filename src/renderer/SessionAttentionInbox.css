@@ -1,0 +1,8 @@
+.attention-inbox-group + .attention-inbox-group { margin-top: 24px; }
+.attention-inbox-group h2 { display: flex; align-items: baseline; gap: 8px; margin: 0 0 8px; font-size: 13px; font-weight: 550; }
+.attention-inbox-group h2 small { color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; }
+.attention-inbox-group ul { margin: 0; padding: 0; list-style: none; }
+.attention-inbox-row { width: 100%; min-height: 60px; padding: 10px; border-bottom: 1px solid var(--border); border-radius: var(--radius-control); }
+.attention-inbox-row:hover { background: var(--surface); }
+.attention-inbox-row .history-row-title small { display: block; text-overflow: ellipsis; }
+.attention-inbox-row time { color: var(--dim); font-size: 11px; white-space: nowrap; }
