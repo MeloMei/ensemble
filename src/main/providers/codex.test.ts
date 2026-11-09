@@ -100,6 +100,10 @@ createInterface({ input: process.stdin }).on('line', line => {
       send({ id: 'permission-policy', method: 'item/permissions/requestApproval', params: { threadId, turnId, itemId: 'permissions', cwd: process.cwd(), startedAtMs: 1, permissions: { fileSystem: { write: ['/outside'] } } } }); return;
     }
     if (mode === 'rich') {
+      event('turn/diff/updated', { turnId: 'unrelated-turn', diff: 'ignore this patch' });
+      event('turn/diff/updated', { turnId, diff: 'first patch' });
+      event('turn/diff/updated', { turnId, diff: 'updated patch' });
+      event('turn/diff/updated', { turnId, diff: 'updated patch' });
       event('item/started', { turnId, item: { type: 'commandExecution', id: 'native-command', command: 'literal command', status: 'inProgress' } });
       event('item/commandExecution/outputDelta', { turnId, itemId: 'native-command', delta: 'actual output' });
       event('item/completed', { turnId, item: { type: 'commandExecution', id: 'native-command', command: 'literal command', status: 'completed', aggregatedOutput: 'actual output', exitCode: 0 } });
@@ -285,6 +289,9 @@ test('Codex provider uses the app-server protocol and cleans up owned processes'
       assert(first.events.some(event => event.type === 'structured' && event.event.kind === 'tool' && event.event.status === 'completed' && event.event.output === 'actual output'));
       assert(first.events.some(event => event.type === 'structured' && event.event.kind === 'plan' && event.event.entries?.[0].text === 'Observed native task'));
       assert(first.events.some(event => event.type === 'structured' && event.event.kind === 'subagent' && event.event.nativeId === 'native-child'));
+      const diffs = first.events.flatMap(event => event.type === 'structured' && event.event.kind === 'diff' ? [event.event] : []);
+      assert.deepEqual(diffs.map(event => event.output), ['first patch', 'updated patch']);
+      assert.equal(diffs[0].id, diffs[1].id);
       assert(first.events.some(event => event.type === 'usage' && event.usage.scope === 'turn' && event.usage.inputTokens === 12));
       const recordsBefore = (await readFile(trace, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
       const sent = recordsBefore.find(record => record.method === 'turn/start' && record.params.clientUserMessageId === 'local-user');

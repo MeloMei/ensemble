@@ -2024,6 +2024,23 @@ const cases: Record<string, () => Promise<void>> = {
     await click('workspace:chat.returnLatest');
     await waitFor(() => Boolean(document.querySelector('[data-message-id="message-199"]')), 'Returning to latest did not leave the restored historical window');
   },
+  'TURN-DIFF-01: a folded Trace opens the runtime patch for its own turn': async () => {
+    const output = 'diff --git a/example.txt b/example.txt\n--- a/example.txt\n+++ b/example.txt\n@@ -1 +1 @@\n-before\n+after';
+    const show = (patch: string) => render(chat({ session: { ...session, id: 'turn-diff-session', status: 'completed',
+      messages: [{ id: 'turn-diff-event', text: 'Turn diff', role: 'activity', createdAt: session.createdAt,
+        event: { id: 'native-diff', kind: 'diff', title: 'Turn diff', status: 'completed', output: patch } }],
+    } }));
+    await show(output);
+    await waitFor(() => Boolean(document.querySelector('.trace-diff')), 'The collapsed Trace did not expose its diff action');
+    assert(!document.querySelector('[data-message-id="turn-diff-event"]'), 'The completed Trace did not start folded');
+    await click('workspace:chat.trace.turnDiff');
+    const row = () => document.querySelector('[data-message-id="turn-diff-event"] .process-reveal[data-expanded=true]');
+    await waitFor(() => Boolean(row()?.querySelector('.turn-diff-patch')), 'The turn patch did not open inside its Trace');
+    assert(row()?.querySelector('.removed')?.textContent?.trim() === '-before'
+      && row()?.querySelector('.added')?.textContent?.trim() === '+after', 'The patch did not distinguish deleted and added lines');
+    await show('');
+    assert(row()?.textContent?.includes(translate('workspace:chat.trace.turnDiffEmpty')), 'An empty native update left a stale patch visible');
+  },
   'TRACE-01: live events enter once, update in place and keep manual choices': async () => {
     const tool = (id: string, title: string, status: NonNullable<Message['event']>['status'], input?: string, output?: string): Message => ({
       id, role: 'activity', text: title, createdAt: session.createdAt, event: { id, kind: 'tool', title, status, input, output },

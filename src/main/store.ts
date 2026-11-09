@@ -48,7 +48,7 @@ const attachmentSchema = record({ id: z.string(), name: z.string(), kind: z.enum
 const promptInputSchema = record({ text: z.string(), attachments: z.array(attachmentSchema).optional() });
 const sessionSettingsSchema = record({ effort: z.string().optional(), permission: z.enum(['review', 'read-only']).optional(), skillIds: z.array(z.string()).optional() });
 const eventSchema = record({
-  id: z.string(), kind: z.enum(['tool', 'plan', 'task', 'subagent']), title: z.string(),
+  id: z.string(), kind: z.enum(['tool', 'plan', 'task', 'subagent', 'diff']), title: z.string(),
   status: z.enum(['pending', 'running', 'completed', 'failed']), nativeId: z.string().optional(),
   parentId: z.string().optional(), input: z.string().optional(), output: z.string().optional(), sessionId: z.string().optional(),
   entries: z.array(record({ text: z.string(), status: z.enum(['pending', 'running', 'completed']) })).optional(),
