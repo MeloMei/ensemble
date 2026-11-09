@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { formatDate, formatNumber, renderDisplayText } from '../shared/i18n';
 import { validQuestionAnswers } from '../shared/question-answers';
 import { ATTACHMENT_LIMITS, attachmentLimitIssue } from '../shared/prompt-attachments';
-import { memo, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode, type Ref } from 'react';
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type Ref } from 'react';
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { AppSelect } from './AppSelect';
@@ -26,6 +26,7 @@ import { promptCommandInput, runSessionCommand, runSessionStopCommand } from './
 import { sessionIsUnread } from './session-attention';
 import { Tooltip } from './Tooltip';
 import { RollingText } from './ui-kit/RollingText';
+import { expandConversation, type TraceEntry } from './conversation-index';
 import './SessionChat.css';
 
 interface SessionChatProps {
@@ -480,6 +481,13 @@ function ActivityEntries({ messages }: { messages: IndexedMessages }) {
   </div>;
 }
 
+interface TraceChoice { expanded: boolean; tailAnchor?: string }
+interface TraceChoices {
+  groups: ReadonlyMap<string, TraceChoice>;
+  events: ReadonlySet<string>;
+}
+const traceChoicesBySession = new Map<string, TraceChoices>();
+
 export function SessionChat({
   session, provider, perform, pending, draft, draftError, onDraftChange, sessions = [], openSession, connected = true, readOnly = false,
 }: SessionChatProps) {
@@ -491,8 +499,16 @@ export function SessionChat({
   const [searchError, setSearchError] = useState('');
   const [searching, setSearching] = useState(false);
   const [scrollTarget, setScrollTarget] = useState<string>();
+  const [failureTarget, setFailureTarget] = useState<string>();
   const [sendError, setSendError] = useState('');
-  const [expandedProcesses, setExpandedProcesses] = useState<Set<string>>(new Set());
+  const [traceChoices, setTraceChoices] = useState<TraceChoices>(() => traceChoicesBySession.get(session.id) ?? {
+    groups: new Map(), events: new Set(),
+  });
+  const [revealedMatch, setRevealedMatch] = useState<{ id: string; detail: boolean }>();
+  const saveTraceChoices = useCallback((choices: TraceChoices) => {
+    traceChoicesBySession.set(session.id, choices);
+    setTraceChoices(choices);
+  }, [session.id]);
   const attachments = draft.attachments ?? [];
   const attachmentIssue = attachmentLimitIssue(attachments);
   const attachmentCapabilities = provider?.declaredCapabilities ?? provider?.capabilities;
@@ -530,9 +546,73 @@ export function SessionChat({
   const history = useSessionHistory(session);
   const messages = history.messages;
   const activity = history.activities;
+  const conversation = history.conversation;
+  const observedInsertions = useRef(history.addedEvents);
+  const addedEvents = observedInsertions.current === history.addedEvents ? undefined : history.addedEvents;
+  useLayoutEffect(() => { observedInsertions.current = history.addedEvents; }, [history.addedEvents]);
+  const tail = conversation.at(conversation.length - 1);
+  const liveTrace = tail?.kind === 'trace' && connected && session.status !== 'queued' && active && historyReady && !history.showingHistory ? tail : undefined;
+  const liveTraceRow = liveTrace ? conversation.length - 1 : -1;
+  let addedToLiveTrace = 0;
+  for (let index = messages.length - 1; liveTrace && index >= liveTrace.start && addedEvents?.has(messages.at(index)!.id); index--) addedToLiveTrace++;
   const searchQuery = find?.trim() ?? '';
   const matches = searchQuery && searchResult?.sessionId === session.id && searchResult.query === searchQuery ? searchResult.messages : [];
   const selectedMatch = matches[matchIndex % Math.max(matches.length, 1)];
+  const revealedMatchId = selectedMatch?.id === revealedMatch?.id ? revealedMatch?.id : undefined;
+  const traceChoiceIndex = useCallback((anchor: string, choice: TraceChoice) => {
+    const index = messages.indexOf(anchor);
+    return index < 0 && choice.tailAnchor ? messages.indexOf(choice.tailAnchor) : index;
+  }, [messages]);
+  const { chatRows, carriedChoice } = useMemo(() => {
+    const open = new Set<number>();
+    let carriedChoice: { anchor: string; choice: TraceChoice } | undefined;
+    const liveTailStart = history.liveTailStart;
+    if (liveTraceRow >= 0) open.add(liveTraceRow);
+    for (const [anchor, choice] of traceChoices.groups) {
+      const row = conversation.rowOfMessage(traceChoiceIndex(anchor, choice));
+      const trace = conversation.at(row);
+      if (trace?.kind !== 'trace') continue;
+      if (choice.expanded) open.add(row); else open.delete(row);
+      const end = trace.start + trace.length - 1;
+      // Keep a known id in the bounded live tail when the original anchor spills into older pages.
+      if (trace.start < liveTailStart && end >= liveTailStart && messages.indexOf(choice.tailAnchor ?? anchor) < liveTailStart) {
+        carriedChoice = { anchor, choice: { ...choice, tailAnchor: messages.at(end)!.id } };
+      }
+    }
+    if (revealedMatchId) {
+      const row = conversation.rowOfMessage(messages.indexOf(revealedMatchId));
+      if (conversation.at(row)?.kind === 'trace') open.add(row);
+    }
+    return { chatRows: expandConversation(conversation, open, index => messages.at(index)!.id), carriedChoice };
+  }, [conversation, messages, history.liveTailStart, liveTraceRow, traceChoices.groups, traceChoiceIndex, revealedMatchId]);
+
+  useLayoutEffect(() => {
+    if (!carriedChoice) return;
+    const groups = new Map(traceChoices.groups);
+    groups.set(carriedChoice.anchor, carriedChoice.choice);
+    saveTraceChoices({ ...traceChoices, groups });
+  }, [carriedChoice, saveTraceChoices, traceChoices]);
+
+  const chooseTrace = (trace: TraceEntry, expanded: boolean) => {
+    const groups = new Map(traceChoices.groups);
+    for (const [anchor, choice] of groups) {
+      const index = traceChoiceIndex(anchor, choice);
+      if (index >= trace.start && index < trace.start + trace.length) groups.delete(anchor);
+    }
+    const anchor = trace.key.slice('trace:'.length);
+    groups.set(anchor, { expanded, tailAnchor: messages.at(trace.start + trace.length - 1)?.id });
+    if (!expanded && revealedMatchId) {
+      const index = messages.indexOf(revealedMatchId);
+      if (index >= trace.start && index < trace.start + trace.length) setRevealedMatch(undefined);
+    }
+    saveTraceChoices({ ...traceChoices, groups });
+  };
+  const chooseEvent = (id: string, expanded: boolean) => {
+    const events = new Set(traceChoices.events);
+    if (expanded) events.add(id); else events.delete(id);
+    if (!expanded && revealedMatchId === id) setRevealedMatch({ id, detail: false });
+    saveTraceChoices({ ...traceChoices, events });
+  };
   const children = sessions.filter(item => item.parentSessionId === session.id);
   const parent = sessions.find(item => item.id === session.parentSessionId);
   const nativeEvents = nativeAgentId ? history.eventsFor(nativeAgentId) : [];
@@ -542,18 +622,29 @@ export function SessionChat({
     useClaudeScrollPinning([session.id, history.showingHistory ? null : history.messages,
       history.showingHistory ? null : session.approvals, history.showingHistory ? null : session.status,
       history.showingHistory ? null : session.error], smooth => virtualScroll.current?.scrollToEnd({ behavior: smooth ? 'smooth' : 'auto' }));
-  const rowCount = messages.length + 1;
-  const messageSource = useRef(messages);
-  messageSource.current = messages;
-  const getItemKey = useCallback((index: number) => messageSource.current.at(index)?.id ?? 'conversation-notices', [messages.structure]);
+  const revealFailure = (trace: TraceEntry) => {
+    const id = trace.lastFailure;
+    if (!id) return;
+    pauseForNavigation();
+    chooseTrace(trace, true);
+    setFailureTarget(id);
+    setScrollTarget(id);
+  };
+  const rowCount = chatRows.length + 1;
+  const rowSource = useRef(chatRows);
+  rowSource.current = chatRows;
+  const getItemKey = useCallback((index: number) => rowSource.current.at(index)?.key
+    ?? 'conversation-notices', [messages.structure, chatRows.expansionKey]);
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: rowCount,
     getScrollElement: () => scroll.current,
     getItemKey,
     estimateSize: index => {
-      const message = messages.at(index);
-      if (!message) return 80 + session.approvals.length * 240;
-      return message.event ? 45 : Math.min(1000, 100 + Math.ceil(message.text.length / 100) * 22);
+      const row = chatRows.at(index);
+      if (!row) return 80 + session.approvals.length * 240;
+      if (row.kind === 'trace') return 42;
+      if (row.kind === 'event') return 35;
+      return Math.min(1000, 100 + Math.ceil(messages.at(row.start)!.text.length / 100) * 22);
     },
     overscan: 5,
     paddingStart: 20,
@@ -567,7 +658,7 @@ export function SessionChat({
     scrollEndThreshold: 40,
   });
   virtualScroll.current = virtualizer;
-  const closeFind = () => { history.cancelJump(); setScrollTarget(undefined); setFind(null); };
+  const closeFind = () => { history.cancelJump(); setScrollTarget(undefined); setRevealedMatch(undefined); setFind(null); };
   const showLatestOutput = (smooth = false) => {
     closeFind();
     history.showLatest();
@@ -598,18 +689,24 @@ export function SessionChat({
     if (!selectedMatch) return;
     let active = true;
     pauseForNavigation();
-    void history.locateMessage(selectedMatch.id).then(found => { if (active && found) setScrollTarget(selectedMatch.id); });
+    void history.locateMessage(selectedMatch.id).then(found => {
+      if (active && found) {
+        setRevealedMatch({ id: selectedMatch.id, detail: true });
+        setFailureTarget(undefined);
+        setScrollTarget(selectedMatch.id);
+      }
+    });
     return () => { active = false; history.cancelJump(); };
   }, [session.id, selectedMatch?.id, history.cancelJump, pauseForNavigation]);
 
   useLayoutEffect(() => {
     if (!scrollTarget) return;
-    const index = messages.indexOf(scrollTarget);
+    const index = chatRows.rowOfMessage(messages.indexOf(scrollTarget));
     if (index < 0) return;
     virtualizer.scrollToIndex(index, { align: 'center', behavior: 'auto' });
     const frame = requestAnimationFrame(() => { handleScroll(); setScrollTarget(undefined); });
     return () => cancelAnimationFrame(frame);
-  }, [scrollTarget, messages]);
+  }, [scrollTarget, chatRows, messages]);
 
   const seenInFlight = useRef<number | undefined>(undefined);
   const [visibilityRevision, setVisibilityRevision] = useState(0);
@@ -735,18 +832,25 @@ export function SessionChat({
       }}>
       <div className="virtual-conversation" style={{ height: virtualizer.getTotalSize() }}>
         {virtualizer.getVirtualItems().map(item => {
-          const index = item.index;
-          const message = messages.at(index);
+          const row = chatRows.at(item.index);
+          const message = row?.kind === 'message' || row?.kind === 'event' ? messages.at(row.start) : undefined;
           return <div className="virtual-conversation-row" data-index={item.index} key={item.key} ref={virtualizer.measureElement}
             style={{ transform: `translateY(${item.start}px)` }}>
-          {message ? <div className="messages"><article data-message-id={message.id}
-              className={`message message-${message.role}${message.event ? ` message-process${index > 0 && messages.at(index - 1)?.event ? '' : ' process-start'}${messages.at(index + 1)?.event ? '' : ' process-end'}` : ''}${selectedMatch?.id === message.id ? ' conversation-match' : ''}`}>
-              {message.event
-                ? <ProcessCard event={message.event} openSession={openSession} openNativeAgent={setNativeAgentId}
-                  expanded={expandedProcesses.has(message.id)} onExpandedChange={expanded => setExpandedProcesses(current => {
-                    const next = new Set(current); if (expanded) next.add(message.id); else next.delete(message.id); return next;
-                  })} />
-                : message.role === 'user'
+          {row?.kind === 'trace' ? <TraceHeading trace={row} live={row.key === liveTrace?.key}
+            addedEvents={addedToLiveTrace} expanded={chatRows.at(item.index + 1)?.kind === 'event'}
+            onToggle={expanded => chooseTrace(row, expanded)} onFailure={() => revealFailure(row)} />
+        : row?.kind === 'event' && message?.event ? <TraceEventRow message={message} event={message.event}
+            end={row.start === row.trace.start + row.trace.length - 1}
+            entering={row.trace.key === liveTrace?.key && Boolean(addedEvents?.has(message.id))}
+            matched={selectedMatch?.id === message.id || failureTarget === message.id}
+            expanded={traceChoices.events.has(message.id) || (revealedMatchId === message.id && Boolean(revealedMatch?.detail)) || failureTarget === message.id}
+            onExpandedChange={expanded => {
+              if (!expanded && failureTarget === message.id) setFailureTarget(undefined);
+              chooseEvent(message.id, expanded);
+            }} openSession={openSession} openNativeAgent={setNativeAgentId} />
+        : message ? <div className="messages"><article data-message-id={message.id}
+              className={`message message-${message.role}${selectedMatch?.id === message.id ? ' conversation-match' : ''}`}>
+              {message.role === 'user'
                   ? <>
                     <div className="user-message">{message.text}
                       {message.attachments && <AttachmentChips attachments={message.attachments} />}
@@ -885,6 +989,45 @@ export function SessionChat({
   </section>;
 }
 
+function TraceHeading({ trace, live, addedEvents, expanded, onToggle, onFailure }: {
+  trace: TraceEntry; live: boolean; addedEvents: number; expanded: boolean;
+  onToggle: (expanded: boolean) => void; onFailure: () => void;
+}) {
+  const { t } = useTranslation('workspace');
+  const previousCount = useRef(trace.length);
+  const animate = live && (trace.length === previousCount.current || trace.length - previousCount.current === addedEvents);
+  useLayoutEffect(() => { previousCount.current = trace.length; }, [trace.length]);
+  return <div className={`messages trace-heading${expanded ? ' is-expanded' : ''}`}>
+    <div className="trace-summary">
+      <button className="trace-toggle" aria-expanded={expanded} onClick={() => onToggle(!expanded)}>
+        <Activity className="trace-symbol" size={15} aria-hidden="true" />
+        <strong title={t('chat.trace.title')}>{t('chat.trace.title')}</strong>
+        <span className="trace-count">
+          <RollingText value={formatNumber(trace.length)} animate={animate} /> {t('chat.trace.events', { count: trace.length })}
+        </span>
+        {live && <span className="trace-live">{t('chat.trace.live')}</span>}
+        <ChevronDown className="trace-chevron" size={14} aria-hidden="true" />
+      </button>
+      {trace.failures > 0 && <button className="trace-failure" title={t('chat.trace.locateFailure')} onClick={onFailure}>
+        <CircleAlert size={13} aria-hidden="true" />
+        {t('chat.trace.failed', { count: trace.failures, total: formatNumber(trace.failures) })}
+      </button>}
+    </div>
+  </div>;
+}
+
+function TraceEventRow({ message, end, entering, matched, ...card }: Parameters<typeof ProcessCard>[0] & {
+  message: Message; end: boolean; entering: boolean; matched: boolean;
+}) {
+  const [animateOnMount] = useState(entering);
+  return <div className="messages">
+    <article data-message-id={message.id}
+      className={`message-process${end ? ' process-end' : ''}${matched ? ' conversation-match' : ''}`}>
+      <div className={animateOnMount ? 'trace-event-enter' : undefined}><ProcessCard {...card} /></div>
+    </article>
+  </div>;
+}
+
 function ProcessCard({ event, openSession, openNativeAgent, expanded, onExpandedChange }: {
   event: ProcessEvent;
   openSession: (id: string) => void;
@@ -904,7 +1047,7 @@ function ProcessCard({ event, openSession, openNativeAgent, expanded, onExpanded
         {event.status === 'completed' ? <Check size={11} /> : event.status === 'failed' ? <CircleAlert size={13} /> : <span />}
       </span>
       <button className="process-toggle" aria-expanded={expanded} aria-controls={bodyId} onClick={() => onExpandedChange(!expanded)}>
-        <span className="process-symbol">{icon}</span><strong>{event.title}</strong>
+        <span className="process-symbol" aria-hidden="true">{icon}</span><strong title={event.title}>{event.title}</strong>
         <Status value={event.status} /><ChevronDown className="process-chevron" size={14} />
       </button>
       {(event.sessionId || (event.kind === 'subagent' && event.nativeId)) && <div className="process-links">

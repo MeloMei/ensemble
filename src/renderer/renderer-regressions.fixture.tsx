@@ -1349,6 +1349,96 @@ const cases: Record<string, () => Promise<void>> = {
     await click('workspace:chat.saveQueued'); await settle();
     assert((writes[0] as { attachments: unknown[] }).attachments.length === 4, 'Saving the corrected queue draft lost an attachment');
   },
+  'TRACE-01: live events enter once, update in place and keep manual choices': async () => {
+    const tool = (id: string, title: string, status: NonNullable<Message['event']>['status'], input?: string, output?: string): Message => ({
+      id, role: 'activity', text: title, createdAt: session.createdAt, event: { id, kind: 'tool', title, status, input, output },
+    });
+    const archived = tool('trace-old', 'Archived call', 'completed');
+    const ongoing = tool('trace-stable', 'Existing command', 'running', 'cat file');
+    const incoming = tool('trace-new', 'New command', 'failed', 'read config', 'Permission denied');
+    let current: Session = { ...session, id: 'trace-live-session', status: 'running', messages: [archived, ...messageRange(0, 1), ongoing] };
+    const show = () => render(chat({ session: current }), 'user');
+    const row = (id: string) => document.querySelector<HTMLElement>(`[data-message-id="${id}"]`);
+    const controls = () => [...document.querySelectorAll<HTMLButtonElement>('.trace-toggle')];
+    const toggle = async (element: HTMLButtonElement) => { await act(async () => { element.click(); await tick(); }); };
+    window.workbench = {} as Window['workbench'];
+    await show(); await frames();
+    assert(controls().map(item => item.getAttribute('aria-expanded')).join(',') === 'false,true', 'Text did not separate folded history and the active trace');
+    assert(!row(archived.id) && !row(ongoing.id)?.querySelector('.trace-event-enter'), 'History mounted folded events or replayed their arrival');
+    const stableRow = row(ongoing.id);
+    await toggle(stableRow!.querySelector('button')!);
+    assert(stableRow?.querySelector('.process-reveal[data-expanded="true"] pre')?.textContent === 'cat file', 'The tool input was not available in place');
+    current = { ...current, messages: [archived, current.messages[1], tool(ongoing.id, ongoing.text, 'completed', 'cat file', 'file contents'), incoming] };
+    await show();
+    assert(row(ongoing.id) === stableRow && !stableRow.querySelector('.trace-event-enter') &&
+      stableRow.querySelector('.process-output:last-child pre')?.textContent === 'file contents', 'An event update replaced its row, replayed arrival, or hid the output');
+    const arrival = row(incoming.id)?.querySelector<HTMLElement>('.trace-event-enter');
+    assert(arrival, 'A new live event did not enter');
+    const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    assert(getComputedStyle(arrival).animationName === (reduce ? 'none' : 'trace-event-enter'), 'Event arrival did not honor reduced motion');
+    assert(Boolean(document.querySelector('.trace-count .ui-rolling-text-change')) === !reduce, 'The live count did not honor motion preference');
+    current = { ...current, status: 'completed' };
+    await show(); await frames();
+    assert(controls().every(item => item.getAttribute('aria-expanded') === 'false') && !row(incoming.id), 'Completed traces did not fold');
+    await toggle(document.querySelector<HTMLButtonElement>('.trace-failure')!);
+    await waitFor(() => Boolean(row(incoming.id)?.classList.contains('conversation-match')), 'The failure summary did not locate its event');
+    assert(row(incoming.id)?.querySelector('.process-reveal[data-expanded="true"] pre:last-child')?.parentElement?.parentElement?.textContent?.includes('Permission denied'), 'The failed event did not expose the provider output');
+    await render(<div />); await show(); await frames();
+    assert(controls().at(-1)?.getAttribute('aria-expanded') === 'true' && !row(incoming.id)?.querySelector('.trace-event-enter'), 'Returning to the session lost the manual choice or replayed history');
+    await toggle(controls().at(-1)!);
+    current = { ...current, status: 'running' };
+    await show();
+    assert(controls().at(-1)?.getAttribute('aria-expanded') === 'false', 'The live default overrode a manual fold');
+    const firstNew = tool('trace-late-1', 'More work', 'running');
+    const secondNew = tool('trace-late-2', 'More work', 'running');
+    current = { ...current, messages: [incoming, firstNew, secondNew] };
+    await show();
+    current = { ...current, messages: [firstNew, secondNew, tool('trace-late-3', 'More work', 'running')] };
+    await show();
+    await render(<div />); await show(); await frames();
+    assert(controls().at(-1)?.getAttribute('aria-expanded') === 'false', 'The choice was lost after its original event left the live window');
+    await toggle(controls().at(-1)!);
+    const appended = Array.from({ length: 90 }, (_, index) => tool(`trace-batch-${index}`, `Step ${index}`, 'completed'));
+    current = { ...current, messages: [...current.messages, ...appended] };
+    await show();
+    const scroll = document.querySelector<HTMLElement>('.message-scroll')!;
+    await waitFor(() => Boolean(row(appended.at(-1)!.id)) && scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight <= 40,
+      'An expanded live trace lost bottom pinning when events were appended');
+    assert(document.querySelectorAll('.message-process').length < 50, 'The active trace mounted events outside the virtual range');
+  },
+  'TRACE-02: search reveals the exact paged event and keeps a long trace virtualized': async () => {
+    const events: Message[] = Array.from({ length: 150 }, (_, index) => ({
+      id: `paged-event-${index}`, role: 'activity', text: `Call ${index}`, createdAt: session.createdAt,
+      event: { id: `call-${index}`, kind: 'tool', title: `Call ${index}`, status: 'completed', output: index === 70 ? 'A searchable result' : undefined },
+    }));
+    const match = events[70];
+    const selector = `[data-message-id="${match.id}"]`;
+    const latest: Session = { ...session, id: 'trace-search-session', status: 'completed', historyLoaded: true,
+      messages: messageRange(300, 301), historyCursor: 'latest', messageCount: 151 };
+    window.workbench = {
+      sessionSearch: async () => ({ messages: [{ id: match.id, role: match.role, createdAt: match.createdAt, text: match.event!.output }], truncated: false }),
+      sessionHistoryAround: async () => ({ messages: events.slice(50), beforeCursor: 'paged-event-50', hasMore: true, hasAfter: false }),
+      sessionHistory: async () => ({ messages: events.slice(0, 50), hasMore: false }),
+    } as unknown as Window['workbench'];
+    await render(chat({ session: latest }));
+    await click('workspace:chat.find');
+    await change(input('.conversation-find input'), 'searchable result');
+    await waitFor(() => Boolean(document.querySelector(`${selector}.conversation-match .process-reveal[data-expanded="true"]`)), 'Search did not reveal the exact historical event');
+    await frames(5);
+    const scroll = document.querySelector<HTMLElement>('.message-scroll')!;
+    const event = document.querySelector<HTMLElement>(selector)!;
+    const before = event.getBoundingClientRect().top - scroll.getBoundingClientRect().top;
+    assert(before >= 0 && before < scroll.clientHeight && event.textContent?.includes('A searchable result'), 'The search match was outside the viewport or its output was hidden');
+    await click('workspace:chat.loadEarlier'); await frames(5);
+    const after = event.getBoundingClientRect().top - scroll.getBoundingClientRect().top;
+    assert(document.querySelector(selector) === event && Math.abs(before - after) < 4, `Prepending a trace fragment moved the search target (${before} → ${after})`);
+    assert(document.querySelectorAll('.message-process').length < 50, 'Expanding a long trace mounted every event');
+    await act(async () => { scroll.scrollTop = 0; scroll.dispatchEvent(new Event('scroll')); await tick(); });
+    await frames();
+    assert(document.querySelectorAll('.trace-heading').length === 1 && document.querySelector('.trace-count')?.textContent?.includes('150'),
+      'A process group was split at a history page boundary');
+    assert(!document.querySelector('.trace-event-enter, .trace-count .ui-rolling-text-change'), 'Loading historical events replayed live motion');
+  },
   'CHAT-01: latest output leaves a search history window and resumes the live tail': async () => {
     const match = { ...messageRange(300, 301)[0], text: 'Needle in historical output' };
     const liveMatch = { ...messageRange(950, 951)[0], text: 'Live output [Details](https://example.com/details)' };
