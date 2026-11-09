@@ -10,6 +10,7 @@
   border-left: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
+  container: file-review / inline-size;
 }
 .file-panel-header {
   display: flex;
@@ -76,6 +77,26 @@
 .file-review-panel button:disabled { cursor: default; opacity: .45; }
 .review-busy { display: flex; align-items: center; gap: 6px; color: var(--muted); background: var(--selected); padding: 5px 13px; font-size: 11px; }
 .file-tree { flex: 1; min-height: 0; overflow: auto; padding: 6px; }
+.review-layout { display: contents; }
+.review-layout[data-responsive-diff] { display: flex; flex: 1; min-width: 0; min-height: 0; }
+@container file-review (width < 520px) {
+  .review-layout[data-responsive-diff] { flex-direction: column; overflow: auto; padding: 6px; reading-flow: flex-visual; }
+  .review-layout[data-responsive-diff] > .review-tree { display: contents; reading-flow: inherit; }
+  .review-layout[data-responsive-diff] .review-change-row { flex: none; }
+  .review-layout[data-responsive-diff] .review-change-row[data-after-selected] { order: 2; }
+  .review-layout[data-responsive-diff] > .review-inspector {
+    order: 1;
+    flex: none;
+    block-size: min(100%, 440px);
+    margin: 6px 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-panel);
+  }
+}
+@container file-review (width >= 520px) {
+  .review-layout[data-responsive-diff] > .review-tree { flex: 0 0 34%; min-width: 0; min-height: 0; }
+  .review-layout[data-responsive-diff] > .review-inspector { flex: 1; min-width: 0; min-height: 0; border: 0; border-left: 1px solid var(--border); }
+}
 .review-tree { min-height: 80px; }
 .tree-row {
   display: flex;

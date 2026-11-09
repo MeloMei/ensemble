@@ -1,7 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import { formatDate, renderDisplayText } from '../shared/i18n';
 import type { DisplayText } from '../shared/display-text';
-import { useContext, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useContext, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { FileCode2, Files, GitBranch, GitCompareArrows, GitPullRequest, LoaderCircle, Maximize2, MessageSquare, Minimize2, PanelRight, RefreshCw, Save, X } from 'lucide-react';
 import { z } from 'zod';
 import type { FileContent, FileDiff, FileEntry, GitCommitPreview, GitMutation, GitState, PullRequestReview, Session, Workspace } from '../shared/types';
@@ -20,6 +20,23 @@ const fileDrafts = new FileDraftStore(summary => window.workbench.setUnsavedFile
 function persistedNotes(workspaceId: string): ReviewNote[] {
   try { return notesSchema.parse(JSON.parse(localStorage.getItem(`workbench:review:${workspaceId}`) ?? '[]')); }
   catch { return []; }
+}
+
+function revealSelectedDiff(layout: HTMLDivElement, inline: boolean) {
+  const inspector = layout.querySelector<HTMLElement>('.review-inspector');
+  const list = layout.querySelector<HTMLElement>('.review-tree');
+  const row = list?.querySelector('.tree-row.selected')?.closest<HTMLElement>('.review-change-row');
+  const scroller = inline ? layout : list;
+  const anchor = row ?? (inline ? inspector : null);
+  if (!inspector || !scroller || !anchor) return;
+
+  const viewport = scroller.getBoundingClientRect();
+  const bounds = anchor.getBoundingClientRect();
+  const diffBounds = inspector.getBoundingClientRect();
+  const bottom = inline ? Math.min(diffBounds.bottom, diffBounds.top + Math.min(140, viewport.height / 2)) : bounds.bottom;
+  if (bounds.top < viewport.top || bottom > viewport.bottom) {
+    scroller.scrollTop += bounds.top - viewport.top - (inline ? 6 : 0);
+  }
 }
 
 export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [], onFeedback, onEditProject }: {
@@ -55,8 +72,27 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
   const directoryGeneration = useRef(0);
   const fileGeneration = useRef(0);
   const operations = useRef(0);
+  const reviewLayout = useRef<HTMLDivElement>(null);
+  const responsiveDiff = view === 'changes' && selected?.mode === 'diff' && !expanded;
+  const selectedChangeIndex = responsiveDiff ? git?.changes.findIndex(change => change.path === selected.path) ?? -1 : -1;
   const dirty = !!file && draft !== file.content;
   const currentNotes = notes.workspaceId === workspace.id ? notes.items : [];
+
+  useLayoutEffect(() => {
+    const layout = reviewLayout.current;
+    if (!responsiveDiff || !layout) return;
+    let inline: boolean | undefined;
+    const reveal = () => {
+      const next = getComputedStyle(layout).flexDirection === 'column';
+      if (next === inline) return;
+      inline = next;
+      revealSelectedDiff(layout, next);
+    };
+    reveal();
+    const observer = new ResizeObserver(reveal);
+    observer.observe(layout.closest('.file-review-panel') ?? layout);
+    return () => observer.disconnect();
+  }, [responsiveDiff, selected?.path, selectedChangeIndex]);
 
   const run = (key: string, action: () => Promise<unknown>) => {
     setError(''); operations.current++; setBusy(true);
@@ -204,7 +240,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
       workspaceKey={workspaceKey} entries={tree?.entries ?? emptyEntries} revision={tree?.revision ?? 0}
       hidden={view !== 'files' || missingDirectory} selectedPath={selected?.path}
       onOpen={path => run('open', () => load(path, 'content'))} />
-    {view === 'pr' ? <section className="pr-review-body">
+    {view === 'pr' && <section className="pr-review-body">
       {!review ? <p className="pane-note">{t('files.readPullRequest')}</p> : review.status !== 'ready' ? <p className="pane-note">{review.error}</p> : <>
         <div className="pr-review-summary"><span className="pr-review-icon"><GitPullRequest size={18} /></span>
           <a href={review.url} target="_blank" rel="noreferrer">#{review.number} {review.title}</a>
@@ -218,8 +254,11 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
         </div>) : <p>{t('files.noChecks')}</p>}</div>
         <p className="pane-note">{t('files.prReadOnly')}</p>
       </>}
-    </section> : view === 'changes' && <div className="file-tree review-tree">
-      {!git?.available ? <div className="pane-note">{git?.error || t('files.notGit')}</div> : !git.changes.length ? <div className="pane-note">{t('files.clean')}</div> : git.changes.map(change => <div className="review-change-row" key={change.path}>
+    </section>}
+    <div className="review-layout" ref={reviewLayout} data-responsive-diff={responsiveDiff || undefined}>
+    {view === 'changes' && <div className="file-tree review-tree">
+      {!git?.available ? <div className="pane-note">{git?.error || t('files.notGit')}</div> : !git.changes.length ? <div className="pane-note">{t('files.clean')}</div> : git.changes.map((change, index) => <div className="review-change-row" key={change.path}
+        data-after-selected={selectedChangeIndex >= 0 && index > selectedChangeIndex || undefined}>
         <button className={`tree-row ${selected?.path === change.path ? 'selected' : ''}`} onClick={() => run('open', () => load(change.path, 'diff'))} title={change.path}>
           <GitCompareArrows size={13} /><span className="tree-name">{change.path}</span><code>{change.status}</code>
         </button><div className="review-row-actions">
@@ -263,6 +302,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
         </div>}
       </>}
     </section>}
+    </div>
     {!!currentNotes.length && <section className="review-notes"><strong><MessageSquare size={12} />{t('files.localNotes', { count: currentNotes.length })}</strong>
       {currentNotes.map(note => <div key={note.id}><small>{note.filePath}:{note.lineNumber} · {t(`files.scope.${note.scope}`)} · {t(`files.side.${note.side}`)}</small><p>{note.body}</p><button onClick={() => setNotes({ workspaceId: workspace.id, items: currentNotes.filter(item => item.id !== note.id) })}>{t('common.delete')}</button></div>)}
       <button disabled={!onFeedback || !sessions.length || !!busy} onClick={sendNotes}>{t('files.notesToDraft')}</button>

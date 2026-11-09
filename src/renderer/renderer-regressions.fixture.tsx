@@ -2269,6 +2269,68 @@ const cases: Record<string, () => Promise<void>> = {
     await show({ ...session, queue: [] });
     assert(!document.querySelector('.composer-dock'), 'An empty session displays a composer dock');
   },
+  'RESPONSIVE-DIFF: Changes rearranges the same inspector at the panel width and keeps the reading position': async () => {
+    const currentProject = { ...workspace, id: 'responsive-diff-project' };
+    const change = (path: string) => ({ path, status: ' M', staged: false, additions: 1, deletions: 1 });
+    const paths = Array.from({ length: 24 }, (_, index) => `file-${String(index).padStart(2, '0')}.ts`);
+    const target = paths[14];
+    let changes = paths.map(change), statusReads = 0, diffReads = 0;
+    const patch = ['Working tree changes', `diff --git a/${target} b/${target}`, '@@ -1,160 +1,160 @@',
+      ...Array.from({ length: 160 }, (_, index) => ` line ${index} ${'long code segment '.repeat(12)}`)].join('\n');
+    window.workbench = {
+      listFiles: async () => [], setUnsavedFiles: () => {},
+      gitState: async () => { statusReads++; return { available: true, branch: 'main', changes }; },
+      fileDiff: async (_id: string, file: string) => {
+        diffReads++; return { path: file, patch, binary: false, truncated: false, revision: 'unchanged-diff' };
+      },
+    } as unknown as Window['workbench'];
+    const show = (width: number) => render(<div style={{ '--file-width': `${width}px`, display: 'flex', height: 610 } as React.CSSProperties}>
+      <FileReviewPanel workspace={currentProject} refreshKey="responsive-diff" perform={perform} />
+    </div>, 'user');
+    await show(340); await settle();
+    await act(async () => { document.querySelector<HTMLButtonElement>('.file-view-tabs button:nth-child(2)')!.click(); await tick(); });
+    const selected = document.querySelector<HTMLButtonElement>(`.review-change-row button[title="${target}"]`)!;
+    const next = document.querySelector<HTMLButtonElement>(`.review-change-row button[title="${paths[15]}"]`)!;
+    await act(async () => { selected.scrollIntoView({ block: 'nearest' }); selected.click(); await tick(); });
+    await settle(); await frames();
+    const inspector = document.querySelector<HTMLElement>('.review-inspector')!;
+    const diff = inspector.querySelector<HTMLElement>('.review-diff')!;
+    const line = diff.querySelectorAll('.review-diff-line')[25];
+    const layout = document.querySelector<HTMLElement>('.review-layout')!;
+    const list = layout.querySelector<HTMLElement>('.review-tree')!;
+    const rowBounds = () => selected.closest('.review-change-row')!.getBoundingClientRect();
+    const inline = () => inspector.getBoundingClientRect().top >= rowBounds().bottom - 1
+      && next.getBoundingClientRect().top >= inspector.getBoundingClientRect().bottom - 1;
+    const split = () => inspector.getBoundingClientRect().left >= list.getBoundingClientRect().right - 1
+      && Math.abs(inspector.getBoundingClientRect().top - list.getBoundingClientRect().top) < 2;
+    assert(inline() && getComputedStyle(layout).getPropertyValue('reading-flow') === 'flex-visual',
+      'The narrow inspector did not follow its selected row in the visual reading flow');
+    assert(inspector.getBoundingClientRect().top < layout.getBoundingClientRect().bottom - 80, 'The selected diff opened outside the narrow viewport');
+    diff.scrollTop = 435;
+    diff.scrollLeft = 83;
+    const top = diff.scrollTop, left = diff.scrollLeft;
+    assert(top > 0 && left > 0, 'The fixture did not exercise both diff scroll axes');
+    const sameReadingPosition = () => document.querySelector('.review-inspector') === inspector
+      && inspector.querySelector('.review-diff') === diff && diff.querySelectorAll('.review-diff-line')[25] === line
+      && diff.scrollTop === top && diff.scrollLeft === left;
+    await show(600); await frames();
+    assert(split() && sameReadingPosition(), 'The wide layout changed the inspector or its reading position');
+    const wideInspectorTop = inspector.getBoundingClientRect().top;
+    list.scrollTop = 0;
+    assert(inspector.getBoundingClientRect().top === wideInspectorTop && diff.scrollTop === top, 'Scrolling the wide change list moved the diff');
+    await show(340); await frames();
+    assert(inline() && sameReadingPosition() && inspector.getBoundingClientRect().top < layout.getBoundingClientRect().bottom - 80,
+      'Returning to narrow layout lost the selected file or its reading position');
+    changes = [change('added-on-refresh.ts'), ...changes];
+    await click('workspace:files.refresh'); await settle(); await frames();
+    assert(statusReads === 2 && diffReads === 1 && selected.classList.contains('selected') && inline() && sameReadingPosition(),
+      'Refreshing Git status rebuilt the current diff or selected row');
+    await click('workspace:files.expandPanel'); await frames();
+    assert(document.querySelector('.review-expanded') && !layout.hasAttribute('data-responsive-diff') && sameReadingPosition(),
+      'The existing full-width view was replaced');
+    await click('workspace:files.restorePanel'); await frames();
+    assert(inline() && sameReadingPosition(), 'Leaving full-width view lost the selected diff');
+  },
   'FILE-PANE-WIDTH: the divider follows the pointer and restores the preferred width and selected file': async () => {
     const snapshot: Snapshot = { ...collaborationSnapshot([]), sessions: [session], providers: [provider],
       workspaces: [{ ...workspace, tabs: [{ kind: 'agent', id: 'file-pane-tab', sessionId: session.id }], activeTabId: 'file-pane-tab' }] };
