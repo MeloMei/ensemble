@@ -7,7 +7,7 @@ import { constants } from 'node:fs';
 import { lstat, open, opendir, realpath, rename, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { TextDecoder } from 'node:util';
-import type { FileContent, FileDiff, FileEntry, GitCommitPreview, GitMutation, GitState } from '../shared/types';
+import type { FileContent, FileDiff, FileEntry, GitBranchComparison, GitCommitPreview, GitMutation, GitState } from '../shared/types';
 import { parsePorcelainV1Records, type PorcelainV1Record } from './vendor/orca/porcelain-v1-records';
 
 const FILE_LIMIT = 1024 * 1024;
@@ -140,11 +140,12 @@ export async function workspaceExecutionKey(cwd: string): Promise<string> {
 
 type GitOutput = { stdout: string; stderr: string; code: number; truncated: boolean };
 
-function git(cwd: string, args: string[], allowedCodes = [0], allowTruncated = false, timeout = GIT_TIMEOUT_MS): Promise<GitOutput> {
+function git(cwd: string, args: string[], allowedCodes = [0], allowTruncated = false, timeout = GIT_TIMEOUT_MS,
+  environment?: NodeJS.ProcessEnv): Promise<GitOutput> {
   return new Promise((resolve, reject) => {
     execFile('git', ['--no-pager', '-c', 'core.fsmonitor=false', ...args], {
       cwd, shell: false, windowsHide: true, timeout, maxBuffer: GIT_OUTPUT_LIMIT,
-      encoding: 'utf8', env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_LITERAL_PATHSPECS: '1' },
+      encoding: 'utf8', env: { ...process.env, ...environment, GIT_OPTIONAL_LOCKS: '0', GIT_LITERAL_PATHSPECS: '1' },
     }, (error, stdout, stderr) => {
       const truncated = error?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
       const code = typeof error?.code === 'number' ? error.code : error ? -1 : 0;
@@ -177,7 +178,33 @@ function language(file: string): string {
     html: 'html', css: 'css', rs: 'rust', go: 'go', java: 'java', c: 'c', cpp: 'cpp', sql: 'sql' } as Record<string, string>)[extension] ?? 'text';
 }
 
-const diffOptions = ['--no-ext-diff', '--no-textconv', '--relative', '--no-color'];
+const diffSafetyOptions = ['--no-ext-diff', '--no-textconv', '--no-color'];
+const diffOptions = [...diffSafetyOptions, '--relative'];
+
+const branchRefPattern = /^refs\/(?:heads|remotes)\//;
+const commitShaPattern = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+const branchReadEnvironment: NodeJS.ProcessEnv = {
+  GIT_DIR: undefined, GIT_COMMON_DIR: undefined, GIT_WORK_TREE: undefined, GIT_INDEX_FILE: undefined,
+  GIT_NO_REPLACE_OBJECTS: '1', GIT_NO_LAZY_FETCH: '1', GIT_ALLOW_PROTOCOL: '',
+};
+
+function branchGit(root: string, args: string[], { allowedCodes = [0], allowTruncated = false, attributes }: {
+  allowedCodes?: number[]; allowTruncated?: boolean; attributes?: string;
+} = {}) {
+  return git(root, args, allowedCodes, allowTruncated, GIT_TIMEOUT_MS, { ...branchReadEnvironment, GIT_ATTR_SOURCE: attributes });
+}
+
+async function branchRefs(root: string, patterns: string[]) {
+  const { stdout } = await branchGit(root, [
+    'for-each-ref', `--count=${ENTRY_LIMIT + 1}`, '--sort=refname', '--format=%(refname)%00%(symref)%00%(objecttype)%00%(objectname)', '--', ...patterns,
+  ]);
+  const rows = stdout.split('\n').filter(Boolean);
+  if (rows.length > ENTRY_LIMIT) throw new Error('Git branch references exceed the 2000 entry limit');
+  return rows.flatMap(row => {
+    const [ref, symbolic, type, sha] = row.split('\0');
+    return branchRefPattern.test(ref) && !symbolic && type === 'commit' && commitShaPattern.test(sha) ? [{ ref, sha }] : [];
+  });
+}
 
 async function statusRecords(root: string): Promise<{ repoRoot: string; records: PorcelainV1Record[] }> {
   const [repository, status] = await Promise.all([
@@ -341,6 +368,43 @@ export class WorkspaceFiles {
     } catch (error) {
       return { available: false, branch: '', changes: [], error: error instanceof Error ? error.message : String(error) };
     }
+  }
+
+  async gitBranchRefs(cwd: string): Promise<string[]> {
+    const root = await workspaceRoot(cwd);
+    return (await branchRefs(root, ['refs/heads/', 'refs/remotes/'])).map(({ ref }) => ref);
+  }
+
+  async gitBranchComparison(cwd: string, targetRef: string): Promise<GitBranchComparison> {
+    const root = await workspaceRoot(cwd);
+    if (!branchRefPattern.test(targetRef) || targetRef.includes('\0') ||
+      (await branchGit(root, ['check-ref-format', targetRef], { allowedCodes: [0, 1] })).code !== 0) {
+      throw new Error('Select a full local or remote-tracking branch reference');
+    }
+    const [references, head, gitDir, topLevel] = await Promise.all([
+      branchRefs(root, [targetRef]),
+      branchGit(root, ['rev-parse', '--verify', '--end-of-options', 'HEAD^{commit}'], { allowedCodes: [0, 128] }),
+      branchGit(root, ['rev-parse', '--absolute-git-dir']),
+      branchGit(root, ['rev-parse', '--show-toplevel']),
+    ]);
+    const target = references.find(item => item.ref === targetRef);
+    if (!target) throw new Error('The selected branch reference is unavailable');
+    const headSha = head.stdout.trim();
+    if (head.code !== 0 || !commitShaPattern.test(headSha)) throw new Error('The current HEAD has no commit');
+    const ancestor = await branchGit(root, ['merge-base', target.sha, headSha], { allowedCodes: [0, 1] });
+    const mergeBase = ancestor.stdout.trim();
+    if (ancestor.code !== 0 || !commitShaPattern.test(mergeBase)) throw new Error('No common ancestor was found for the selected branch and HEAD');
+
+    const repository = await realpath(topLevel.stdout.replace(/\n$/, ''));
+    if (!within(repository, root)) throw new Error('The project directory is outside its Git repository');
+    const project = normalizedRelative(path.relative(repository, root));
+    // Bare mode excludes working tree and index attributes even on older Git versions.
+    const { stdout: patch, truncated } = await branchGit(root, [
+      `--git-dir=${gitDir.stdout.replace(/\n$/, '')}`, '--bare', 'diff', ...diffSafetyOptions,
+      project ? `--relative=${project}/` : '--relative', '--submodule=short', '--ignore-submodules=none',
+      mergeBase, headSha, '--', project || '.',
+    ], { allowTruncated: true, attributes: headSha });
+    return { targetRef, targetSha: target.sha, mergeBase, headSha, patch, truncated };
   }
 
   async diff(cwd: string, relativePath: string): Promise<FileDiff> {
