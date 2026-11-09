@@ -224,6 +224,8 @@ const cases: Record<string, () => Promise<void>> = {
     await waitFor(() => Boolean(document.querySelector('.composer textarea')), 'Subscribed conversation did not open');
     assert(commands.length === 1 && commands[0].initialDraft === '  Review this project\n' && input('.composer textarea').value === '  Review this project\n', 'First conversation lost the persisted draft');
     assert(snapshot.sessions[0].status === 'idle' && snapshot.sessions[0].messages.length === 0 && !document.querySelector('.first-task') && snapshotReads === 1, 'Opening started a task, retained onboarding, or fetched a second snapshot');
+    await waitFor(() => Boolean(document.querySelector('.message-scroll .conversation-notices')), 'The conversation did not finish rendering');
+    assert(document.querySelector('.message-scroll')?.textContent?.trim() === '', 'A new conversation should leave its transcript blank');
   },
   'FIRST-RUN: delayed creation responses and subscriptions preserve navigation to history': async () => {
     const initial: Snapshot = { version: 1, sessions: [], workspaces: [], providers: [provider], workflows: [], terminals: [], pluginErrors: [], pluginPath: '/plugins', dataPath: '/data' };
@@ -1496,6 +1498,7 @@ const cases: Record<string, () => Promise<void>> = {
     assert(JSON.stringify(pauses) === '[true,false]' && removals[0] === 'queued-a', 'Queue pause, resume or removal did not use its persisted item identity');
     await show({ ...queued, historyLoaded: false });
     assert(input('.composer textarea').disabled && button('workspace:chat.sendTask').disabled, 'A summary-only session can overwrite the unloaded server draft');
+    assert(document.querySelector('.conversation-history-controls [role=status]')?.textContent === translate('workspace:chat.loadingHistory'), 'The disabled composer is missing its history loading status');
     await show(queued, { text: 'A newer draft' });
     assert(input('.composer textarea').value === 'A newer draft', 'Queue updates replaced the composer draft');
   },
