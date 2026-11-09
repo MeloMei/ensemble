@@ -2,10 +2,11 @@ import { useTranslation } from 'react-i18next';
 import { formatDate, renderDisplayText } from '../shared/i18n';
 import type { DisplayText } from '../shared/display-text';
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { ChevronLeft, FileCode2, Files, Folder, GitBranch, GitCompareArrows, GitPullRequest, LoaderCircle, Maximize2, MessageSquare, Minimize2, PanelRight, RefreshCw, Save, X } from 'lucide-react';
+import { FileCode2, Files, GitBranch, GitCompareArrows, GitPullRequest, LoaderCircle, Maximize2, MessageSquare, Minimize2, PanelRight, RefreshCw, Save, X } from 'lucide-react';
 import { z } from 'zod';
 import type { FileContent, FileDiff, FileEntry, GitCommitPreview, GitMutation, GitState, PullRequestReview, Session, Workspace } from '../shared/types';
 import { CodeEditor } from './CodeEditor';
+import { WorkspaceFileTree } from './WorkspaceFileTree';
 import { FileDraftStore } from './file-drafts';
 import { diffLines, reviewFeedback, reviewNoteSchema, type DiffLine, type ReviewNote } from './review-notes';
 import { IconButton, Modal, type Perform } from './ui';
@@ -13,6 +14,7 @@ import './FileReviewPanel.css';
 
 const notesSchema = z.array(reviewNoteSchema).max(200);
 type FileNotice = string | DisplayText;
+const emptyEntries: FileEntry[] = [];
 const fileDrafts = new FileDraftStore(summary => window.workbench.setUnsavedFiles(summary));
 function persistedNotes(workspaceId: string): ReviewNote[] {
   try { return notesSchema.parse(JSON.parse(localStorage.getItem(`workbench:review:${workspaceId}`) ?? '[]')); }
@@ -23,9 +25,10 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
   workspace: Workspace; refreshKey: string; perform: Perform; sessions?: Session[]; onFeedback?(text: string): void; onEditProject?(): void;
 }) {
   const { t } = useTranslation('workspace');
+  const workspaceKey = JSON.stringify([workspace.id, workspace.cwd]);
   const [view, setView] = useState<'files' | 'changes' | 'pr'>('files');
-  const [directory, setDirectory] = useState('');
-  const [entries, setEntries] = useState<FileEntry[]>([]);
+  const [rootListing, setRootListing] = useState<{ workspaceKey: string; entries: FileEntry[]; revision: number }>();
+  const tree = rootListing?.workspaceKey === workspaceKey ? rootListing : undefined;
   const [missingDirectory, setMissingDirectory] = useState(false);
   const [git, setGit] = useState<GitState | null>(null);
   const [selected, setSelected] = useState<{ path: string; mode: 'content' | 'diff' } | null>(null);
@@ -60,10 +63,10 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
       finally { operations.current--; if (!operations.current) setBusy(false); }
     });
   };
-  const refresh = async (nextDirectory = directory) => {
+  const refresh = async () => {
     const token = ++directoryGeneration.current;
     let listing: FileEntry[] | null;
-    try { listing = await window.workbench.listFiles(workspace.id, nextDirectory); }
+    try { listing = await window.workbench.listFiles(workspace.id, ''); }
     catch (failure) {
       if (token !== directoryGeneration.current) return;
       setMissingDirectory(false);
@@ -71,7 +74,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
     }
     if (token !== directoryGeneration.current) return;
     setMissingDirectory(listing === null);
-    setEntries(listing ?? []); setDirectory(listing === null ? '' : nextDirectory);
+    setRootListing(previous => ({ workspaceKey, entries: listing ?? emptyEntries, revision: (previous?.revision ?? 0) + 1 }));
     if (listing === null) { setGit(null); setView('files'); return; }
     const status = await window.workbench.gitState(workspace.id);
     if (token !== directoryGeneration.current) return;
@@ -118,7 +121,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
   };
 
   useEffect(() => {
-    setDirectory(''); setEntries([]); setMissingDirectory(false); setGit(null); setSelected(null); setLoadedPath(null); setDiff(null);
+    setMissingDirectory(false); setGit(null); setSelected(null); setLoadedPath(null); setDiff(null);
     setPreview(null); setReview(null); setNotes({ workspaceId: workspace.id, items: persistedNotes(workspace.id) });
     return () => { directoryGeneration.current++; fileGeneration.current++; };
   }, [workspace.id]);
@@ -176,6 +179,10 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
     </div>}
     {error && <div className="pane-note error-text" role="alert">{typeof error === 'string' ? error : renderDisplayText('', error)}</div>}
     {busy && <div className="review-busy" role="status"><LoaderCircle className="spin" size={12} />{t('files.processing')}</div>}
+    <WorkspaceFileTree key={workspaceKey} workspaceId={workspace.id}
+      workspaceKey={workspaceKey} entries={tree?.entries ?? emptyEntries} revision={tree?.revision ?? 0}
+      hidden={view !== 'files' || missingDirectory} selectedPath={selected?.path}
+      onOpen={path => run('open', () => load(path, 'content'))} />
     {view === 'pr' ? <section className="pr-review-body">
       {!review ? <p className="pane-note">{t('files.readPullRequest')}</p> : review.status !== 'ready' ? <p className="pane-note">{review.error}</p> : <>
         <div className="pr-review-summary"><span className="pr-review-icon"><GitPullRequest size={18} /></span>
@@ -190,14 +197,8 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
         </div>) : <p>{t('files.noChecks')}</p>}</div>
         <p className="pane-note">{t('files.prReadOnly')}</p>
       </>}
-    </section> : <div className="file-tree review-tree">
-      {view === 'files' ? <>
-        {directory && <button className="tree-row" onClick={() => run('directory', () => refresh(directory.split('/').slice(0, -1).join('/')))}><ChevronLeft size={14} />{directory}</button>}
-        {entries.map(entry => <button key={entry.path} className={`tree-row ${entry.kind} ${selected?.path === entry.path ? 'selected' : ''}`} title={entry.path}
-          onClick={() => run('open', () => entry.kind === 'directory' ? refresh(entry.path) : load(entry.path, 'content'))}>
-          {entry.kind === 'directory' ? <Folder size={14} /> : <FileCode2 size={14} />}<span className="tree-name">{entry.name}</span>
-        </button>)}{!missingDirectory && !entries.length && <div className="pane-note">{t('files.emptyDirectory')}</div>}
-      </> : !git?.available ? <div className="pane-note">{git?.error || t('files.notGit')}</div> : !git.changes.length ? <div className="pane-note">{t('files.clean')}</div> : git.changes.map(change => <div className="review-change-row" key={change.path}>
+    </section> : view === 'changes' && <div className="file-tree review-tree">
+      {!git?.available ? <div className="pane-note">{git?.error || t('files.notGit')}</div> : !git.changes.length ? <div className="pane-note">{t('files.clean')}</div> : git.changes.map(change => <div className="review-change-row" key={change.path}>
         <button className={`tree-row ${selected?.path === change.path ? 'selected' : ''}`} onClick={() => run('open', () => load(change.path, 'diff'))} title={change.path}>
           <GitCompareArrows size={13} /><span className="tree-name">{change.path}</span><code>{change.status}</code>
         </button><div className="review-row-actions">
