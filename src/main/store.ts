@@ -48,7 +48,7 @@ const attachmentSchema = record({ id: z.string(), name: z.string(), kind: z.enum
 const promptInputSchema = record({ text: z.string(), attachments: z.array(attachmentSchema).optional() });
 const sessionSettingsSchema = record({ effort: z.string().optional(), permission: z.enum(['review', 'read-only']).optional(), skillIds: z.array(z.string()).optional() });
 const eventSchema = record({
-  id: z.string(), kind: z.enum(['tool', 'plan', 'task', 'subagent']), title: z.string(),
+  id: z.string(), kind: z.enum(['tool', 'plan', 'task', 'subagent', 'diff']), title: z.string(),
   status: z.enum(['pending', 'running', 'completed', 'failed']), nativeId: z.string().optional(),
   parentId: z.string().optional(), input: z.string().optional(), output: z.string().optional(), sessionId: z.string().optional(),
   entries: z.array(record({ text: z.string(), status: z.enum(['pending', 'running', 'completed']) })).optional(),
@@ -98,7 +98,7 @@ const savedSchema = record({
       record({ id: z.string(), kind: z.literal('terminal'), terminalId: z.string() }),
       record({ id: z.string(), kind: z.literal('preview'), url: z.string() }),
     ])), activeTabId: z.string().nullable(), secondaryTabId: z.string().optional(),
-    splitDirection: z.enum(['horizontal', 'vertical']).optional(), splitRatio: z.number().optional(),
+    secondaryPlacement: z.enum(['before', 'after']).optional(), splitDirection: z.enum(['horizontal', 'vertical']).optional(), splitRatio: z.number().optional(),
     createdAt: z.string(), updatedAt: z.string(),
   })).default([]),
   mails: z.array(record({ id: z.string(), fromSessionId: z.string(), toSessionId: z.string(), attemptId: z.string(), toAttemptId: z.string().optional(), kind: z.enum(['message', 'question', 'result']), text: z.string(), createdAt: z.string(), delivered: z.boolean().optional() })).default([]),
@@ -205,6 +205,7 @@ export class StateStore {
       workspace.tabs = workspace.tabs.filter(tab => tab.kind !== 'terminal');
       if (!workspace.tabs.some(tab => tab.id === workspace.activeTabId)) workspace.activeTabId = workspace.tabs[0]?.id ?? null;
       if (!workspace.tabs.some(tab => tab.id === workspace.secondaryTabId) || workspace.secondaryTabId === workspace.activeTabId) delete workspace.secondaryTabId;
+      if (!workspace.secondaryTabId) delete workspace.secondaryPlacement;
     }
     for (const workflow of this.state.workflows) {
       if (workflow.status === 'running') moveWorkflow(workflow, 'interrupted');

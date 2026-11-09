@@ -34,6 +34,15 @@ export type WorkspaceTab =
   | { id: string; kind: 'terminal'; terminalId: string }
   | { id: string; kind: 'preview'; url: string };
 
+export type WorkspaceSplitPlacement = 'before' | 'after';
+export interface WorkspaceSplitInput {
+  tabId?: string;
+  direction?: 'horizontal' | 'vertical';
+  ratio?: number;
+  placement?: WorkspaceSplitPlacement;
+  expectedLayout?: { activeTabId: string | null; secondaryTabId: string | null };
+}
+
 export interface Workspace {
   id: string;
   name: string;
@@ -42,6 +51,7 @@ export interface Workspace {
   tabs: WorkspaceTab[];
   activeTabId: string | null;
   secondaryTabId?: string;
+  secondaryPlacement?: WorkspaceSplitPlacement;
   splitDirection?: 'horizontal' | 'vertical';
   splitRatio?: number;
   createdAt: string;
@@ -81,11 +91,15 @@ export interface TerminalInfo {
   output: string;
   outputOffset: number;
 }
+export interface TerminalService { host: '127.0.0.1' | '::1'; port: number }
 
 export interface FileEntry { path: string; name: string; kind: 'file' | 'directory'; size: number }
 export interface FileContent { path: string; content: string; size: number; language: string; revision: string }
 export interface GitChange { path: string; status: string; staged: boolean; additions: number; deletions: number }
 export interface GitState { available: boolean; branch: string; changes: GitChange[]; error?: string }
+export interface GitBranchComparison {
+  targetRef: string; targetSha: string; mergeBase: string; headSha: string; patch: string; truncated: boolean;
+}
 export interface FileDiff { path: string; patch: string; binary: boolean; truncated: boolean; revision?: string }
 
 export interface Message {
@@ -238,6 +252,7 @@ export interface WorkbenchAPI {
   sessionSearch(id: string, query: string, limit?: number): Promise<{ messages: Message[]; truncated: boolean }>;
   searchSessions(query: string, includeArchived?: boolean): Promise<{ sessionIds: string[] }>;
   onTerminalOutput(id: string, listener: (event: TerminalOutputEvent) => void): () => void;
+  listTerminalServices(id: string): Promise<TerminalService[]>;
   markSessionSeen(id: string, revision: number): Promise<void>;
   commandReceipt(commandId: string): Promise<SessionCommandReceipt | undefined>;
   updateQueuedPrompt(id: string, itemId: string, input: PromptInput): Promise<void>;
@@ -284,6 +299,8 @@ export interface WorkbenchAPI {
   listFiles(workspaceId: string, relativePath?: string): Promise<FileEntry[] | null>;
   readFile(workspaceId: string, relativePath: string): Promise<FileContent | null>;
   gitState(workspaceId: string): Promise<GitState>;
+  gitBranchRefs(workspaceId: string): Promise<string[]>;
+  gitBranchComparison(workspaceId: string, targetRef: string): Promise<GitBranchComparison>;
   fileDiff(workspaceId: string, relativePath: string): Promise<FileDiff>;
   chooseAttachments(): Promise<PromptAttachment[]>;
   sendPrompt(sessionId: string, input: PromptInput, commandId?: string): Promise<void>;
@@ -297,7 +314,7 @@ export interface WorkbenchAPI {
   retryWorkflowStep(workflowId: string, stepId: string): Promise<void>;
   cloneWorkflow(workflowId: string): Promise<string>;
   resumeWorkflow(workflowId: string): Promise<void>;
-  splitWorkspace(workspaceId: string, input: { tabId?: string; direction?: 'horizontal' | 'vertical'; ratio?: number }): Promise<void>;
+  splitWorkspace(workspaceId: string, input: WorkspaceSplitInput): Promise<void>;
   writeFile(workspaceId: string, input: { path: string; content: string; revision: string }): Promise<FileContent>;
   gitMutate(workspaceId: string, input: GitMutation): Promise<GitState>;
   gitCommitPreview(workspaceId: string): Promise<GitCommitPreview>;
@@ -335,7 +352,7 @@ export interface SessionUpdate { title?: string; archived?: boolean; settings?: 
 export interface SessionSkillAssignment { skillId: string; enabled: boolean }
 export interface SessionSkillAssignmentReceipt { skillIds: string[]; updatedAt: string }
 export interface ProcessEvent {
-  id: string; kind: 'tool' | 'plan' | 'task' | 'subagent'; title: string;
+  id: string; kind: 'tool' | 'plan' | 'task' | 'subagent' | 'diff'; title: string;
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
   nativeId?: string; parentId?: string; input?: string; output?: string; sessionId?: string;
   entries?: { text: string; status: 'pending' | 'running' | 'completed' | 'cancelled' }[];
