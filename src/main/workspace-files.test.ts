@@ -115,6 +115,77 @@ test('Git reads are scoped to a workspace nested inside the repository', async (
   assert.equal((await files.gitState(await directory())).available, false);
 });
 
+test('branch comparison pins the merge base and HEAD and scopes a commit-only patch to the project', async () => {
+  const root = await repository();
+  const project = path.join(root, 'nested [project]');
+  const inside = path.join(project, 'inside.txt');
+  const attributes = path.join(project, '.gitattributes');
+  const outside = path.join(root, 'outside.txt');
+  await mkdir(project);
+  await writeFile(inside, 'base text\n');
+  await writeFile(attributes, '*.txt diff=fixture\n');
+  await writeFile(outside, 'outside base\n');
+  await writeFile(path.join(project, 'moved.txt'), 'moved beyond scope\n');
+  git(root, 'add', '.'); git(root, 'commit', '-qm', 'shared ancestor');
+  const mergeBase = git(root, 'rev-parse', 'HEAD').trim();
+  git(root, 'checkout', '-qb', 'topic');
+  await writeFile(inside, 'target-only text\n');
+  git(root, 'add', '.'); git(root, 'commit', '-qm', 'target branch');
+  const targetSha = git(root, 'rev-parse', 'HEAD').trim();
+  git(root, 'update-ref', 'refs/remotes/origin/topic', targetSha);
+  git(root, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/topic');
+  git(root, 'tag', 'release', targetSha);
+  git(root, 'checkout', '-q', 'main');
+  await writeFile(inside, 'committed HEAD text\n');
+  await writeFile(outside, 'outside committed change\n');
+  git(root, 'mv', 'nested [project]/moved.txt', 'moved-outside.txt');
+  git(root, 'add', '.'); git(root, 'commit', '-qm', 'current branch');
+  const headSha = git(root, 'rev-parse', 'HEAD').trim();
+  git(root, 'config', 'diff.external', 'false');
+  git(root, 'config', 'diff.fixture.textconv', 'false');
+  await writeFile(inside, 'staged-only text\n');
+  await writeFile(attributes, '*.txt -diff\n');
+  git(root, 'add', '.');
+  await writeFile(inside, 'working-only text\n');
+  await writeFile(path.join(project, 'untracked.txt'), 'untracked text\n');
+  const index = await readFile(path.join(root, '.git', 'index'));
+  const status = git(root, '--no-optional-locks', 'status', '--porcelain');
+
+  assert.deepEqual(await files.gitBranchRefs(project), ['refs/heads/main', 'refs/heads/topic', 'refs/remotes/origin/topic']);
+  const comparison = await files.gitBranchComparison(project, 'refs/remotes/origin/topic');
+  const { patch, ...revisions } = comparison;
+  assert.deepEqual(revisions, { targetRef: 'refs/remotes/origin/topic', targetSha, mergeBase, headSha, truncated: false });
+  assert.match(patch, /^diff --git a\/inside\.txt b\/inside\.txt/m);
+  assert.match(patch, /-base text\n\+committed HEAD text/);
+  assert.match(patch, /-moved beyond scope/);
+  assert.doesNotMatch(patch, /outside committed change|moved-outside\.txt|target-only|staged-only|working-only|untracked/);
+  assert.equal((await files.gitBranchComparison(project, 'refs/heads/main')).patch, '');
+  assert.equal((await files.gitBranchComparison(project, 'refs/heads/topic')).patch, patch);
+  for (const reference of ['HEAD', '--no-ext-diff', 'refs/tags/release', 'refs/heads/topic~1']) {
+    await assert.rejects(files.gitBranchComparison(project, reference), /full local or remote-tracking/);
+  }
+  for (const reference of ['refs/heads/missing', 'refs/remotes/origin/HEAD']) {
+    await assert.rejects(files.gitBranchComparison(project, reference), /unavailable/);
+  }
+  const unrelated = git(root, 'commit-tree', git(root, 'rev-parse', 'HEAD^{tree}').trim(), '-m', 'unrelated').trim();
+  git(root, 'update-ref', 'refs/heads/unrelated', unrelated);
+  await assert.rejects(files.gitBranchComparison(project, 'refs/heads/unrelated'), /No common ancestor/);
+  assert.deepEqual(await readFile(path.join(root, '.git', 'index')), index);
+  assert.equal(git(root, '--no-optional-locks', 'status', '--porcelain'), status);
+});
+
+test('branch comparison reports a patch beyond the Git output limit as truncated', async () => {
+  const root = await repository();
+  git(root, 'commit', '--allow-empty', '-qm', 'base');
+  git(root, 'branch', 'base');
+  await writeFile(path.join(root, 'large.txt'), 'large patch line\n'.repeat(160_000));
+  git(root, 'add', '.'); git(root, 'commit', '-qm', 'large commit');
+  const comparison = await files.gitBranchComparison(root, 'refs/heads/base');
+  assert.equal(comparison.truncated, true);
+  assert.match(comparison.patch, /^diff --git a\/large\.txt b\/large\.txt/);
+  assert(Buffer.byteLength(comparison.patch) <= 2 * 1024 * 1024);
+});
+
 async function until(condition: () => boolean, timeout = 3000): Promise<void> {
   const deadline = Date.now() + timeout;
   while (!condition()) {

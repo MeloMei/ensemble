@@ -18,6 +18,7 @@ import { ApplicationUpdateNotice, useApplicationUpdates } from './ApplicationUpd
 import { CommandPalette } from './CommandPalette';
 import { FileReviewPanel } from './FileReviewPanel';
 import { WorkspaceFilePane, useWorkspaceFilePane } from './WorkspaceFilePane';
+import { SESSION_TAB_DRAG_TYPE, WorkspacePanes } from './WorkspacePanes';
 import { ProjectRowActions, useProjectManagement } from './ProjectManagement';
 import { SettingsDialog, type SettingsSection } from './SettingsDialog';
 import { AppSelect } from './AppSelect';
@@ -78,6 +79,7 @@ export function App() {
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general');
   const openSettings = (section: SettingsSection = 'general') => { setSettingsSection(section); setDialog('settings'); };
   const [tabMenu, setTabMenu] = useState(false);
+  const [draggedTab, setDraggedTab] = useState<{ workspaceId: string; tabId: string; activeTabId: string | null; secondaryTabId: string | null }>();
   const tabMenuContainer = useRef<HTMLDivElement>(null);
   const activeTabElement = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -157,6 +159,10 @@ export function App() {
   const activeTab = workspace?.tabs.find(tab => tab.id === workspace.activeTabId) ?? workspace?.tabs[0];
   const secondaryTab = workspace?.tabs.find(tab => tab.id === workspace.secondaryTabId && tab.id !== activeTab?.id);
   const activeSession = activeTab?.kind === 'agent' ? sessions.find(session => session.id === activeTab.sessionId) : undefined;
+  const splitBusy = pending.has('split') || pending.has('split-direction') || pending.has('split-ratio');
+  const draggedTabId = draggedTab && draggedTab.workspaceId === workspace?.id && draggedTab.activeTabId === (activeTab?.id ?? null)
+    && workspace?.tabs.some(tab => tab.id === draggedTab.tabId && tab.kind === 'agent') && !splitBusy ? draggedTab.tabId : undefined;
+  useEffect(() => { setDraggedTab(undefined); }, [page, workspace?.id, activeTab?.id]);
   useLayoutEffect(() => {
     const element = activeTabElement.current;
     const strip = element?.parentElement;
@@ -371,7 +377,15 @@ export function App() {
           const tabSession = tab.kind === 'agent' ? sessions.find(item => item.id === tab.sessionId) : undefined;
           const tabTerminal = tab.kind === 'terminal' ? snapshot.terminals.find(item => item.id === tab.terminalId) : undefined;
           const label = tab.kind === 'agent' ? tabSession?.title || providers.find(provider => provider.id === tabSession?.providerId)?.name || tabSession?.providerId || 'Agent' : tab.kind === 'terminal' ? tabTerminal?.title ?? 'Terminal' : tab.url;
-          const tabButton = <button className="tab-select" aria-current={activeTab?.id === tab.id ? 'page' : undefined} title={tabSession ? undefined : label} onClick={() => activateTab(workspace.id, tab)}>
+          const canDrag = Boolean(tabSession && connected && !splitBusy && tab.id !== activeTab?.id);
+          const tabButton = <button className="tab-select" aria-current={activeTab?.id === tab.id ? 'page' : undefined} title={tabSession ? undefined : label}
+            draggable={canDrag} onDragStart={event => {
+              if (!canDrag) { event.preventDefault(); return; }
+              event.dataTransfer.setData(SESSION_TAB_DRAG_TYPE, tab.id);
+              event.dataTransfer.effectAllowed = 'move';
+              setDraggedTab({ workspaceId: workspace.id, tabId: tab.id, activeTabId: workspace.activeTabId, secondaryTabId: workspace.secondaryTabId ?? null });
+            }} onDragEnd={() => setDraggedTab(undefined)}
+            onClick={() => activateTab(workspace.id, tab)}>
             {tab.kind === 'agent' ? <AgentIcon providerId={tabSession?.providerId ?? ''} size={14} /> : tab.kind === 'terminal' ? <TerminalSquare size={14} /> : <Globe size={14} />}
             <span>{label}</span>{tabSession && <AttentionBadge session={tabSession} />}
             {tabSession && ['running', 'waiting_approval', 'waiting_children', 'failed'].includes(tabSession.status) && <i className={`tab-state tab-state-${tabSession.status}`} aria-label={statusLabel(tabSession.status)} />}
@@ -391,7 +405,11 @@ export function App() {
             const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowUp' ? -1 : 1) + items.length) % items.length;
             items[next]?.focus({ preventScroll: true });
           }}><IconButton label={t('app.addTab')} aria-haspopup="menu" aria-expanded={tabMenu} onClick={() => setTabMenu(value => !value)}><Plus size={17} /></IconButton><AnimatePresence>{tabMenu && <><button key="dismiss" className="menu-dismiss" tabIndex={-1} aria-label={t('app.dismissAddMenu')} onClick={() => setTabMenu(false)} /><motion.div key="menu" className="tab-menu" role="menu" aria-label={t('app.addTabMenu')} initial={reducedMotion ? false : "initial"} animate="animate" exit={reducedMotion ? undefined : "exit"} variants={motionPopover}><button role="menuitem" onClick={openAgentDialog}><MessageSquare size={15} />{t('app.newAgentSession')}</button><button role="menuitem" disabled={pending.has('create-terminal')} onClick={openLocalTerminal}><TerminalSquare size={15} />{t('app.openLocalTerminal')}</button><button role="menuitem" onClick={() => { setDialog('preview'); setTabMenu(false); }}><Globe size={15} />{t('app.addPreview')}</button></motion.div></>}</AnimatePresence></div></div>
-          <WorkspacePanes workspace={workspace} secondary={!!secondaryTab} perform={perform} primary={renderTab(activeTab)} other={renderTab(secondaryTab)} />
+          <WorkspacePanes workspace={workspace} active={activeTab} secondary={secondaryTab} renderTab={renderTab} perform={perform}
+            draggedTabId={connected ? draggedTabId : undefined} onDropTab={split => {
+              setDraggedTab(undefined);
+              void perform('split', () => window.workbench.splitWorkspace(workspace.id, { ...split, expectedLayout: { activeTabId: draggedTab!.activeTabId, secondaryTabId: draggedTab!.secondaryTabId } }));
+            }} />
         </div><WorkspaceFilePane id={filePane.id} visible={filePane.visible} width={filePane.width} limit={filePane.limit} onResize={filePane.rememberWidth}>
           <FileReviewPanel key={JSON.stringify([workspace.id, workspace.cwd])} workspace={workspace} onEditProject={connected ? () => projectManagement.open(workspace, 'edit') : undefined} refreshKey={refreshKey} perform={perform} sessions={sessions} onFeedback={activeSession ? text => { const draft = currentDrafts.current[activeSession.id] ?? activeSession.draft ?? { text: '' }; updateDraft(activeSession.id, { ...draft, text: [draft.text, text].filter(Boolean).join('\n\n') }); } : undefined} />
         </WorkspaceFilePane></div> : <FirstTask providers={providers} connected={connected} perform={perform} pending={pending} />)}
@@ -513,21 +531,6 @@ function CodexDialog({ initialCwd, pending, perform, onClose }: { initialCwd: st
   const [prompt, setPrompt] = useState('');
   const busy = pending.has('launch-codex');
   return <Modal title={t('app.codexNew')} subtitle={t('app.codexNewNote')} busy={busy} onClose={onClose}><form onSubmit={event => { event.preventDefault(); if (!cwd.trim() || busy) return; void perform('launch-codex', async () => { await window.workbench.launchCodex({ cwd: cwd.trim(), prompt }); onClose(); }); }}><label>{t('common.projectDirectory')}<DirectoryField value={cwd} onChange={setCwd} perform={perform} /></label><label>{t('app.prefilledTask')}<span className="optional">{t('common.optional')}</span><textarea value={prompt} onChange={event => setPrompt(event.target.value)} rows={4} placeholder={t('app.codexPrompt')} /></label><div className="form-note"><ArrowUpRight size={14} /><span>{t('app.codexHandoffNote')}</span></div><div className="modal-actions"><button type="button" className="button subtle" disabled={busy} onClick={onClose}>{t('common.cancel')}</button><button className="button primary" disabled={!cwd.trim() || busy}><BusyIcon busy={busy}><ArrowUpRight size={14} /></BusyIcon>{t('app.openCodex')}</button></div></form></Modal>;
-}
-
-function WorkspacePanes({ workspace, primary, other, secondary, perform }: { workspace: Workspace; primary: ReactNode; other: ReactNode; secondary: boolean; perform: Perform }) {
-  const { t } = useTranslation('shell');
-  const [ratio, setRatio] = useState(workspace.splitRatio ?? 0.5);
-  const ratioRef = useRef(ratio);
-  const container = useRef<HTMLDivElement>(null);
-  useEffect(() => { ratioRef.current = workspace.splitRatio ?? 0.5; setRatio(ratioRef.current); }, [workspace.id, workspace.splitRatio]);
-  const vertical = workspace.splitDirection === 'vertical';
-  return <div className={`workspace-dual ${vertical ? 'vertical' : ''}`} ref={container}><div className="tab-content" style={secondary ? { flex: `0 0 ${ratio * 100}%` } : undefined}>{primary}</div>{secondary && <><div className="split-handle" role="separator" aria-label={t('app.resizeSplit')} aria-valuemin={20} aria-valuemax={80} aria-valuenow={Math.round(ratio * 100)} aria-orientation={vertical ? 'horizontal' : 'vertical'} tabIndex={0} onPointerDown={event => event.currentTarget.setPointerCapture(event.pointerId)} onPointerMove={event => {
-    if (!event.currentTarget.hasPointerCapture(event.pointerId) || !container.current) return;
-    const rect = container.current.getBoundingClientRect();
-    const next = Math.min(0.8, Math.max(0.2, vertical ? (event.clientY - rect.top) / rect.height : (event.clientX - rect.left) / rect.width));
-    ratioRef.current = next; setRatio(next);
-  }} onPointerUp={event => { event.currentTarget.releasePointerCapture(event.pointerId); void perform('split-ratio', () => window.workbench.splitWorkspace(workspace.id, { tabId: workspace.secondaryTabId, direction: workspace.splitDirection, ratio: ratioRef.current })); }} onKeyDown={event => { if (['ArrowLeft', 'ArrowUp', 'ArrowRight', 'ArrowDown'].includes(event.key)) { event.preventDefault(); const next = Math.max(0.2, Math.min(0.8, ratio + (['ArrowLeft', 'ArrowUp'].includes(event.key) ? -0.05 : 0.05))); void perform('split-ratio', () => window.workbench.splitWorkspace(workspace.id, { tabId: workspace.secondaryTabId, direction: workspace.splitDirection, ratio: next })); } }} /><div className="tab-content">{other}</div></>}</div>;
 }
 
 function HistoryView({ sessions, providers, openSession, perform }: { sessions: Session[]; providers: ProviderInfo[]; openSession: (id: string) => void; perform: Perform }) {

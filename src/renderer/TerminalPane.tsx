@@ -6,6 +6,7 @@ import { CircleStop, Minus, TerminalSquare } from 'lucide-react';
 import type { TerminalInfo } from '../shared/types';
 import { type Perform } from './ui';
 import { useAppearance } from './appearance';
+import { TerminalServicePreviews } from './TerminalServicePreviews';
 import '@xterm/xterm/css/xterm.css';
 
 const terminalColors = {
@@ -107,5 +108,5 @@ export function TerminalPane({ info, cwd, perform, onHide, onStop }: {
     <span className={`terminal-status ${info.status === 'running' ? 'running' : ''}`}><i />{info.status === 'running' ? t('terminal.running') : info.exitCode !== null ? t('terminal.exitedCode', { code: info.exitCode }) : t('terminal.exited')}</span>
     {onHide && <button className="text-button" onClick={onHide}><Minus size={13} />{t('shell:app.hideTerminal')}</button>}
     {info.status === 'running' && onStop && <button className="text-button terminal-stop" onClick={onStop}><CircleStop size={13} />{t('common.stop')}</button>}
-  </div><div className="terminal-surface" ref={container} /></section>;
+  </div><TerminalServicePreviews key={info.id} info={info} perform={perform} /><div className="terminal-surface" ref={container} /></section>;
 }

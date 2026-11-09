@@ -5,7 +5,7 @@ import { z } from 'zod';
 import type {
   AgentMail, ApprovalInput, CollaborationCaller, CreateSessionInput, McpServerConfig, PromptInput, ProviderInfo,
   Session, SessionAttempt, SessionCommandReceipt, SessionContinuationTarget, SessionQueueItem, SessionSettings, SessionSkillAssignment, SessionSkillAssignmentReceipt, SessionStatus, SessionUpdate, Snapshot, TerminalInfo, Workflow,
-  WorkflowInput, Workspace, WorkspaceManagement, WorkspaceTab,
+  WorkflowInput, Workspace, WorkspaceManagement, WorkspaceSplitInput, WorkspaceTab,
 } from '../shared/types';
 import type { LoadedPromptAttachment, ProviderAdapter, ProviderEvent } from './providers/types';
 import { PROMPT_TEXT_LIMIT } from '../shared/types';
@@ -265,6 +265,7 @@ export class WorkbenchEngine {
         workspace.tabs = [];
         workspace.activeTabId = null;
         delete workspace.secondaryTabId;
+        delete workspace.secondaryPlacement;
       }
       workspace.updatedAt = now();
     });
@@ -288,7 +289,10 @@ export class WorkbenchEngine {
   activateTab(workspaceId: string, tabId: string): void {
     const workspace = this.workspace(workspaceId);
     if (!workspace.tabs.some(tab => tab.id === tabId)) throw new Error('标签不存在。');
-    if (workspace.secondaryTabId === tabId) workspace.secondaryTabId = workspace.activeTabId ?? undefined;
+    if (workspace.secondaryTabId === tabId) {
+      workspace.secondaryTabId = workspace.activeTabId ?? undefined;
+      workspace.secondaryPlacement = workspace.secondaryPlacement === 'before' ? 'after' : 'before';
+    }
     workspace.activeTabId = tabId; this.changed();
   }
 
@@ -301,14 +305,21 @@ export class WorkbenchEngine {
     const workspace = this.workspace(workspaceId);
     workspace.tabs = workspace.tabs.filter(tab => tab.id !== tabId);
     if (workspace.activeTabId === tabId) workspace.activeTabId = workspace.tabs.find(tab => tab.id !== workspace.secondaryTabId)?.id ?? workspace.tabs.at(-1)?.id ?? null;
-    if (workspace.secondaryTabId === tabId || workspace.secondaryTabId === workspace.activeTabId) delete workspace.secondaryTabId;
+    if (workspace.secondaryTabId === tabId || workspace.secondaryTabId === workspace.activeTabId) {
+      delete workspace.secondaryTabId;
+      delete workspace.secondaryPlacement;
+    }
     this.changed();
   }
 
-  splitWorkspace(workspaceId: string, input: { tabId?: string; direction?: 'horizontal' | 'vertical'; ratio?: number }): void {
+  splitWorkspace(workspaceId: string, input: WorkspaceSplitInput): void {
     const workspace = this.workspace(workspaceId);
+    if (input.expectedLayout && (input.expectedLayout.activeTabId !== workspace.activeTabId
+      || input.expectedLayout.secondaryTabId !== (workspace.secondaryTabId ?? null))) throw new Error('分屏布局已更改，请重新拖动标签。');
     if (input.tabId !== undefined && (!workspace.tabs.some(tab => tab.id === input.tabId) || input.tabId === workspace.activeTabId)) throw new Error('请选择另一个标签分屏。');
     if (input.ratio !== undefined && (!Number.isFinite(input.ratio) || input.ratio < 0.2 || input.ratio > 0.8)) throw new Error('分屏比例必须在 0.2 到 0.8 之间。');
+    if (input.tabId === undefined || (input.tabId !== workspace.secondaryTabId && input.placement === undefined)) delete workspace.secondaryPlacement;
+    else if (input.placement) workspace.secondaryPlacement = input.placement;
     workspace.secondaryTabId = input.tabId;
     if (input.direction) workspace.splitDirection = input.direction;
     if (input.ratio !== undefined) workspace.splitRatio = input.ratio;

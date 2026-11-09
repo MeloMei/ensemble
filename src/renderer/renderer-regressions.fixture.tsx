@@ -1415,6 +1415,151 @@ const cases: Record<string, () => Promise<void>> = {
     await waitFor(() => open('src/lib') && Boolean(row(target)), 'Returning to the workspace lost its expanded paths');
     assert(opened.length === 1, 'Restoring the tree reopened a file without a click');
   },
+  'BRANCH-COMPARE: Changes opens a read-only comparison with explicit refs and preserves the working diff': async () => {
+    const local = 'refs/heads/review';
+    const remote = 'refs/remotes/origin/review';
+    const currentProject = { ...workspace, id: 'branch-compare-project' };
+    const calls: string[][] = [];
+    const staged = 'Staged changes\ndiff --git a/file.txt b/file.txt\n@@ -1 +1 @@\n-before\n+staged';
+    const targetSha = 'a'.repeat(40), mergeBase = 'b'.repeat(40), headSha = 'c'.repeat(40);
+    let targetUnavailable = false;
+    window.workbench = {
+      listFiles: async () => [], setUnsavedFiles: () => {},
+      gitState: async () => ({ available: true, branch: 'main', changes: [{ path: 'file.txt', status: 'M ', staged: true, additions: 1, deletions: 1 }] }),
+      fileDiff: async () => ({ path: 'file.txt', patch: staged, binary: false, truncated: false, revision: 'staged-1' }),
+      gitBranchRefs: async (id: string) => { calls.push([id]); return [local, remote]; },
+      gitBranchComparison: async (id: string, targetRef: string) => {
+        calls.push([id, targetRef]);
+        if (targetUnavailable) throw new Error('The selected branch reference is unavailable');
+        return { targetRef, targetSha, mergeBase, headSha, patch: targetRef === local ? '+committed content' : '', truncated: targetRef === local };
+      },
+    } as unknown as Window['workbench'];
+    await render(<FileReviewPanel workspace={currentProject} refreshKey="branch" perform={perform} />);
+    await settle();
+    assert(calls.length === 0 && !document.querySelector('.branch-comparison'), 'Opening Files read branch refs before user intent');
+    await act(async () => { document.querySelector<HTMLButtonElement>('.file-view-tabs button:nth-child(2)')!.click(); await tick(); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('.review-change-row .tree-row')!.click(); await tick(); });
+    await settle();
+    const workingDiff = document.querySelector('.review-inspector .review-diff');
+    assert(workingDiff?.textContent?.includes('+staged'), 'The existing staged diff was not available');
+    await click('workspace:files.branchCompare');
+    const compare = async (ref: string) => {
+      await chooseOption(button('workspace:files.branchCompareTarget'), ref);
+      await click('workspace:files.branchCompareRun');
+    };
+    await compare(remote);
+    const dialog = document.querySelector('.branch-comparison')!;
+    assert(dialog.textContent?.includes(translate('workspace:files.branchCompareEmpty')), 'The empty comparison state was missing');
+    const revisions = [...dialog.querySelectorAll('dd code')].map(item => item.textContent);
+    assert(revisions.join(',') === [remote, targetSha, mergeBase, headSha].join(','), 'The selected ref or exact commit range was missing');
+    await compare(local);
+    assert(dialog.querySelector('pre')?.textContent === '+committed content'
+      && dialog.textContent?.includes(translate('workspace:files.branchCompareTruncated')), 'A truncated committed patch looked complete');
+    targetUnavailable = true;
+    await compare(remote);
+    assert(dialog.querySelector('[role=alert]')?.textContent?.includes('reference is unavailable') && !dialog.querySelector('pre'),
+      'A stale patch was presented as the result of a failed comparison');
+    await act(async () => { document.querySelector<HTMLButtonElement>('dialog .modal-heading button')!.click(); await tick(); });
+    assert(document.querySelector('.review-inspector .review-diff') === workingDiff
+      && !document.querySelector('.branch-comparison'), 'Opening or closing comparison replaced the staged diff');
+    assert(JSON.stringify(calls) === JSON.stringify([[currentProject.id], [currentProject.id, remote], [currentProject.id, local], [currentProject.id, remote]]),
+      'Branch comparison used a different workspace or did not send the full selected ref');
+  },
+  'DIFF-NOTES: pointer and keyboard select a range and preserve its text when the diff changes': async () => {
+    const filePath = 'range.ts';
+    const legacyPath = 'legacy.ts';
+    const storageKey = `workbench:review:${workspace.id}`;
+    const previous = localStorage.getItem(storageKey);
+    const legacy = { id: 'old', filePath: legacyPath, lineNumber: 7, body: 'Original single-line note',
+      side: 'original', scope: 'staged', revision: 'legacy', createdAt: 'now' };
+    localStorage.setItem(storageKey, JSON.stringify([legacy]));
+    const patch = ['Working tree changes', 'diff --git a/range.ts b/range.ts', '@@ -4,3 +8,3 @@', ' first', '-old', '+new', ' last',
+      '@@ -20 +30 @@', '-later', '+different'].join('\n');
+    let diff = { path: filePath, patch, binary: false, truncated: false, revision: 'r1' };
+    const git = { available: true, branch: 'fixture', changes: [{ path: filePath, status: 'MM', staged: true }] };
+    const feedback: string[] = [];
+    window.workbench = {
+      listFiles: async () => [], gitState: async () => git,
+      fileDiff: async (_id: string, path: string) => path === legacyPath ? { ...diff, path, revision: 'legacy' } : diff,
+      gitMutate: async () => { diff = { ...diff, revision: 'r2' }; return git; },
+    } as unknown as Window['workbench'];
+    const number = (side: 'original' | 'modified', line: number) => {
+      const control = Array.from(document.querySelectorAll<HTMLButtonElement>(`.review-diff-gutter button[data-side="${side}"]`))
+        .find(button => button.textContent === String(line));
+      assert(control, `Missing ${side} line ${line}`);
+      return control;
+    };
+    const mouse = (type: string, control: HTMLButtonElement) => {
+      const bounds = control.getBoundingClientRect();
+      const x = bounds.x + bounds.width / 2, y = bounds.y + bounds.height / 2;
+      assert(document.elementFromPoint(x, y)?.closest('button') === control, `Line ${control.textContent} is outside the fixture viewport`);
+      return act(async () => {
+        await rendererInput({ type, x, y,
+          button: 'left', buttons: type === 'mouseReleased' ? 0 : 1,
+          ...(type === 'mouseMoved' ? { force: .5 } : { clickCount: 1 }) });
+      });
+    };
+    const editor = () => input('.review-note-editor textarea');
+    const highlight = () => Array.from(document.querySelectorAll('.review-diff-gutter button[aria-pressed="true"]'))
+      .map(row => row.textContent).join(',');
+    const persisted = () => JSON.parse(localStorage.getItem(storageKey) ?? '[]') as Array<{ filePath: string; startLine?: number; lineNumber: number; side: string; scope: string; revision: string }>;
+    const extend = async (line: number) => {
+      const control = number('modified', line);
+      await act(async () => {
+        control.focus();
+        control.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', shiftKey: true, bubbles: true, cancelable: true }));
+        await tick();
+      });
+    };
+    try {
+      await render(<FileReviewPanel workspace={workspace} refreshKey="diff" perform={perform} sessions={[session]} onFeedback={value => feedback.push(value)} />);
+      await settle();
+      await act(async () => { document.querySelector<HTMLButtonElement>('.file-view-tabs button:nth-child(2)')!.click(); await tick(); });
+      await act(async () => { document.querySelector<HTMLButtonElement>(`.review-change-row .tree-row[title="${filePath}"]`)!.click(); await tick(); });
+      await settle();
+      assert(document.querySelector('.review-notes')?.textContent?.includes(`${legacyPath}:7`), 'The saved single-line note did not load');
+      await mouse('mousePressed', number('original', 4));
+      await mouse('mouseReleased', number('original', 4));
+      await waitFor(() => highlight() === '4' && Boolean(document.querySelector('.review-diff .review-note-editor')), 'A click did not open a single-line note');
+      await click('workspace:common.cancel');
+      await act(async () => { number('original', 6).scrollIntoView({ block: 'nearest' }); await tick(); });
+      await mouse('mousePressed', number('original', 4));
+      await mouse('mouseMoved', number('original', 6));
+      await waitFor(() => highlight() === '4,5,6', () => `Dragging highlighted ${highlight()} instead of the original-side range`);
+      await mouse('mouseReleased', number('original', 6));
+      const draft = 'Keep this text while I select lines';
+      assert(editor().closest('form')?.previousElementSibling === number('original', 6).closest('[data-diff-row]'), 'The note editor did not open directly below the selected range');
+      await change(editor(), draft);
+      await extend(8);
+      assert(highlight() === '8,9' && document.activeElement === number('modified', 9) && editor().value === draft, 'Keyboard range selection lost its side, focus, or draft text');
+      await click('workspace:files.stage'); await settle();
+      assert(editor().value === draft && button('workspace:files.saveNote').disabled && highlight() === '', 'A Git mutation attached the draft to a newer diff without reselection');
+      await extend(8);
+      diff = { ...diff, revision: 'r3' };
+      await click('workspace:files.saveNote'); await settle();
+      assert(persisted().length === 1 && editor().value === draft && button('workspace:files.saveNote').disabled,
+        'Saving against a changed revision wrote a note or erased the draft');
+      await extend(8);
+      await click('workspace:files.saveNote'); await settle();
+      const saved = persisted().find(note => note.filePath === filePath);
+      assert(saved?.startLine === 8 && saved.lineNumber === 9 && saved.side === 'modified' && saved.scope === 'working' && saved.revision === 'r3',
+        'The saved range lost its file, side, scope, revision, or endpoints');
+      await click('workspace:files.notesToDraft'); await settle();
+      assert(feedback.length === 1 && feedback[0].includes('File: legacy.ts\nLine: 7') && feedback[0].includes('File: range.ts\nLines: 8-9')
+        && feedback[0].includes('Diff: working; side: modified; revision: r3'), 'Feedback did not retain both exact single-line and range references');
+      diff = { ...diff, truncated: true, revision: 'r4' };
+      await click('workspace:files.reload'); await settle();
+      assert(!document.querySelector('.review-diff-gutter button'), 'Truncated diff still offers note selection');
+      await click('workspace:files.notesToDraft'); await settle();
+      assert(feedback.length === 1, 'An outdated note was added to the agent draft');
+      diff = { ...diff, truncated: false, binary: true, revision: 'r5' };
+      await click('workspace:files.reload'); await settle();
+      assert(!document.querySelector('.review-diff-gutter button') && !document.querySelector('.review-note-editor'), 'Binary diff still offers notes');
+    } finally {
+      if (previous === null) localStorage.removeItem(storageKey);
+      else localStorage.setItem(storageKey, previous);
+    }
+  },
   'UX2-FILES-PR: refreshing the PR view rereads its checks without background GitHub requests': async () => {
     let reviewReads = 0, fileReads = 0;
     window.workbench = {
@@ -2017,6 +2162,23 @@ const cases: Record<string, () => Promise<void>> = {
     await click('workspace:chat.returnLatest');
     await waitFor(() => Boolean(document.querySelector('[data-message-id="message-199"]')), 'Returning to latest did not leave the restored historical window');
   },
+  'TURN-DIFF-01: a folded Trace opens the runtime patch for its own turn': async () => {
+    const output = 'diff --git a/example.txt b/example.txt\n--- a/example.txt\n+++ b/example.txt\n@@ -1 +1 @@\n-before\n+after';
+    const show = (patch: string) => render(chat({ session: { ...session, id: 'turn-diff-session', status: 'completed',
+      messages: [{ id: 'turn-diff-event', text: 'Turn diff', role: 'activity', createdAt: session.createdAt,
+        event: { id: 'native-diff', kind: 'diff', title: 'Turn diff', status: 'completed', output: patch } }],
+    } }));
+    await show(output);
+    await waitFor(() => Boolean(document.querySelector('.trace-diff')), 'The collapsed Trace did not expose its diff action');
+    assert(!document.querySelector('[data-message-id="turn-diff-event"]'), 'The completed Trace did not start folded');
+    await click('workspace:chat.trace.turnDiff');
+    const row = () => document.querySelector('[data-message-id="turn-diff-event"] .process-reveal[data-expanded=true]');
+    await waitFor(() => Boolean(row()?.querySelector('.turn-diff-patch')), 'The turn patch did not open inside its Trace');
+    assert(row()?.querySelector('.removed')?.textContent?.trim() === '-before'
+      && row()?.querySelector('.added')?.textContent?.trim() === '+after', 'The patch did not distinguish deleted and added lines');
+    await show('');
+    assert(row()?.textContent?.includes(translate('workspace:chat.trace.turnDiffEmpty')), 'An empty native update left a stale patch visible');
+  },
   'TRACE-01: live events enter once, update in place and keep manual choices': async () => {
     const tool = (id: string, title: string, status: NonNullable<Message['event']>['status'], input?: string, output?: string): Message => ({
       id, role: 'activity', text: title, createdAt: session.createdAt, event: { id, kind: 'tool', title, status, input, output },
@@ -2311,6 +2473,136 @@ const cases: Record<string, () => Promise<void>> = {
     await waitFor(() => Boolean(document.querySelector('.native-agent-events')), 'An agent outside the tail could not open its details');
     await show({ ...session, queue: [] });
     assert(!document.querySelector('.composer-dock'), 'An empty session displays a composer dock');
+  },
+  'SPLIT-DROP: session tabs preview four edges and preserve physical panes on focus changes': async () => {
+    const primarySession = { ...session, title: 'Primary split session' };
+    const otherSession = { ...session, id: 'other-split-session', title: 'Other split session' };
+    const primary = { kind: 'agent' as const, id: 'primary-split-tab', sessionId: primarySession.id };
+    const other = { kind: 'agent' as const, id: 'other-split-tab', sessionId: otherSession.id };
+    const sideProject = { ...workspace, id: 'side-split-project', name: 'Side project', cwd: '/side-split' };
+    let current: Workspace = { ...workspace, tabs: [primary, other], activeTabId: primary.id, splitRatio: 0.6 };
+    let snapshot: Snapshot = { ...collaborationSnapshot([]), providers: [provider], sessions: [primarySession, otherSession], workspaces: [current, sideProject] };
+    let publish = (_value: Snapshot) => {};
+    const writes: Parameters<Window['workbench']['splitWorkspace']>[] = [];
+    window.workbench = {
+      ...applicationUpdateApi,
+      snapshot: async () => snapshot, subscribe: (listener: typeof publish) => { publish = listener; return () => {}; },
+      getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
+      watchSessions: async () => {}, listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {},
+      splitWorkspace: async (...args: Parameters<Window['workbench']['splitWorkspace']>) => { writes.push(args); },
+      activateTab: async (id: string, tabId: string) => {
+        assert(id === workspace.id && tabId === other.id, 'Focus used the wrong tab');
+        await showWorkspace({ activeTabId: other.id, secondaryTabId: primary.id, secondaryPlacement: 'after' });
+      },
+    } as unknown as Window['workbench'];
+    async function showWorkspace(patch: Partial<Workspace>) {
+      current = { ...current, ...patch };
+      snapshot = { ...snapshot, workspaces: [current, sideProject] };
+      publish(snapshot);
+      await tick();
+    }
+    await render(<App />);
+    await waitFor(() => document.querySelectorAll('.workspace-tabs .tab-select').length === 2, 'Split tabs did not load');
+    const tab = (title: string) => [...document.querySelectorAll<HTMLButtonElement>('.workspace-tabs .tab-select')].find(item => item.textContent?.startsWith(title))!;
+    const source = tab(otherSession.title);
+    const active = tab(primarySession.title);
+    const close = source.parentElement!.querySelector('.tab-close')!;
+    const target = () => document.querySelector<HTMLElement>('.workspace-split-drop');
+    const preview = () => target()?.querySelector<HTMLElement>('.workspace-split-preview');
+    const panes = () => [...document.querySelectorAll<HTMLElement>('.workspace-dual > .tab-content')];
+    const paneTitles = () => panes().map(item => item.querySelector('.chat-toolbar h2')?.textContent).join('|');
+    await act(async () => { await showWorkspace({ secondaryTabId: other.id }); });
+    assert(paneTitles() === `${primarySession.title}|${otherSession.title}`, 'A saved split without placement did not restore the original order');
+    await act(async () => { await showWorkspace({ secondaryTabId: undefined }); });
+    const fire = async (element: Element, type: string, transfer: DataTransfer, x = .5, y = .5) => {
+      const rect = element.getBoundingClientRect();
+      await act(async () => {
+        element.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: transfer,
+          clientX: rect.left + rect.width * x, clientY: rect.top + rect.height * y }));
+        await tick();
+      });
+    };
+    assert(source.draggable && !active.draggable && !(close as HTMLElement).draggable, 'The drag source includes an active or close button');
+    await fire(active, 'dragstart', new DataTransfer());
+    await fire(close, 'dragstart', new DataTransfer());
+    assert(!target(), 'A non-draggable control enabled split drop');
+    const file = new DataTransfer();
+    file.items.add(new File(['fixture'], 'file.txt'));
+    await fire(document.querySelector('.workspace-dual')!, 'dragover', file, .03, .5);
+    assert(!target() && writes.length === 0, 'A file drag was claimed by the split target');
+
+    const canceled = new DataTransfer();
+    await fire(source, 'dragstart', canceled);
+    const paneOverlay = document.createElement('div');
+    Object.assign(paneOverlay.style, { position: 'absolute', inset: '0', zIndex: '12' });
+    panes()[0].append(paneOverlay);
+    const targetBounds = target()!.getBoundingClientRect();
+    assert(document.elementFromPoint(targetBounds.left + targetBounds.width / 2, targetBounds.top + targetBounds.height / 2) === target(), 'Pane overlay blocked the split drop target');
+    paneOverlay.remove();
+    await fire(target()!, 'dragover', canceled, .03, .5);
+    assert(preview()?.dataset.edge === 'left' && writes.length === 0, 'Hover changed the workspace before release');
+    await fire(source, 'dragend', canceled);
+    assert(!target() && writes.length === 0, 'Ending the drag without a drop changed the workspace');
+
+    const stale = new DataTransfer();
+    await fire(source, 'dragstart', stale);
+    await act(async () => { await showWorkspace({ secondaryTabId: other.id }); });
+    await fire(target()!, 'drop', stale, .03, .5);
+    assert(JSON.stringify(writes.at(-1)?.[1].expectedLayout) === JSON.stringify({ activeTabId: primary.id, secondaryTabId: null }), 'Drop did not retain the layout from drag start');
+    writes.length = 0;
+    await act(async () => { await showWorkspace({ secondaryTabId: undefined }); });
+
+    const centered = new DataTransfer();
+    await fire(source, 'dragstart', centered);
+    await fire(target()!, 'dragover', centered);
+    assert(!preview(), 'The center accepted a split preview');
+    await fire(target()!, 'drop', centered);
+    await fire(source, 'dragend', centered);
+    assert(writes.length === 0, 'Dropping in the center changed the workspace');
+
+    for (const [edge, x, y, direction, placement] of [
+      ['right', .97, .5, 'horizontal', 'after'], ['bottom', .5, .97, 'vertical', 'after'],
+      ['top', .5, .03, 'vertical', 'before'], ['left', .03, .5, 'horizontal', 'before'],
+    ] as const) {
+      const transfer = new DataTransfer();
+      const count: number = writes.length;
+      const expectedLayout = { activeTabId: current.activeTabId, secondaryTabId: current.secondaryTabId ?? null };
+      await fire(source, 'dragstart', transfer);
+      await fire(target()!, 'dragover', transfer, x, y);
+      assert(preview()?.dataset.edge === edge && writes.length === count, `The ${edge} preview saved before release`);
+      assert(preview()?.style.getPropertyValue('--split-preview-size') === (placement === 'before' ? '60%' : '40%'), 'Preview did not use the saved physical ratio');
+      await fire(target()!, 'drop', transfer, x, y);
+      assert(!target() && writes.length === count + 1 && JSON.stringify(writes.at(-1)) === JSON.stringify([workspace.id, { tabId: other.id, direction, placement, expectedLayout }]), `The ${edge} drop requested the wrong split`);
+      await act(async () => { await showWorkspace({ secondaryTabId: other.id, secondaryPlacement: placement, splitDirection: direction }); });
+      assert(paneTitles() === (placement === 'before' ? `${otherSession.title}|${primarySession.title}` : `${primarySession.title}|${otherSession.title}`), `The ${edge} drop rendered the wrong physical order`);
+      const [first, second] = panes().map(pane => pane.getBoundingClientRect());
+      assert(direction === 'horizontal' ? first.right <= second.left : first.bottom <= second.top, `The ${edge} drop used the wrong axis`);
+    }
+
+    const unchanged = new DataTransfer();
+    await fire(source, 'dragstart', unchanged);
+    await fire(target()!, 'dragover', unchanged, .03, .5);
+    assert(!preview(), 'The same tab and edge offered a duplicate split');
+    await fire(target()!, 'drop', unchanged, .03, .5);
+    await fire(source, 'dragend', unchanged);
+    assert(Number(writes.length) === 4, 'Dropping the already placed tab wrote a duplicate split');
+
+    const firstPane = panes()[0];
+    const secondPane = panes()[1];
+    await act(async () => { source.click(); await tick(); });
+    assert(panes()[0] === firstPane && panes()[1] === secondPane
+      && paneTitles() === `${otherSession.title}|${primarySession.title}`
+      && source.getAttribute('aria-current') === 'page', 'Focusing the split tab mirrored or remounted the panes');
+    const divider = document.querySelector('[role=separator].split-handle')!;
+    assert(divider.getAttribute('aria-valuenow') === '60', 'Focus changed the physical pane ratio');
+    await act(async () => { divider.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowRight' })); await tick(); });
+    assert(writes.at(-1)?.[1].tabId === primary.id && writes.at(-1)?.[1].ratio === 0.65, 'The divider shortcut stopped updating the same physical ratio');
+
+    for (const id of [sideProject.id, workspace.id]) {
+      await act(async () => { document.querySelector<HTMLButtonElement>(`button[data-workspace-id="${id}"]`)!.click(); await tick(); });
+    }
+    assert(paneTitles() === `${otherSession.title}|${primarySession.title}`
+      && source.getAttribute('aria-current') === 'page', 'Returning to the project changed the saved physical order or focus');
   },
   'FILE-PANE-WIDTH: the divider follows the pointer and restores the preferred width and selected file': async () => {
     const snapshot: Snapshot = { ...collaborationSnapshot([]), sessions: [session], providers: [provider],
@@ -2627,6 +2919,51 @@ const cases: Record<string, () => Promise<void>> = {
     await click('shell:app.addProject'); await change(input('dialog .directory-field input'), '/fixture'); await click('shell:app.createWorkspace');
     await waitFor(() => creations.length === 3, 'The next creation did not start');
     assert(creations[2].mode === 'directory' && creations[2].commandId !== creations[1].commandId, 'An independent creation reused the completed intent');
+  },
+  'TERMINAL-SERVICES: confirmed local listeners open HTTP previews only on click': async () => {
+    if (!navigator.platform.startsWith('Mac')) return;
+    const info = { id: 'service-terminal', workspaceId: workspace.id, title: 'Terminal', status: 'running' as const, exitCode: null, output: '', outputOffset: 0 };
+    const listener = { host: '127.0.0.1' as const, port: 49321 };
+    const previews: [string, string][] = [];
+    let observed = true;
+    let scans = 0;
+    let hold = false;
+    const pendingScan = deferred<typeof listener[]>();
+    window.workbench = {
+      onTerminalOutput: () => () => {}, resizeTerminal: async () => {},
+      listTerminalServices: async (id: string) => {
+        assert(id === info.id, 'Service discovery used a different terminal');
+        scans++;
+        return hold ? pendingScan.promise : observed ? [listener] : [];
+      },
+      createPreview: async (id: string, url: string) => { previews.push([id, url]); },
+    } as unknown as Window['workbench'];
+    const preview = () => document.querySelector<HTMLButtonElement>('.terminal-service-previews button');
+    const clickPreview = async () => act(async () => { preview()!.click(); await tick(); });
+    await render(<TerminalPane info={info} cwd={workspace.cwd} perform={perform} />);
+    await waitFor(() => scans === 1, 'The visible terminal did not request listeners');
+    assert(!preview() && !previews.length, 'One observation showed or opened a preview');
+    await waitFor(() => Boolean(preview()), 'A listener present in two reads did not appear', 250);
+    assert(!previews.length && preview()?.textContent === '127.0.0.1:49321', 'Discovering a listener opened a preview or showed a different address');
+    observed = false;
+    await clickPreview(); await settle();
+    assert(!previews.length && errors.some(error => error.includes(translate('workspace:terminal.listenerUnavailable'))),
+      'A listener that disappeared before the click still opened a preview');
+    observed = true;
+    await clickPreview(); await settle();
+    assert(JSON.stringify(previews) === JSON.stringify([[workspace.id, 'http://127.0.0.1:49321']]), 'Clicking a confirmed listener did not open the loopback HTTP URL');
+    observed = false;
+    await waitFor(() => Boolean(document.querySelector('.terminal-service-closed')), 'A closed listener did not briefly remain visible', 450);
+    assert(!preview(), 'A closed listener still offers a preview');
+
+    const beforePending = scans;
+    hold = true;
+    await waitFor(() => scans > beforePending, 'The next scheduled read did not start', 250);
+    const atUnmount = scans;
+    await render(<div />);
+    await act(async () => { pendingScan.resolve([listener]); await tick(); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 1600)); });
+    assert(scans === atUnmount && previews.length === 1, 'An old terminal view continued discovery or opened a preview');
   },
   'UX2-FILES-TERMINAL: replacement tails and gap recovery stay ordered behind pending terminal writes': async () => {
     const originalOpen = Terminal.prototype.open;
