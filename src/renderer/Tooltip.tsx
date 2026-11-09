@@ -1,10 +1,13 @@
 import { cloneElement, useContext, type ReactElement, type ReactNode } from 'react';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { OverlayContext } from './overlays';
+import { DetailCardProvider } from './ui-kit/DetailCard';
 import './Tooltip.css';
 
 export function TooltipProvider({ children }: { children: ReactNode }) {
-  return <TooltipPrimitive.Provider delayDuration={350} skipDelayDuration={100}>{children}</TooltipPrimitive.Provider>;
+  return <TooltipPrimitive.Provider delayDuration={350} skipDelayDuration={100}>
+    <DetailCardProvider>{children}</DetailCardProvider>
+  </TooltipPrimitive.Provider>;
 }
 
 export function Tooltip({ label, children }: { label: string; children: ReactElement<{ title?: string }> }) {

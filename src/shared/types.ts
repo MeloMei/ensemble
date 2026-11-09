@@ -144,6 +144,7 @@ export interface Session {
   historyCursor?: string;
   historyLoaded?: boolean;
   composerActivity?: SessionComposerActivity;
+  latestTrace?: Pick<ProcessEvent, 'title' | 'status'>;
   queue?: SessionQueueItem[];
   queuePaused?: boolean;
   queueHoldReason?: string;

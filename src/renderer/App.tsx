@@ -22,6 +22,7 @@ import { AppSelect } from './AppSelect';
 import { Tooltip } from './Tooltip';
 import './features.css';
 import { SessionChat } from './SessionChat';
+import { SessionDetailCard } from './SessionDetailCard';
 import { FirstTask } from './FirstTask';
 import { TerminalPane } from './TerminalPane';
 import { WorkflowEditor, WorkflowView } from './WorkflowViews';
@@ -217,14 +218,15 @@ export function App() {
       ?? related.find(session => sessionAttentionReason(session) === 'result') ?? related[0];
     const unread = related.filter(sessionIsUnread).length;
     const selected = page === 'workspace' && workspace?.id === item.id;
-    return <motion.div key={`workspace:${item.id}`} initial={false}
-      layout={reducedMotion || searching ? false : 'position'} transition={{ layout: SPRING_SNAPPY }}
-      className={`workspace-row-entry group-${group}${last ? ' workspace-group-end' : ''}${selected ? ' selected' : ''}`}>
-      <button type="button" data-workspace-id={item.id} aria-current={selected ? 'true' : undefined}
+    const row = <button type="button" data-workspace-id={item.id} aria-current={selected ? 'true' : undefined}
         className={`workspace-row group-${group}${selected ? ' selected' : ''}`} onClick={() => selectWorkspace(item.id)}>
         <span className="workspace-glyph">{current ? <AgentIcon providerId={current.providerId} size={15} /> : <Layers2 size={15} />}{current?.status === 'running' && <i />}</span>
         <span className="workspace-row-body"><span className="workspace-row-title">{item.name}</span>{current && <span className="workspace-row-meta"><Status value={current.status} /><AttentionBadge session={current} /></span>}</span>{unread > 0 && <span className="workspace-unread" aria-label={t('attention.unreadSessions', { count: unread })}>{unread}</span>}<time>{relativeTime(item.updatedAt)}</time>
-      </button>
+      </button>;
+    return <motion.div key={`workspace:${item.id}`} initial={false}
+      layout={reducedMotion || searching ? false : 'position'} transition={{ layout: SPRING_SNAPPY }}
+      className={`workspace-row-entry group-${group}${last ? ' workspace-group-end' : ''}${selected ? ' selected' : ''}`}>
+      {current ? <SessionDetailCard session={current} provider={providers.find(provider => provider.id === current.providerId)} side="right">{row}</SessionDetailCard> : row}
       <ProjectRowActions workspace={item} disabled={!connected || projectManagement.busy} onAction={action => projectManagement.open(item, action)} />
     </motion.div>;
   };
@@ -285,7 +287,16 @@ export function App() {
           const tabSession = tab.kind === 'agent' ? sessions.find(item => item.id === tab.sessionId) : undefined;
           const tabTerminal = tab.kind === 'terminal' ? snapshot.terminals.find(item => item.id === tab.terminalId) : undefined;
           const label = tab.kind === 'agent' ? tabSession?.title || providers.find(provider => provider.id === tabSession?.providerId)?.name || tabSession?.providerId || 'Agent' : tab.kind === 'terminal' ? tabTerminal?.title ?? 'Terminal' : tab.url;
-          return <div key={tab.id} ref={activeTab?.id === tab.id ? activeTabElement : undefined} className={`workspace-tab ${activeTab?.id === tab.id ? 'active' : ''}`}>{activeTab?.id === tab.id && <motion.span className="workspace-tab-active" layoutId={`workspace-tab-${workspace.id}`} transition={reducedMotion ? { duration: 0 } : SPRING_SNAPPY} />}<button className="tab-select" aria-current={activeTab?.id === tab.id ? 'page' : undefined} title={tab.kind === 'agent' ? tabSession?.title : label} onClick={() => void perform('activate-tab', () => window.workbench.activateTab(workspace.id, tab.id))}>{tab.kind === 'agent' ? <AgentIcon providerId={tabSession?.providerId ?? ''} size={14} /> : tab.kind === 'terminal' ? <TerminalSquare size={14} /> : <Globe size={14} />}<span>{label}</span>{tabSession && <AttentionBadge session={tabSession} />}{tabSession && ['running', 'waiting_approval', 'waiting_children', 'failed'].includes(tabSession.status) && <i className={`tab-state tab-state-${tabSession.status}`} aria-label={statusLabel(tabSession.status)} title={statusLabel(tabSession.status)} />}</button><Tooltip label={t('app.closeNamedTab', { label })}><button className="tab-close" aria-label={t('app.closeNamedTab', { label })} title={tab.kind === 'terminal' ? t('app.closeTerminalTab') : t('app.closeTab')} onClick={() => void perform(`close-tab-${tab.id}`, () => window.workbench.closeTab(workspace.id, tab.id))}><X size={11} /></button></Tooltip></div>;
+          const tabButton = <button className="tab-select" aria-current={activeTab?.id === tab.id ? 'page' : undefined} title={tabSession ? undefined : label} onClick={() => void perform('activate-tab', () => window.workbench.activateTab(workspace.id, tab.id))}>
+            {tab.kind === 'agent' ? <AgentIcon providerId={tabSession?.providerId ?? ''} size={14} /> : tab.kind === 'terminal' ? <TerminalSquare size={14} /> : <Globe size={14} />}
+            <span>{label}</span>{tabSession && <AttentionBadge session={tabSession} />}
+            {tabSession && ['running', 'waiting_approval', 'waiting_children', 'failed'].includes(tabSession.status) && <i className={`tab-state tab-state-${tabSession.status}`} aria-label={statusLabel(tabSession.status)} />}
+          </button>;
+          return <div key={tab.id} ref={activeTab?.id === tab.id ? activeTabElement : undefined} className={`workspace-tab ${activeTab?.id === tab.id ? 'active' : ''}`}>
+            {activeTab?.id === tab.id && <motion.span className="workspace-tab-active" layoutId={`workspace-tab-${workspace.id}`} transition={reducedMotion ? { duration: 0 } : SPRING_SNAPPY} />}
+            {tabSession ? <SessionDetailCard session={tabSession} provider={providers.find(provider => provider.id === tabSession.providerId)} side="bottom">{tabButton}</SessionDetailCard> : tabButton}
+            <Tooltip label={t('app.closeNamedTab', { label })}><button className="tab-close" aria-label={t('app.closeNamedTab', { label })} title={tab.kind === 'terminal' ? t('app.closeTerminalTab') : t('app.closeTab')} onClick={() => void perform(`close-tab-${tab.id}`, () => window.workbench.closeTab(workspace.id, tab.id))}><X size={11} /></button></Tooltip>
+          </div>;
         })}</div><div className="tab-add" ref={tabMenuContainer} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setTabMenu(false); }} onKeyDown={event => {
             if (!tabMenu) return;
             if (event.key === 'Escape') { event.preventDefault(); setTabMenu(false); tabMenuContainer.current?.querySelector<HTMLButtonElement>('[aria-haspopup]')?.focus({ preventScroll: true }); return; }
