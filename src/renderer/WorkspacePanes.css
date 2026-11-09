@@ -7,7 +7,7 @@
   overflow: hidden;
 }
 .workspace-dual.vertical { flex-direction: column; }
-.workspace-dual > .tab-content { flex: 1; min-width: 0; min-height: 0; }
+.workspace-dual > .tab-content { flex: 1; min-width: 0; min-height: 0; isolation: isolate; }
 .split-handle {
   position: relative;
   flex: 0 0 5px;

@@ -40,6 +40,7 @@ export interface WorkspaceSplitInput {
   direction?: 'horizontal' | 'vertical';
   ratio?: number;
   placement?: WorkspaceSplitPlacement;
+  expectedLayout?: { activeTabId: string | null; secondaryTabId: string | null };
 }
 
 export interface Workspace {

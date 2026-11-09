@@ -2328,10 +2328,24 @@ const cases: Record<string, () => Promise<void>> = {
 
     const canceled = new DataTransfer();
     await fire(source, 'dragstart', canceled);
+    const paneOverlay = document.createElement('div');
+    Object.assign(paneOverlay.style, { position: 'absolute', inset: '0', zIndex: '12' });
+    panes()[0].append(paneOverlay);
+    const targetBounds = target()!.getBoundingClientRect();
+    assert(document.elementFromPoint(targetBounds.left + targetBounds.width / 2, targetBounds.top + targetBounds.height / 2) === target(), 'Pane overlay blocked the split drop target');
+    paneOverlay.remove();
     await fire(target()!, 'dragover', canceled, .03, .5);
     assert(preview()?.dataset.edge === 'left' && writes.length === 0, 'Hover changed the workspace before release');
     await fire(source, 'dragend', canceled);
     assert(!target() && writes.length === 0, 'Ending the drag without a drop changed the workspace');
+
+    const stale = new DataTransfer();
+    await fire(source, 'dragstart', stale);
+    await act(async () => { await showWorkspace({ secondaryTabId: other.id }); });
+    await fire(target()!, 'drop', stale, .03, .5);
+    assert(JSON.stringify(writes.at(-1)?.[1].expectedLayout) === JSON.stringify({ activeTabId: primary.id, secondaryTabId: null }), 'Drop did not retain the layout from drag start');
+    writes.length = 0;
+    await act(async () => { await showWorkspace({ secondaryTabId: undefined }); });
 
     const centered = new DataTransfer();
     await fire(source, 'dragstart', centered);
@@ -2347,12 +2361,13 @@ const cases: Record<string, () => Promise<void>> = {
     ] as const) {
       const transfer = new DataTransfer();
       const count: number = writes.length;
+      const expectedLayout = { activeTabId: current.activeTabId, secondaryTabId: current.secondaryTabId ?? null };
       await fire(source, 'dragstart', transfer);
       await fire(target()!, 'dragover', transfer, x, y);
       assert(preview()?.dataset.edge === edge && writes.length === count, `The ${edge} preview saved before release`);
       assert(preview()?.style.getPropertyValue('--split-preview-size') === (placement === 'before' ? '60%' : '40%'), 'Preview did not use the saved physical ratio');
       await fire(target()!, 'drop', transfer, x, y);
-      assert(!target() && writes.length === count + 1 && JSON.stringify(writes.at(-1)) === JSON.stringify([workspace.id, { tabId: other.id, direction, placement }]), `The ${edge} drop requested the wrong split`);
+      assert(!target() && writes.length === count + 1 && JSON.stringify(writes.at(-1)) === JSON.stringify([workspace.id, { tabId: other.id, direction, placement, expectedLayout }]), `The ${edge} drop requested the wrong split`);
       await act(async () => { await showWorkspace({ secondaryTabId: other.id, secondaryPlacement: placement, splitDirection: direction }); });
       assert(paneTitles() === (placement === 'before' ? `${otherSession.title}|${primarySession.title}` : `${primarySession.title}|${otherSession.title}`), `The ${edge} drop rendered the wrong physical order`);
       const [first, second] = panes().map(pane => pane.getBoundingClientRect());

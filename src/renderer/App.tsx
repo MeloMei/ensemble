@@ -78,7 +78,7 @@ export function App() {
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general');
   const openSettings = (section: SettingsSection = 'general') => { setSettingsSection(section); setDialog('settings'); };
   const [tabMenu, setTabMenu] = useState(false);
-  const [draggedTab, setDraggedTab] = useState<{ workspaceId: string; tabId: string; activeTabId: string | undefined }>();
+  const [draggedTab, setDraggedTab] = useState<{ workspaceId: string; tabId: string; activeTabId: string | null; secondaryTabId: string | null }>();
   const tabMenuContainer = useRef<HTMLDivElement>(null);
   const activeTabElement = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -157,7 +157,7 @@ export function App() {
   const secondaryTab = workspace?.tabs.find(tab => tab.id === workspace.secondaryTabId && tab.id !== activeTab?.id);
   const activeSession = activeTab?.kind === 'agent' ? sessions.find(session => session.id === activeTab.sessionId) : undefined;
   const splitBusy = pending.has('split') || pending.has('split-direction') || pending.has('split-ratio');
-  const draggedTabId = draggedTab && draggedTab.workspaceId === workspace?.id && draggedTab.activeTabId === activeTab?.id
+  const draggedTabId = draggedTab && draggedTab.workspaceId === workspace?.id && draggedTab.activeTabId === (activeTab?.id ?? null)
     && workspace?.tabs.some(tab => tab.id === draggedTab.tabId && tab.kind === 'agent') && !splitBusy ? draggedTab.tabId : undefined;
   useEffect(() => { setDraggedTab(undefined); }, [page, workspace?.id, activeTab?.id]);
   useLayoutEffect(() => {
@@ -352,7 +352,7 @@ export function App() {
               if (!canDrag) { event.preventDefault(); return; }
               event.dataTransfer.setData(SESSION_TAB_DRAG_TYPE, tab.id);
               event.dataTransfer.effectAllowed = 'move';
-              setDraggedTab({ workspaceId: workspace.id, tabId: tab.id, activeTabId: activeTab?.id });
+              setDraggedTab({ workspaceId: workspace.id, tabId: tab.id, activeTabId: workspace.activeTabId, secondaryTabId: workspace.secondaryTabId ?? null });
             }} onDragEnd={() => setDraggedTab(undefined)}
             onClick={() => void perform('activate-tab', () => window.workbench.activateTab(workspace.id, tab.id))}>
             {tab.kind === 'agent' ? <AgentIcon providerId={tabSession?.providerId ?? ''} size={14} /> : tab.kind === 'terminal' ? <TerminalSquare size={14} /> : <Globe size={14} />}
@@ -377,7 +377,7 @@ export function App() {
           <WorkspacePanes workspace={workspace} active={activeTab} secondary={secondaryTab} renderTab={renderTab} perform={perform}
             draggedTabId={connected ? draggedTabId : undefined} onDropTab={split => {
               setDraggedTab(undefined);
-              void perform('split', () => window.workbench.splitWorkspace(workspace.id, split));
+              void perform('split', () => window.workbench.splitWorkspace(workspace.id, { ...split, expectedLayout: { activeTabId: draggedTab!.activeTabId, secondaryTabId: draggedTab!.secondaryTabId } }));
             }} />
         </div><WorkspaceFilePane id={filePane.id} visible={filePane.visible} width={filePane.width} limit={filePane.limit} onResize={filePane.rememberWidth}>
           <FileReviewPanel key={JSON.stringify([workspace.id, workspace.cwd])} workspace={workspace} onEditProject={connected ? () => projectManagement.open(workspace, 'edit') : undefined} refreshKey={refreshKey} perform={perform} sessions={sessions} onFeedback={activeSession ? text => { const draft = currentDrafts.current[activeSession.id] ?? activeSession.draft ?? { text: '' }; updateDraft(activeSession.id, { ...draft, text: [draft.text, text].filter(Boolean).join('\n\n') }); } : undefined} />

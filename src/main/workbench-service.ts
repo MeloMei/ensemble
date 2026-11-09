@@ -298,6 +298,7 @@ export async function createWorkbenchService(options: {
       direction: z.enum(['horizontal', 'vertical']).optional(),
       ratio: z.number().min(0.2).max(0.8).optional(),
       placement: z.enum(['before', 'after']).optional(),
+      expectedLayout: z.object({ activeTabId: idSchema.nullable(), secondaryTabId: idSchema.nullable() }).strict().optional(),
     }).strict().parse(input)));
     const workspaceCwd = (id: unknown) => engine.workspace(idSchema.parse(id)).cwd;
     handle('workbench:write-file', (_event, id, input) => workspaceFiles.write(workspaceCwd(id), z.object({ path: cwdSchema, content: z.string().max(1_048_576), revision: idSchema }).strict().parse(input)));

@@ -314,6 +314,8 @@ export class WorkbenchEngine {
 
   splitWorkspace(workspaceId: string, input: WorkspaceSplitInput): void {
     const workspace = this.workspace(workspaceId);
+    if (input.expectedLayout && (input.expectedLayout.activeTabId !== workspace.activeTabId
+      || input.expectedLayout.secondaryTabId !== (workspace.secondaryTabId ?? null))) throw new Error('分屏布局已更改，请重新拖动标签。');
     if (input.tabId !== undefined && (!workspace.tabs.some(tab => tab.id === input.tabId) || input.tabId === workspace.activeTabId)) throw new Error('请选择另一个标签分屏。');
     if (input.ratio !== undefined && (!Number.isFinite(input.ratio) || input.ratio < 0.2 || input.ratio > 0.8)) throw new Error('分屏比例必须在 0.2 到 0.8 之间。');
     if (input.tabId === undefined || (input.tabId !== workspace.secondaryTabId && input.placement === undefined)) delete workspace.secondaryPlacement;

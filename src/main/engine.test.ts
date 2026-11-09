@@ -420,6 +420,11 @@ test('split placement and physical pane ratio survive focus changes and restart'
   const current = () => engine.snapshot().workspaces[0];
   const [first, second] = current().tabs;
   engine.splitWorkspace(workspaceId, { tabId: first.id, direction: 'horizontal', placement: 'before', ratio: 0.6 });
+  const layout = structuredClone(current());
+  assert.throws(() => engine.splitWorkspace(workspaceId, { tabId: first.id, direction: 'vertical', expectedLayout: { activeTabId: second.id, secondaryTabId: null } }), /布局已更改/);
+  assert.deepEqual(current(), layout);
+  assert.throws(() => engine.splitWorkspace(workspaceId, { tabId: first.id, expectedLayout: { activeTabId: first.id, secondaryTabId: first.id } }), /布局已更改/);
+  assert.deepEqual(current(), layout);
   engine.activateTab(workspaceId, first.id);
   assert.equal(current().activeTabId, first.id);
   assert.equal(current().secondaryTabId, second.id);
