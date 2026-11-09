@@ -34,6 +34,14 @@ export type WorkspaceTab =
   | { id: string; kind: 'terminal'; terminalId: string }
   | { id: string; kind: 'preview'; url: string };
 
+export type WorkspaceSplitPlacement = 'before' | 'after';
+export interface WorkspaceSplitInput {
+  tabId?: string;
+  direction?: 'horizontal' | 'vertical';
+  ratio?: number;
+  placement?: WorkspaceSplitPlacement;
+}
+
 export interface Workspace {
   id: string;
   name: string;
@@ -42,6 +50,7 @@ export interface Workspace {
   tabs: WorkspaceTab[];
   activeTabId: string | null;
   secondaryTabId?: string;
+  secondaryPlacement?: WorkspaceSplitPlacement;
   splitDirection?: 'horizontal' | 'vertical';
   splitRatio?: number;
   createdAt: string;
@@ -295,7 +304,7 @@ export interface WorkbenchAPI {
   retryWorkflowStep(workflowId: string, stepId: string): Promise<void>;
   cloneWorkflow(workflowId: string): Promise<string>;
   resumeWorkflow(workflowId: string): Promise<void>;
-  splitWorkspace(workspaceId: string, input: { tabId?: string; direction?: 'horizontal' | 'vertical'; ratio?: number }): Promise<void>;
+  splitWorkspace(workspaceId: string, input: WorkspaceSplitInput): Promise<void>;
   writeFile(workspaceId: string, input: { path: string; content: string; revision: string }): Promise<FileContent>;
   gitMutate(workspaceId: string, input: GitMutation): Promise<GitState>;
   gitCommitPreview(workspaceId: string): Promise<GitCommitPreview>;

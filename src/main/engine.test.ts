@@ -412,6 +412,45 @@ test('workspace tabs persist and closing an agent tab does not reopen it on rest
   await reopened.shutdown();
 });
 
+test('split placement and physical pane ratio survive focus changes and restart', async () => {
+  const { engine, cwd, store } = await fixture(async () => {});
+  const workspaceId = await engine.createWorkspace({ name: 'Workspace', cwd });
+  await engine.createSession({ title: 'First', providerId: 'test', cwd });
+  await engine.createSession({ title: 'Second', providerId: 'test', cwd });
+  const current = () => engine.snapshot().workspaces[0];
+  const [first, second] = current().tabs;
+  engine.splitWorkspace(workspaceId, { tabId: first.id, direction: 'horizontal', placement: 'before', ratio: 0.6 });
+  engine.activateTab(workspaceId, first.id);
+  assert.equal(current().activeTabId, first.id);
+  assert.equal(current().secondaryTabId, second.id);
+  assert.equal(current().secondaryPlacement, 'after');
+  assert.equal(current().splitRatio, 0.6);
+  engine.splitWorkspace(workspaceId, { tabId: second.id, direction: 'vertical', ratio: 0.65 });
+  assert.equal(current().secondaryPlacement, 'after');
+  engine.activateTab(workspaceId, second.id);
+  await engine.shutdown();
+
+  const restored = new StateStore(store.path);
+  await restored.load();
+  const split = restored.state.workspaces[0];
+  assert.equal(split.activeTabId, second.id);
+  assert.equal(split.secondaryTabId, first.id);
+  assert.equal(split.secondaryPlacement, 'before');
+  assert.equal(split.splitDirection, 'vertical');
+  assert.equal(split.splitRatio, 0.65);
+  const reopened = new WorkbenchEngine(restored, engine.pluginPath, () => {});
+  assert.throws(() => reopened.splitWorkspace(workspaceId, { tabId: second.id, placement: 'before' }));
+  assert.equal(split.secondaryTabId, first.id);
+  reopened.splitWorkspace(workspaceId, {});
+  assert.equal(split.secondaryPlacement, undefined);
+  reopened.splitWorkspace(workspaceId, { tabId: first.id, direction: 'horizontal' });
+  assert.equal(split.secondaryPlacement, undefined);
+  reopened.activateTab(workspaceId, first.id);
+  assert.equal(split.secondaryPlacement, 'before');
+  assert.equal(split.splitRatio, 0.65);
+  await reopened.shutdown();
+});
+
 test('question answers return structured values and withdrawn requests leave no stale approval', async () => {
   let answered: string | undefined;
   const request = new AbortController();
