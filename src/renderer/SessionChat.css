@@ -69,14 +69,6 @@
 .chat-pane .session-children button:hover { background: var(--selected); color: var(--text); }
 .chat-pane .session-children button > span:not(.status) { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .chat-pane .session-children small { color: var(--dim); font-size: 11px; }
-.chat-pane .conversation-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100%; padding: 40px 28px 70px; text-align: center; }
-.chat-pane .agent-mark { display: grid; place-items: center; width: 46px; height: 46px; margin-bottom: 20px; border: 1px solid var(--border); border-radius: var(--radius-panel); color: var(--muted); background: var(--surface); }
-.chat-pane .conversation-empty-caption { margin-bottom: 9px; color: var(--muted); font-size: 11px; letter-spacing: .3px; }
-.chat-pane .conversation-empty h2 { max-width: 100%; color: var(--text); font-size: clamp(21px, 3.3cqw, 28px); font-weight: 550; line-height: 1.5; letter-spacing: -.6px; overflow-wrap: anywhere; }
-.chat-pane .conversation-empty p { max-width: 390px; margin-top: 13px; color: var(--muted); font-size: 13px; line-height: 1.9; }
-.chat-pane .conversation-project { display: inline-flex; align-items: flex-start; gap: 7px; max-width: 100%; margin-top: 23px; padding: 8px 12px; border-radius: var(--radius-control); color: var(--dim); background: var(--surface); font-size: 11px; line-height: 1.7; }
-.chat-pane .conversation-project svg { margin-top: 2px; }
-.chat-pane .conversation-project code { overflow-wrap: anywhere; }
 .chat-pane .messages { display: flow-root; width: min(100%, 850px); padding: 0 28px; margin: 0 auto; }
 .chat-pane .message { min-width: 0; margin: 0 0 25px; }
 .chat-pane .message-user { display: flex; flex-direction: column; align-items: flex-end; margin-bottom: 30px; }

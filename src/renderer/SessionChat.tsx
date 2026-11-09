@@ -541,25 +541,18 @@ export function SessionChat({
     useClaudeScrollPinning([session.id, history.showingHistory ? null : history.messages,
       history.showingHistory ? null : session.approvals, history.showingHistory ? null : session.status,
       history.showingHistory ? null : session.error], smooth => virtualScroll.current?.scrollToEnd({ behavior: smooth ? 'smooth' : 'auto' }));
-  type ChatRow = { kind: 'message'; key: string; message: Message; index: number } | { kind: 'notices'; key: string } | { kind: 'empty'; key: string };
-  const rowCount = Math.max(messages.length, 1) + 1;
-  const rowAt = (index: number): ChatRow => {
-    const message = messages.at(index);
-    if (message) return { kind: 'message', key: message.id, message, index };
-    return index === 0 ? { kind: 'empty', key: 'conversation-empty' } : { kind: 'notices', key: 'conversation-notices' };
-  };
+  const rowCount = messages.length + 1;
   const messageSource = useRef(messages);
   messageSource.current = messages;
-  const getItemKey = useCallback((index: number) => messageSource.current.at(index)?.id ?? (index === 0 ? 'conversation-empty' : 'conversation-notices'), [messages.structure]);
+  const getItemKey = useCallback((index: number) => messageSource.current.at(index)?.id ?? 'conversation-notices', [messages.structure]);
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: rowCount,
     getScrollElement: () => scroll.current,
     getItemKey,
     estimateSize: index => {
-      const row = rowAt(index);
-      if (row.kind === 'empty') return 360;
-      if (row.kind === 'notices') return 80 + session.approvals.length * 240;
-      return row.message.event ? 45 : Math.min(1000, 100 + Math.ceil(row.message.text.length / 100) * 22);
+      const message = messages.at(index);
+      if (!message) return 80 + session.approvals.length * 240;
+      return message.event ? 45 : Math.min(1000, 100 + Math.ceil(message.text.length / 100) * 22);
     },
     overscan: 5,
     paddingStart: 20,
@@ -722,7 +715,8 @@ export function SessionChat({
         <GitFork size={13} /><span>{child.title}</span><small>{child.providerId}</small><Status value={child.status} />
       </button>)}
     </nav>}
-    {(history.hasMore || history.showingHistory || history.loading || history.error) && <div className="conversation-history-controls">
+    {(!historyReady || history.hasMore || history.showingHistory || history.loading || history.error) && <div className="conversation-history-controls">
+      {!historyReady && <span role="status">{t('chat.loadingHistory')}</span>}
       {history.hasMore && <button disabled={history.loading || !connected} onClick={() => { markUserInput(); void history.loadOlder(); }}>
         {history.loading ? <LoaderCircle className="spin" size={12} /> : <ArrowUp size={12} />}{t('chat.loadEarlier')}
       </button>}
@@ -740,19 +734,11 @@ export function SessionChat({
       }}>
       <div className="virtual-conversation" style={{ height: virtualizer.getTotalSize() }}>
         {virtualizer.getVirtualItems().map(item => {
-          const row = rowAt(item.index);
-          const message = row.kind === 'message' ? row.message : undefined;
           const index = item.index;
+          const message = messages.at(index);
           return <div className="virtual-conversation-row" data-index={item.index} key={item.key} ref={virtualizer.measureElement}
             style={{ transform: `translateY(${item.start}px)` }}>
-          {row.kind === 'empty' ? <div className="conversation-empty">
-          <div className="agent-mark"><PanelsTopLeft size={27} strokeWidth={1.5} /></div>
-          <span className="conversation-empty-caption">{provider?.name ?? session.providerId} · {provider?.available ? t('chat.ready') : t('chat.notReady')}</span>
-          <h2>{session.title}</h2>
-          <p>{history.waitingForTail ? t('chat.loadingHistory') : t('chat.describeTask', { provider: provider?.name ?? session.providerId })}</p>
-          <div className="conversation-project"><FolderOpen size={14} /><code>{session.cwd}</code></div>
-        </div>
-        : message ? <div className="messages"><article data-message-id={message.id}
+          {message ? <div className="messages"><article data-message-id={message.id}
               className={`message message-${message.role}${message.event ? ` message-process${index > 0 && messages.at(index - 1)?.event ? '' : ' process-start'}${messages.at(index + 1)?.event ? '' : ' process-end'}` : ''}${selectedMatch?.id === message.id ? ' conversation-match' : ''}`}>
               {message.event
                 ? <ProcessCard event={message.event} openSession={openSession} openNativeAgent={setNativeAgentId}
@@ -861,7 +847,6 @@ export function SessionChat({
           <span className="composer-shortcut"><CornerDownLeft size={11} />{active || session.queuePaused ? t('chat.queueNextTurn') : t('chat.send')}<span>·</span>{t('chat.newLine')}</span>
         </div>
         {!connected && <p className="composer-note" role="status"><CircleAlert size={13} />{t('chat.connectionUnavailable')}</p>}
-        {!historyReady && <p className="composer-note" role="status"><LoaderCircle className="spin" size={13} />{t('chat.loadingHistory')}</p>}
         {sendError && <p className="composer-note" role="alert"><CircleAlert size={13} />{t('chat.sendUnconfirmed', { error: sendError })}</p>}
         {draftError && <p className="composer-note" role="alert"><CircleAlert size={13} />{t('chat.draftError', { error: draftError })}<button className="text-button" onClick={() => onDraftChange(draft)}>{t('chat.retrySave')}</button></p>}
         {unsupportedAttachments && <p className="composer-note" role="alert"><CircleAlert size={13} />{t(attachmentsSupported ? 'chat.pluginAttachmentKindsRemove' : 'chat.pluginAttachmentsRemove')}</p>}
