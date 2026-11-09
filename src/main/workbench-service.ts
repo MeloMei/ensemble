@@ -249,11 +249,16 @@ export async function createWorkbenchService(options: {
       });
     });
     handle('workbench:activate-tab', (_event, workspaceId: unknown, tabId: unknown) => engine.activateTab(idSchema.parse(workspaceId), idSchema.parse(tabId)));
-    handle('workbench:close-tab', (_event, workspaceId: unknown, tabId: unknown) => {
+    handle('workbench:close-tab', (_event, workspaceId: unknown, tabId: unknown, confirmStop: unknown) => {
       const workspace = engine.workspace(idSchema.parse(workspaceId));
-      const tab = workspace.tabs.find(item => item.id === idSchema.parse(tabId));
-      if (tab?.kind === 'terminal') terminalManager.stop(tab.terminalId);
-      engine.closeTab(workspace.id, idSchema.parse(tabId));
+      const id = idSchema.parse(tabId);
+      const tab = workspace.tabs.find(item => item.id === id);
+      const confirmed = z.boolean().optional().parse(confirmStop);
+      if (tab?.kind === 'terminal' && terminalManager.metadata().some(info => info.id === tab.terminalId && info.status === 'running')) {
+        if (!confirmed) throw new Error('请先确认停止运行中的终端。');
+        terminalManager.stop(tab.terminalId);
+      }
+      engine.closeTab(workspace.id, id);
     });
     handle('workbench:open-session-tab', (_event, workspaceId: unknown, sessionId: unknown) => engine.openSessionTab(idSchema.parse(workspaceId), idSchema.parse(sessionId)));
     handle('workbench:create-terminal', (_event, workspaceId: unknown) => {

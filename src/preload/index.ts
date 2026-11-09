@@ -130,7 +130,7 @@ const api: WorkbenchAPI = {
   },
   updateWorkspace: (id, input) => ipcRenderer.invoke('workbench:update-workspace', id, input),
   activateTab: (workspaceId, tabId) => ipcRenderer.invoke('workbench:activate-tab', workspaceId, tabId),
-  closeTab: (workspaceId, tabId) => ipcRenderer.invoke('workbench:close-tab', workspaceId, tabId),
+  closeTab: (workspaceId, tabId, confirmStop = false) => ipcRenderer.invoke('workbench:close-tab', workspaceId, tabId, confirmStop),
   openSessionTab: (workspaceId, sessionId) => ipcRenderer.invoke('workbench:open-session-tab', workspaceId, sessionId),
   createTerminal: workspaceId => ipcRenderer.invoke('workbench:create-terminal', workspaceId),
   writeTerminal: (id, data) => terminalInputs.write(id, data),
