@@ -1285,6 +1285,93 @@ const cases: Record<string, () => Promise<void>> = {
     assert(writes[1]?.revision === 'mcp-1' && errors.length === 0, `The saved revision was not retained: ${errors.join('; ')}`);
     await click('shell:common.close');
   },
+  'WORKSPACE-FILE-TREE: folders load in place and keep their ancestors, selection and scope': async () => {
+    const path = (value: string, kind: 'file' | 'directory') => ({ path: value, name: value.split('/').at(-1)!, kind, size: 0 });
+    const target = 'src/lib/target.ts';
+    const listings = new Map([
+      ['', [path('src', 'directory'), path('docs', 'directory'), path('README.md', 'file')]],
+      ['src', [path('src/lib', 'directory'), path('src/guide.md', 'file')]],
+      ['src/lib', [...Array.from({ length: 30 }, (_, i) => path(`src/lib/entry-${i}.ts`, 'file')), path(target, 'file')]],
+      ['docs', [path('docs/unloaded.md', 'file')]],
+    ]);
+    const directories: [string, string][] = [];
+    const opened: string[] = [];
+    const secondary = { ...workspace, id: 'tree-secondary', cwd: '/tree-secondary' };
+    window.workbench = {
+      listFiles: async (workspaceId: string, directory: string) => { directories.push([workspaceId, directory]); return listings.get(directory) ?? []; },
+      gitState: async () => ({ available: false }),
+      readFile: async (_id: string, file: string) => { opened.push(file); return { path: file, content: 'example', revision: 'r0', language: 'text', size: 7 }; },
+      setUnsavedFiles: () => {},
+    } as unknown as Window['workbench'];
+    const show = (current: Workspace) => render(<FileReviewPanel key={current.id} workspace={current} refreshKey="tree" perform={perform} />, 'user');
+    const row = (file: string) => document.querySelector<HTMLButtonElement>(`.workspace-tree-scroll button[title="${CSS.escape(file)}"]`);
+    const clickRow = async (file: string) => {
+      const target = row(file);
+      assert(target, `Missing file row ${file}`);
+      await act(async () => { target.click(); await tick(); });
+    };
+    const open = (file: string) => row(file)?.getAttribute('aria-expanded') === 'true';
+    await show(workspace);
+    await waitFor(() => Boolean(row('src')), 'Root directory did not load');
+    assert(JSON.stringify(directories) === JSON.stringify([[workspace.id, '']]), 'Opening Files scanned unopened folders');
+    await clickRow('src');
+    await waitFor(() => Boolean(row('src/lib')), 'Expanding src did not show its children in place');
+    assert(row('docs') && row('README.md') && !row(target), 'Expanding src replaced its siblings or scanned deeper folders');
+    await clickRow('src/lib');
+    await waitFor(() => Boolean(row(target)), 'Expanding the nested folder did not load its files');
+    const scroller = document.querySelector<HTMLElement>('.workspace-tree-scroll')!;
+    const region = row('src')!.nextElementSibling!;
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      assert(getComputedStyle(region).transitionDuration === '0s', 'Reduced motion left a tree animation enabled');
+    } else {
+      assert(getComputedStyle(region).transitionProperty.includes('grid-template-rows'), 'Folder rows have no expand or collapse transition');
+    }
+    await waitFor(() => scroller.scrollHeight - scroller.clientHeight >= 220, 'The expanded rows did not fill the scroll area');
+    await act(async () => { scroller.scrollTop = 220; await tick(); });
+    await waitFor(() => {
+      const viewport = scroller.getBoundingClientRect();
+      const first = row('src')!.getBoundingClientRect();
+      const second = row('src/lib')!.getBoundingClientRect();
+      return scroller.scrollTop > 100 && Math.abs(first.top - viewport.top) < 2 && Math.abs(second.top - first.bottom) < 2;
+    }, 'Scrolled-out ancestor folders did not stick above the nested files');
+    await waitFor(() => {
+      const nested = row('src/lib')!.getBoundingClientRect();
+      return document.elementFromPoint(nested.left + 20, nested.top + 12)?.closest('button') === row('src/lib');
+    }, 'A pinned folder could not be clicked after the expand animation');
+    await act(async () => { scroller.style.flex = '0 0 75px'; await tick(); });
+    assert(getComputedStyle(row('src')!).position === 'sticky' && getComputedStyle(row('src/lib')!).position === 'static', 'Pinned ancestors filled the whole tree in a short file inspector');
+    await act(async () => { scroller.style.removeProperty('flex'); await tick(); });
+    await clickRow('src/lib');
+    assert(!open('src/lib'), 'Clicking a pinned ancestor did not collapse its contents');
+
+    const search = input('.workspace-tree-filter input');
+    const readsBeforeSearch = directories.length;
+    await change(search, 'target');
+    assert(open('src') && open('src/lib') && row(target) && !row('README.md'), 'Searching a loaded file lost its ancestors or kept unrelated rows');
+    assert(document.querySelector('.workspace-tree-scope')?.textContent === translate('workspace:files.filterScope')
+      && directories.length === readsBeforeSearch, 'The search expanded its read scope beyond loaded folders');
+    await clickRow(target);
+    await waitFor(() => document.querySelector<HTMLTextAreaElement>('[data-test-editor]')?.value === 'example', 'Opening a search result did not load the file');
+    const editor = input('[data-test-editor]');
+    await change(search, '');
+    assert(open('src') && !open('src/lib'), 'Clearing search overwrote the folder expansion choices');
+    await clickRow('src/lib');
+    assert(row(target)?.classList.contains('selected'), 'Opening the folder again lost the selected file');
+    await click('workspace:files.changes');
+    await click('workspace:files.files');
+    assert(open('src/lib') && input('[data-test-editor]') === editor, 'Changing views reset the tree or editor');
+    const beforeRefresh = directories.length;
+    await click('workspace:files.refresh');
+    await waitFor(() => directories.length >= beforeRefresh + 3, 'Refreshing did not reread expanded folders');
+    assert(JSON.stringify(directories.slice(beforeRefresh).map(([, directory]) => directory)) === JSON.stringify(['', 'src', 'src/lib'])
+      && row(target)?.classList.contains('selected') && opened.length === 1, 'Refreshing scanned closed folders or reopened the selected file');
+    await show(secondary);
+    await waitFor(() => Boolean(row('src')), 'The second workspace did not load');
+    assert(!open('src'), 'Expansion choices leaked into another workspace');
+    await show(workspace);
+    await waitFor(() => open('src/lib') && Boolean(row(target)), 'Returning to the workspace lost its expanded paths');
+    assert(opened.length === 1, 'Restoring the tree reopened a file without a click');
+  },
   'UX2-FILES-PR: refreshing the PR view rereads its checks without background GitHub requests': async () => {
     let reviewReads = 0, fileReads = 0;
     window.workbench = {
@@ -1346,7 +1433,7 @@ const cases: Record<string, () => Promise<void>> = {
   'HOVER-01: session previews preserve selection and context usage updates in place': async () => {
     const sourceTab = { kind: 'agent' as const, id: 'source-tab', sessionId: session.id };
     const otherTab = { kind: 'agent' as const, id: 'other-tab', sessionId: 'other-session' };
-    const sideProject = { ...workspace, id: 'side-project', name: 'Other project', cwd: '/other' };
+    const sideProject = { ...workspace, id: 'side-project', name: 'Other project', cwd: '/other', pinned: true };
     const source = { ...session, usage: [
       { id: 'context', scope: 'context' as const, source: 'fixture', contextUsed: 56, contextSize: 100, createdAt: 'now' },
       { id: 'turn', scope: 'turn' as const, source: 'fixture', outputTokens: 16, createdAt: 'now' },
@@ -1356,7 +1443,7 @@ const cases: Record<string, () => Promise<void>> = {
       { ...session, id: 'outside', title: 'Outside session', cwd: sideProject.cwd, status: 'waiting_approval', historyLoaded: false,
         approvals: [{ id: 'approval', sessionId: 'outside', title: 'Approve', detail: 'detail', choices: [] }],
         latestTrace: { title: 'npm run build', status: 'running' } },
-    ], providers: [provider], workspaces: [{ ...workspace, tabs: [sourceTab, otherTab], activeTabId: sourceTab.id }, sideProject] };
+    ], providers: [provider], workspaces: [{ ...workspace, pinned: true, tabs: [sourceTab, otherTab], activeTabId: sourceTab.id }, sideProject] };
     let publish = (_value: Snapshot) => {};
     const activations: string[] = [];
     const watches: string[][] = [];
@@ -1388,14 +1475,13 @@ const cases: Record<string, () => Promise<void>> = {
     assert(card()!.getBoundingClientRect().left >= rows[0].getBoundingClientRect().right, 'The project card covered its trigger');
     const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
     assert((getComputedStyle(card()!).animationName === 'none') === reduced, 'The detail card ignored reduced motion');
-    const firstBounds = rows[0].getBoundingClientRect();
-    const nextBounds = rows[1].getBoundingClientRect();
-    const intoNextRow = nextBounds.top > firstBounds.top;
-    await move(rows[1], intoNextRow ? .1 : .9);
-    await move(rows[1], .5);
-    await move(rows[1], intoNextRow ? .8 : .2);
+    const heading = document.querySelector('.new-workspace-button')!;
+    await move(heading);
+    await move(document.querySelector('.sidebar-titlebar')!);
+    await waitFor(() => !card(), 'The pointer did not leave the first project preview');
+    await move(rows[1]);
     await waitFor(() => card()?.querySelector('.ui-detail-card-title')?.textContent === source.title,
-      () => `The adjacent project did not open a new card (${rows[0].dataset.state} → ${rows[1].dataset.state})`, 22);
+      'The adjacent project did not open a new card', 22);
     assert(card()?.dataset.state === 'instant-open', 'The adjacent project waited through the full delay');
     assert(!watches.flat().includes('outside') && !seen.includes('outside') && activations.length === 0, 'Hover activated or marked another session as seen');
 
