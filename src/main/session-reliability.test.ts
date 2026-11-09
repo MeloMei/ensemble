@@ -126,6 +126,10 @@ test('side questions atomically queue one bounded reference without interrupting
     assert.equal(engine.getSession(first.sessionId).queue?.length, 1);
     assert.equal(engine.getSession(second.sessionId).queue?.length, 1);
     assert.equal(engine.getSession(first.sessionId).waitingForProject, true);
+    const archived = await engine.askSideQuestion(sourceId, { ...selected, question: 'Run only after manual resume.' }, 'side-archived');
+    engine.updateSession(archived.sessionId, { archived: true });
+    assert.equal(engine.getSession(archived.sessionId).queuePaused, true);
+    assert.throws(() => engine.setSessionQueuePaused(archived.sessionId, false), /恢复会话/);
     assert.equal(seen.length, 1);
     release();
     await until(() => seen.length === 3);
@@ -138,6 +142,15 @@ test('side questions atomically queue one bounded reference without interrupting
     assert.equal(engine.getSession(first.sessionId).attempts?.length, 1);
     assert.equal(engine.getSession(second.sessionId).attempts?.length, 1);
     assert.equal(engine.getSession(first.sessionId).waitingForProject, undefined);
+    assert.equal(engine.getSession(archived.sessionId).attempts?.length, 0);
+    engine.updateSession(archived.sessionId, { archived: false });
+    assert.equal(engine.getSession(archived.sessionId).queuePaused, true);
+    assert.equal(engine.getSession(archived.sessionId).queue?.length, 1);
+    assert.equal(seen.length, 3);
+    engine.setSessionQueuePaused(archived.sessionId, false);
+    await engine.waitSession(archived.sessionId);
+    assert.equal(seen.length, 4);
+    assert.equal(engine.getSession(archived.sessionId).attempts?.length, 1);
   } finally { release(); await engine.shutdown(); await rm(directory, { recursive: true, force: true }); }
 });
 

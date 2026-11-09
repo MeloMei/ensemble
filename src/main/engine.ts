@@ -101,6 +101,7 @@ function payloadHash(value: unknown): string {
 }
 
 const archivedProjectNotice = '请先在左侧项目列表中恢复已归档的项目。';
+const archivedSideQuestionNotice = '会话已归档，请恢复会话后继续队列。';
 
 export class WorkbenchEngine {
   private adapters = new Map<string, ProviderAdapter>();
@@ -482,12 +483,17 @@ export class WorkbenchEngine {
     }
     const modelChanged = modelId !== session.modelId;
     if (modelChanged && input.settings?.effort === undefined && settings.effort && efforts && !efforts.includes(settings.effort)) delete settings.effort;
+    const updatedAt = new Date(Math.max(Date.now(), Date.parse(session.updatedAt) + 1)).toISOString();
+    if (input.archived === true && session.waitingForProject) {
+      this.holdSessionQueue(session, archivedSideQuestionNotice);
+      this.waitingForProject.delete(id);
+    }
     Object.assign(session, {
       modelId,
       ...(input.settings || input.skillAssignment || modelChanged ? { settings } : {}),
       ...(input.title !== undefined ? { title: input.title.trim() || '新会话' } : {}),
       ...(input.archived !== undefined ? { archived: input.archived } : {}),
-      updatedAt: new Date(Math.max(Date.now(), Date.parse(session.updatedAt) + 1)).toISOString(),
+      updatedAt,
     });
     this.changed();
     if (input.skillAssignment) return { skillIds: [...(session.settings?.skillIds ?? [])], updatedAt: session.updatedAt };
@@ -708,8 +714,11 @@ export class WorkbenchEngine {
     this.assertOpen();
     this.store.atomic(() => {
       const session = this.session(id);
-      if (!paused) this.assertProjectAdmission(session.cwd);
-      if (!paused) this.assertDeliveryResolved(session);
+      if (!paused) {
+        this.assertQueuedSideQuestionCanRun(session);
+        this.assertProjectAdmission(session.cwd);
+        this.assertDeliveryResolved(session);
+      }
       session.queuePaused = paused;
       session.queueHoldReason = paused ? '队列已手动暂停。' : undefined;
       session.updatedAt = now();
@@ -718,11 +727,16 @@ export class WorkbenchEngine {
     if (!paused) this.drainSessionQueue(id);
   }
 
+  private assertQueuedSideQuestionCanRun(session: Session): void {
+    if (session.waitingForProject && session.archived) throw new Error(archivedSideQuestionNotice);
+  }
+
   private drainSessionQueue(id: string): void {
     const session = this.session(id);
     const item = session.queue?.[0];
     if (this.closing || this.active.has(id) || session.queuePaused || !item) { this.waitingForProject.delete(id); return; }
     try {
+      this.assertQueuedSideQuestionCanRun(session);
       if (session.waitingForProject && !this.projectAvailable(session.cwd, id)) { this.waitingForProject.add(id); return; }
       this.waitingForProject.delete(id);
       this.executeSession(id, item.input, { queueItemId: item.id, modelId: item.modelId, settings: item.settings, maxPhysicalTurns: MAX_PHYSICAL_TURNS });
