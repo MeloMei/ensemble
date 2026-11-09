@@ -1,6 +1,7 @@
 import { AgentIcon } from './AgentIcon';
 import { useTranslation } from 'react-i18next';
 import { formatDate, formatNumber, renderDisplayText } from '../shared/i18n';
+import { sessionComposerActivity } from '../shared/session-composer-activity';
 import { validQuestionAnswers } from '../shared/question-answers';
 import { ATTACHMENT_LIMITS, attachmentLimitIssue } from '../shared/prompt-attachments';
 import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type Ref } from 'react';
@@ -408,7 +409,7 @@ function PromptQueue({ session, provider, pending, perform, connected }: Pick<Se
   if (!queue.length) return null;
   const pauseKey = `queue-pause-${session.id}`;
   return <section className="prompt-queue" aria-label={t('chat.queueTitle')}>
-    <header><strong><ListChecks size={14} />{t('chat.queueCount', { count: queue.length })}</strong>
+    <header>
       <button disabled={!connected || pending.has(pauseKey)} onClick={() => void perform(pauseKey,
         () => window.workbench.setSessionQueuePaused(session.id, !session.queuePaused))}>
         {session.queuePaused ? <Play size={12} /> : <Pause size={12} />}{session.queuePaused ? t('chat.resumeQueue') : t('chat.pauseQueue')}
@@ -445,6 +446,58 @@ function PromptQueue({ session, provider, pending, perform, connected }: Pick<Se
         </>}
       </li>;
     })}</ol>
+  </section>;
+}
+
+type DockSection = 'queue' | 'agents' | 'plan';
+
+function ComposerDock({ session, provider, pending, perform, connected, active, children, openSession, openNativeAgent }: Pick<SessionChatProps, 'session' | 'provider' | 'pending' | 'perform' | 'openSession'> & {
+  connected: boolean;
+  active: boolean;
+  children: Session[];
+  openNativeAgent: (id: string, messageId: string) => void;
+}) {
+  const { t } = useTranslation('workspace');
+  const id = useId();
+  const [selection, setSelection] = useState<DockSection | null>();
+  const { plan, agents } = useMemo(() => session.composerActivity ?? sessionComposerActivity(session.messages), [session.composerActivity, session.messages]);
+  const runningChildren = active ? children.filter(child => activeStatuses.has(child.status)) : [];
+  const runningNative = active ? agents : [];
+  const completedSteps = plan.filter(step => step.status === 'completed').length;
+  const queueCount = session.queue?.length ?? 0;
+  const agentCount = runningChildren.length + runningNative.length;
+  const sections = [
+    { id: 'queue', label: t('chat.queueTitle'), count: queueCount ? formatNumber(queueCount) : '', icon: <Clock3 size={14} /> },
+    { id: 'agents', label: t('chat.dockAgents'), count: agentCount ? formatNumber(agentCount) : '', icon: <Users size={14} /> },
+    { id: 'plan', label: t('chat.dockPlan'), count: plan.length ? `${formatNumber(completedSteps)}/${formatNumber(plan.length)}` : '', icon: <ListChecks size={14} /> },
+  ] as const;
+  const available = sections.filter(section => section.count);
+  if (!available.length) return null;
+  const initialSection = queueCount ? 'queue' : active && completedSteps < plan.length ? 'plan' : null;
+  const selected = selection === null || available.some(section => section.id === selection) ? selection : initialSection;
+  const content: Record<DockSection, ReactNode> = {
+    queue: <PromptQueue session={session} provider={provider} pending={pending} perform={perform} connected={connected} />,
+    agents: <ul className="composer-dock-list">
+      {runningChildren.map(child => <li key={child.id}><button onClick={() => openSession(child.id)}><span>{child.title}</span><ArrowUpLeft size={12} /></button><Status value={child.status} /></li>)}
+      {runningNative.map(({ id, nativeId, messageId, title, status }) => <li key={id}>
+        {nativeId ? <button disabled={!connected} onClick={() => openNativeAgent(nativeId, messageId)}><span>{title}</span><ArrowUpLeft size={12} /></button> : <span>{title}</span>}
+        <Status value={status} />
+      </li>)}
+    </ul>,
+    plan: <ol className="composer-dock-list">
+      {plan.map((step, index) => <li key={index}><Status value={step.status} /><span>{step.text}</span></li>)}
+    </ol>,
+  };
+  return <section className="composer-dock" aria-label={t('chat.dockTitle')}>
+    <div className="composer-dock-controls">{available.map(section => <button key={section.id} type="button"
+      id={`${id}-${section.id}-trigger`} aria-expanded={selected === section.id} aria-controls={`${id}-${section.id}`}
+      onClick={() => setSelection(selected === section.id ? null : section.id)}>
+      {section.icon}<span>{section.label}</span><RollingText className="composer-dock-count" value={section.count} animate={connected} />
+    </button>)}</div>
+    {available.map(section => <CollapsibleRegion key={section.id} expanded={selected === section.id} id={`${id}-${section.id}`} onClose={() => {
+      setSelection(null);
+      document.getElementById(`${id}-${section.id}-trigger`)?.focus();
+    }}>{content[section.id]}</CollapsibleRegion>)}
   </section>;
 }
 
@@ -509,6 +562,7 @@ export function SessionChat({
   const unsupportedAttachments = attachments.some(attachment => !supportsAttachment(attachment.kind));
   const [rewindMessage, setRewindMessage] = useState<string>();
   const [nativeAgentId, setNativeAgentId] = useState<string>();
+  const [loadedNativeEvents, setLoadedNativeEvents] = useState<{ id: string; events: ProcessEvent[] }>();
   const composing = useRef(false);
   const sendLock = useRef(false);
   const currentDraft = useRef(draft);
@@ -606,8 +660,20 @@ export function SessionChat({
   };
   const children = sessions.filter(item => item.parentSessionId === session.id);
   const parent = sessions.find(item => item.id === session.parentSessionId);
-  const nativeEvents = nativeAgentId ? history.eventsFor(nativeAgentId) : [];
+  const currentNativeEvents = nativeAgentId ? history.eventsFor(nativeAgentId) : [];
+  const nativeEvents = currentNativeEvents.some(event => event.kind === 'subagent' && event.nativeId === nativeAgentId)
+    ? currentNativeEvents : loadedNativeEvents?.id === nativeAgentId ? loadedNativeEvents?.events ?? [] : [];
   const nativeAgent = nativeEvents.find(event => event.kind === 'subagent' && event.nativeId === nativeAgentId);
+  const openDockAgent = (id: string, messageId: string) => {
+    setNativeAgentId(id);
+    if (history.eventsFor(id).some(event => event.kind === 'subagent' && event.nativeId === id)) return;
+    void perform(`dock-agent-${id}`, async () => {
+      const { messages } = await window.workbench.sessionHistoryAround(session.id, messageId, 100);
+      const events = messages.flatMap(({ event }) => event && (event.nativeId === id || event.parentId === id) ? [event] : []);
+      if (!events.some(event => event.kind === 'subagent' && event.nativeId === id)) throw new Error(t('chat.dockAgentMissing'));
+      setLoadedNativeEvents({ id, events });
+    });
+  };
   const virtualScroll = useRef<{ scrollToEnd(options: { behavior: 'smooth' | 'auto' }): void } | null>(null);
   const { containerRef: scroll, isPinned, showJumpControl, markUserInput, pauseForNavigation, handleScroll, scrollToBottom } =
     useClaudeScrollPinning([session.id, history.showingHistory ? null : history.messages,
@@ -903,7 +969,9 @@ export function SessionChat({
         </section>
       </CollapsibleRegion>
       {!readOnly && <div className="composer-area">
-        {historyReady && <PromptQueue session={session} provider={provider} pending={pending} perform={perform} connected={connected} />}
+        <div className="composer-frame">
+          {historyReady && <ComposerDock session={session} provider={provider} pending={pending} perform={perform}
+            connected={connected} active={active} children={children} openSession={openSession} openNativeAgent={openDockAgent} />}
         <div className={`composer${active ? ' composer-task-active' : ''}`}>
           <AttachmentChips attachments={attachments}
             onRemove={busy || !historyReady ? undefined : id => onDraftChange({ ...currentDraft.current, attachments: attachments.filter(attachment => attachment.id !== id) })} />
@@ -936,6 +1004,7 @@ export function SessionChat({
               {busy ? <LoaderCircle className="spin" size={17} /> : <ArrowUp size={18} />}
             </motion.button></Tooltip>
           </div>
+        </div>
         </div>
         <div className="composer-caption">
           <span className="composer-project" title={session.cwd}><FolderOpen size={12} />{pathName(session.cwd)}</span>

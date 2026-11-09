@@ -143,6 +143,7 @@ export interface Session {
   messageCount?: number;
   historyCursor?: string;
   historyLoaded?: boolean;
+  composerActivity?: SessionComposerActivity;
   queue?: SessionQueueItem[];
   queuePaused?: boolean;
   queueHoldReason?: string;
@@ -328,6 +329,10 @@ export interface ProcessEvent {
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
   nativeId?: string; parentId?: string; input?: string; output?: string; sessionId?: string;
   entries?: { text: string; status: 'pending' | 'running' | 'completed' | 'cancelled' }[];
+}
+export interface SessionComposerActivity {
+  plan: NonNullable<ProcessEvent['entries']>;
+  agents: { messageId: string; id: string; title: string; status: ProcessEvent['status']; nativeId?: string }[];
 }
 export interface UsageRecord {
   id: string; source: string; scope: 'turn' | 'cumulative' | 'context';

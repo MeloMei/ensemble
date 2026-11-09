@@ -96,6 +96,29 @@ test('subscribed projections exclude unrelated history and send only changed mes
     subscribedBytes: Buffer.byteLength(first), deltaBytes: Buffer.byteLength(JSON.stringify(delta)), fullEncodeMs: fullMs, projectionAndEncodeMs: projectionMs }));
 });
 
+test('a watched composer retains live activity beyond the message tail', () => {
+  const watched = session('watched', 101);
+  watched.status = 'running';
+  watched.messages.unshift(
+    { id: 'user', role: 'user', text: 'Run task', createdAt: 'now' },
+    { id: 'plan', role: 'activity', text: 'Plan', createdAt: 'now',
+      event: { id: 'plan', kind: 'plan', title: 'Plan', status: 'running', entries: [{ text: 'Review files', status: 'running' }] } },
+    { id: 'agent', role: 'activity', text: 'Reviewer', createdAt: 'now',
+      event: { id: 'agent', kind: 'subagent', title: 'Reviewer', status: 'running', nativeId: 'reviewer', output: 'PRIVATE_AGENT_OUTPUT' } },
+  );
+  const source = snapshot([watched]);
+  const projection = new SnapshotProjection('backend', 'subscriber', new Set([watched.id]));
+  const replica = new SnapshotReplica();
+  const initial = replica.apply(wire(projection.frame(source, 1)!))!.sessions[0];
+  assert.equal(initial.messages.length, 100);
+  assert.deepEqual(initial.composerActivity?.plan, [{ text: 'Review files', status: 'running' }]);
+  assert.deepEqual(initial.composerActivity?.agents, [{ id: 'agent', messageId: 'agent', nativeId: 'reviewer', title: 'Reviewer', status: 'running' }]);
+  assert(!JSON.stringify(initial).includes('PRIVATE_AGENT_OUTPUT'));
+  watched.messages[2].event!.status = 'completed';
+  const updated = replica.apply(wire(projection.frame(source, 2)!))!.sessions[0];
+  assert.deepEqual(updated.composerActivity?.agents, []);
+});
+
 test('watch resets, missing revisions and backend generations never merge incompatible state', () => {
   const source = snapshot([session('one', 105), session('two', 105)]);
   const projection = new SnapshotProjection('first', 'subscription', new Set(['one']));
