@@ -288,6 +288,7 @@ export interface WorkbenchAPI {
   updateSession(sessionId: string, input: SessionUpdate & { skillAssignment: SessionSkillAssignment }): Promise<SessionSkillAssignmentReceipt>;
   updateSession(sessionId: string, input: SessionUpdate): Promise<void>;
   forkSession(sessionId: string, beforeMessageId?: string): Promise<string>;
+  continueSession(sessionId: string, target: SessionContinuationTarget): Promise<string>;
   rewindSession(sessionId: string, userMessageId: string): Promise<PromptInput>;
   retryWorkflowStep(workflowId: string, stepId: string): Promise<void>;
   cloneWorkflow(workflowId: string): Promise<string>;
@@ -316,6 +317,7 @@ export interface PromptAttachment {
 export const PROMPT_TEXT_LIMIT = 200_000;
 export interface PromptInput { text: string; attachments?: PromptAttachment[] }
 export interface CreateSessionInput { title: string; providerId: string; cwd: string; modelId?: string; commandId?: string; initialDraft?: PromptInput['text'] }
+export interface SessionContinuationTarget { providerId: string; modelId?: string }
 export interface CurrencyBalance { currency: string; total: string; granted: string; toppedUp: string }
 export interface DeepSeekBalance extends CurrencyBalance { balances: CurrencyBalance[]; checkedAt: string }
 export interface SessionSettings { effort?: string; permission?: 'review' | 'read-only'; skillIds?: string[] }

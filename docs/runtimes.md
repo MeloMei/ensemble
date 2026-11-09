@@ -143,6 +143,7 @@ The temporary overlay is removed when the process closes. A missing or unconfirm
 - Image transport support does not mean every selected model can interpret images. ACP context usage, runtime token usage, and official account balances are separate records.
 - DeepSeek balance lookup is user-initiated. Each returned currency is retained separately, without adding or converting balances. Usage counters are not an invoice or proof of zero cost.
 - Claude Code, Pi, Gemini CLI, Cursor Agent, Qoder, OpenCode, and DeepSeek Harness do not currently offer native conversation rewind in Ensemble. A context fork creates an editable draft; it starts a new task only when sent.
+- Use **Continue with another Agent** in a conversation’s toolbar to select a different runtime and model. Ensemble opens a new tab in the same project and puts the visible conversation text in an editable draft. It keeps the original session and queue, and the new session uses the selected runtime’s defaults. Attachments stay in the original session. The new Agent starts only when you send the draft.
 - Read-only file access and collaboration permissions are separate. Role names grant no permissions. External agents keep their own native permission settings; Ensemble records only the tasks, messages, and artifacts they exchange through its MCP interface.
 - A runtime error stops that execution attempt. Collaboration can retry according to the run's configured limits, but a failed attempt is retained. A backend restart interrupts unfinished work and requires explicit recovery.
 
