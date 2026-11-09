@@ -1433,7 +1433,7 @@ const cases: Record<string, () => Promise<void>> = {
   'HOVER-01: session previews preserve selection and context usage updates in place': async () => {
     const sourceTab = { kind: 'agent' as const, id: 'source-tab', sessionId: session.id };
     const otherTab = { kind: 'agent' as const, id: 'other-tab', sessionId: 'other-session' };
-    const sideProject = { ...workspace, id: 'side-project', name: 'Other project', cwd: '/other' };
+    const sideProject = { ...workspace, id: 'side-project', name: 'Other project', cwd: '/other', pinned: true };
     const source = { ...session, usage: [
       { id: 'context', scope: 'context' as const, source: 'fixture', contextUsed: 56, contextSize: 100, createdAt: 'now' },
       { id: 'turn', scope: 'turn' as const, source: 'fixture', outputTokens: 16, createdAt: 'now' },
@@ -1443,7 +1443,7 @@ const cases: Record<string, () => Promise<void>> = {
       { ...session, id: 'outside', title: 'Outside session', cwd: sideProject.cwd, status: 'waiting_approval', historyLoaded: false,
         approvals: [{ id: 'approval', sessionId: 'outside', title: 'Approve', detail: 'detail', choices: [] }],
         latestTrace: { title: 'npm run build', status: 'running' } },
-    ], providers: [provider], workspaces: [{ ...workspace, tabs: [sourceTab, otherTab], activeTabId: sourceTab.id }, sideProject] };
+    ], providers: [provider], workspaces: [{ ...workspace, pinned: true, tabs: [sourceTab, otherTab], activeTabId: sourceTab.id }, sideProject] };
     let publish = (_value: Snapshot) => {};
     const activations: string[] = [];
     const watches: string[][] = [];
@@ -1475,14 +1475,13 @@ const cases: Record<string, () => Promise<void>> = {
     assert(card()!.getBoundingClientRect().left >= rows[0].getBoundingClientRect().right, 'The project card covered its trigger');
     const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
     assert((getComputedStyle(card()!).animationName === 'none') === reduced, 'The detail card ignored reduced motion');
-    const firstBounds = rows[0].getBoundingClientRect();
-    const nextBounds = rows[1].getBoundingClientRect();
-    const intoNextRow = nextBounds.top > firstBounds.top;
-    await move(rows[1], intoNextRow ? .1 : .9);
-    await move(rows[1], .5);
-    await move(rows[1], intoNextRow ? .8 : .2);
+    const heading = document.querySelector('.new-workspace-button')!;
+    await move(heading);
+    await move(document.querySelector('.sidebar-titlebar')!);
+    await waitFor(() => !card(), 'The pointer did not leave the first project preview');
+    await move(rows[1]);
     await waitFor(() => card()?.querySelector('.ui-detail-card-title')?.textContent === source.title,
-      () => `The adjacent project did not open a new card (${rows[0].dataset.state} → ${rows[1].dataset.state})`, 22);
+      'The adjacent project did not open a new card', 22);
     assert(card()?.dataset.state === 'instant-open', 'The adjacent project waited through the full delay');
     assert(!watches.flat().includes('outside') && !seen.includes('outside') && activations.length === 0, 'Hover activated or marked another session as seen');
 
