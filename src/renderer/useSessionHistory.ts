@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Message, ProcessEvent, Session } from '../shared/types';
 import type { SessionHistoryWindow } from '../shared/backend';
+import { conversationPage, indexConversation, type ConversationPage } from './conversation-index';
 
 interface MessagePage {
   messages: Message[]; chat: Message[]; activity: Message[];
   chatPositions: Map<string, number>; activityPositions: Map<string, number>; spill?: boolean;
   nativeEvents: Map<string, ProcessEvent[]>;
+  conversation: ConversationPage;
 }
-function messagePage(messages: Message[], spill = false): MessagePage {
+function messagePage(messages: Message[], spill = false, nextTraceKey?: string): MessagePage {
   const chat = messages.filter(message => message.role !== 'activity' || message.event);
   const activity = messages.filter(message => message.role === 'activity' && !message.event);
   const nativeEvents = new Map<string, ProcessEvent[]>();
@@ -15,10 +17,16 @@ function messagePage(messages: Message[], spill = false): MessagePage {
     for (const id of new Set([event.nativeId, event.parentId])) if (id) nativeEvents.set(id, [...(nativeEvents.get(id) ?? []), event]);
   }
   return {
-    messages, chat, activity, spill, nativeEvents,
+    messages, chat, activity, spill, nativeEvents, conversation: conversationPage(chat, nextTraceKey),
     chatPositions: new Map(chat.map((message, index) => [message.id, index])),
     activityPositions: new Map(activity.map((message, index) => [message.id, index])),
   };
+}
+
+function prependPage(messages: Message[], later: MessagePage[]) {
+  const head = later.find(page => page.chat.length)?.conversation.spans[0];
+  // Reuse the visible group's key if an older page extends it.
+  return [messagePage(messages, false, head?.kind === 'trace' ? head.key : undefined), ...later];
 }
 
 export interface IndexedMessages {
@@ -55,7 +63,10 @@ function indexPages(pages: MessagePage[], kind: 'chat' | 'activity', structure: 
 interface HistoryWindow {
   pages: MessagePage[]; beforeCursor?: string; hasMore: boolean; afterCursor?: string; hasAfter: boolean; version: number;
 }
-interface LiveWindow { older: MessagePage[]; tail: MessagePage; beforeCursor?: string; hasMore: boolean; version: number }
+interface LiveWindow {
+  older: MessagePage[]; tail: MessagePage; beforeCursor?: string; hasMore: boolean; version: number;
+  addedEvents?: ReadonlySet<string>;
+}
 const tailWindow = (session: Session): LiveWindow => ({
   older: [], tail: messagePage(session.messages), beforeCursor: session.historyCursor,
   hasMore: Boolean(session.historyCursor), version: 0,
@@ -67,17 +78,20 @@ function tailOverlap(previous: LiveWindow, session: Session): number {
 }
 
 function replaceTail(previous: LiveWindow, session: Session, reset: boolean): LiveWindow {
-  const incoming = messagePage(session.messages);
   if (reset || !previous.tail.messages.length) return { ...tailWindow(session), version: previous.version + 1 };
   const overlap = tailOverlap(previous, session);
   if (overlap < 0) return { ...tailWindow(session), version: previous.version + 1 };
-  if (overlap === 0) return { ...previous, tail: incoming };
+  // Only suffix insertions in an already observed live window can enter with motion.
+  const incoming = messagePage(session.messages);
+  const addedEvents = new Set(incoming.messages.slice(previous.tail.messages.length - overlap)
+    .filter(message => message.event).map(message => message.id));
+  if (overlap === 0) return { ...previous, tail: incoming, addedEvents };
   const removed = previous.tail.messages.slice(0, overlap);
   const last = previous.older.at(-1);
   const older = last?.spill && last.messages.length + removed.length <= 200
     ? [...previous.older.slice(0, -1), messagePage([...last.messages, ...removed], true)]
     : [...previous.older, messagePage(removed, true)];
-  return { ...previous, older, tail: incoming, version: previous.version + 1 };
+  return { ...previous, older, tail: incoming, addedEvents, version: previous.version + 1 };
 }
 
 export function useSessionHistory(session: Session) {
@@ -144,11 +158,11 @@ export function useSessionHistory(session: Session) {
       if (token !== pageGeneration.current) return;
       if (browsing) setHistory(value => value && {
         ...value, version: value.version + 1,
-        pages: direction === 'before' ? [messagePage(next.messages), ...value.pages] : [...value.pages, messagePage(next.messages)],
+        pages: direction === 'before' ? prependPage(next.messages, value.pages) : [...value.pages, messagePage(next.messages)],
         ...(direction === 'before' ? { beforeCursor: next.beforeCursor, hasMore: next.hasMore } : { afterCursor: next.afterCursor, hasAfter: next.hasAfter ?? false }),
       });
       else setLive(value => value.beforeCursor === cursor ? {
-        ...value, older: [messagePage(next.messages), ...value.older], beforeCursor: next.beforeCursor,
+        ...value, older: prependPage(next.messages, [...value.older, value.tail]).slice(0, -1), beforeCursor: next.beforeCursor,
         hasMore: next.hasMore, version: value.version + 1,
       } : value);
     } catch (failure) {
@@ -162,6 +176,7 @@ export function useSessionHistory(session: Session) {
   const structure = history ? `history:${history.version}` : `live:${live.version}:${live.tail.messages.map(message => message.id).join(',')}`;
   const messages = useMemo(() => indexPages(pages, 'chat', structure), [pages, structure]);
   const activities = useMemo(() => indexPages(pages, 'activity', structure), [pages, structure]);
+  const conversation = useMemo(() => indexConversation(pages.map(page => page.conversation)), [pages]);
   const locateMessage = useCallback(async (id: string) => {
     const token = ++jumpGeneration.current;
     setJumping(false);
@@ -190,7 +205,9 @@ export function useSessionHistory(session: Session) {
     setHistory(undefined);
   }, [cancelJump, invalidatePages]);
   return {
-    messages, activities, beforeCursor: (history ?? live).beforeCursor, hasMore: (history ?? live).hasMore,
+    messages, activities, conversation, addedEvents: live.addedEvents,
+    liveTailStart: history ? -1 : messages.length - live.tail.chat.length,
+    beforeCursor: (history ?? live).beforeCursor, hasMore: (history ?? live).hasMore,
     hasAfter: history?.hasAfter ?? false, loading: paging || jumping, error: jumpError || pageError, showingHistory: Boolean(history),
     waitingForTail: session.historyLoaded === false && !live.tail.messages.length,
     eventsFor: (nativeId: string) => pages.flatMap(page => page.nativeEvents.get(nativeId) ?? []),
