@@ -81,6 +81,7 @@ export interface TerminalInfo {
   output: string;
   outputOffset: number;
 }
+export interface TerminalService { host: '127.0.0.1' | '::1'; port: number }
 
 export interface FileEntry { path: string; name: string; kind: 'file' | 'directory'; size: number }
 export interface FileContent { path: string; content: string; size: number; language: string; revision: string }
@@ -237,6 +238,7 @@ export interface WorkbenchAPI {
   sessionSearch(id: string, query: string, limit?: number): Promise<{ messages: Message[]; truncated: boolean }>;
   searchSessions(query: string, includeArchived?: boolean): Promise<{ sessionIds: string[] }>;
   onTerminalOutput(id: string, listener: (event: TerminalOutputEvent) => void): () => void;
+  listTerminalServices(id: string): Promise<TerminalService[]>;
   markSessionSeen(id: string, revision: number): Promise<void>;
   commandReceipt(commandId: string): Promise<SessionCommandReceipt | undefined>;
   updateQueuedPrompt(id: string, itemId: string, input: PromptInput): Promise<void>;

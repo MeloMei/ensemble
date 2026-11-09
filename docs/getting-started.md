@@ -90,6 +90,8 @@ Within a collaboration, tasks in the same project run in order. Independent, non
 
 The **＋** menu also opens a real local terminal or adds an HTTP/HTTPS preview at `localhost`, `127.0.0.1`, or `[::1]`. Start your project's service before adding its preview. Terminal sessions are not restored after a backend restart.
 
+On macOS, an open terminal can show TCP listeners owned by its shell or child processes. Click a loopback address to open it as an HTTP preview. If the service uses HTTPS, add its URL through the **＋** menu.
+
 The **Files** panel edits real project files. Expand folders in place and search the files and folders you have loaded. Parent folders stay within reach as you scroll through their contents. **Changes** supports local Git operations. **PR / CI** displays remote pull request and check information through a read-only interface. The terminal and file editor have their own access to the machine; an agent's read-only setting does not restrict them.
 
 Drag the file panel’s left edge to resize it, or focus the divider and press the left or right arrow key. Ensemble remembers your preferred width. If the window gets too narrow, it temporarily hides the panel and restores it when there is room.

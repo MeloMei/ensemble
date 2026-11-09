@@ -136,6 +136,7 @@ const api: WorkbenchAPI = {
   writeTerminal: (id, data) => terminalInputs.write(id, data),
   resizeTerminal: (id, columns, rows) => ipcRenderer.invoke('workbench:resize-terminal', id, columns, rows),
   stopTerminal: id => ipcRenderer.invoke('workbench:stop-terminal', id),
+  listTerminalServices: id => ipcRenderer.invoke('workbench:list-terminal-services', id),
   createPreview: (workspaceId, url) => ipcRenderer.invoke('workbench:create-preview', workspaceId, url),
   listFiles: (workspaceId, path) => ipcRenderer.invoke('workbench:list-files', workspaceId, path),
   readFile: (workspaceId, path) => ipcRenderer.invoke('workbench:read-file', workspaceId, path),
