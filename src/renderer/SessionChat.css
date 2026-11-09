@@ -213,10 +213,20 @@
 .chat-pane .activity-dot { width: 4px; height: 4px; margin-top: 8px; border-radius: 50%; background: var(--dim); flex-shrink: 0; }
 .chat-pane .activity-entry time { margin-left: auto; color: var(--dim); font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .chat-pane .composer-area { width: min(100%, 890px); margin: 0 auto; padding: 14px 28px 12px; }
-.chat-pane .prompt-queue { max-height: 230px; overflow: auto; margin-bottom: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--surface); font-size: 11px; }
-.chat-pane .prompt-queue > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); }
-.chat-pane .prompt-queue > header strong, .chat-pane .prompt-queue button, .chat-pane .queue-paused { display: inline-flex; align-items: center; gap: 5px; }
-.chat-pane .prompt-queue > header strong { font-weight: 500; }
+.chat-pane .composer-dock { border-bottom: 1px solid var(--border); background: var(--surface); }
+.chat-pane .composer-dock-controls { display: flex; gap: 4px; overflow: auto; padding: 5px 8px; }
+.chat-pane .composer-dock-controls button { display: flex; align-items: center; flex: 0 0 auto; gap: 6px; min-height: 26px; padding: 4px 7px; border-radius: var(--radius-control); color: var(--muted); font-size: 11px; }
+.chat-pane .composer-dock-controls button:hover { background: var(--hover); color: var(--text); }
+.chat-pane .composer-dock-controls button[aria-expanded=true] { background: var(--selected); color: var(--text); }
+.chat-pane .composer-dock-count { color: var(--accent); }
+.chat-pane .composer-dock-list { display: grid; gap: 5px; max-height: min(180px, 25vh); overflow: auto; margin: 0; padding: 0 12px 9px; list-style: none; font-size: 11px; }
+.chat-pane .composer-dock-list li { display: flex; align-items: baseline; gap: 8px; }
+.chat-pane .composer-dock-list li > span:not(.status) { overflow-wrap: anywhere; }
+.chat-pane .composer-dock-list button { display: inline-flex; align-items: center; gap: 6px; padding: 0; color: var(--accent); text-align: left; }
+.chat-pane .composer-dock-list button svg { flex: 0 0 auto; }
+.chat-pane .prompt-queue { max-height: min(230px, 30vh); overflow: auto; padding: 0 12px 10px; font-size: 11px; }
+.chat-pane .prompt-queue > header { display: flex; align-items: center; justify-content: flex-end; gap: 8px; color: var(--muted); }
+.chat-pane .prompt-queue button, .chat-pane .queue-paused { display: inline-flex; align-items: center; gap: 5px; }
 .chat-pane .prompt-queue button { color: var(--accent); font-size: 11px; }
 .chat-pane .prompt-queue ol { display: grid; gap: 9px; padding-left: 18px; margin: 10px 0 0; }
 .chat-pane .prompt-queue li { padding-left: 3px; }
@@ -227,8 +237,8 @@
 .chat-pane .queue-paused > span { width: 100%; color: var(--dim); }
 .chat-pane .prompt-queue textarea { min-height: 60px; font-size: 12px; }
 .chat-pane .prompt-queue .attachments-strip { margin-top: 5px; }
-.chat-pane .composer { overflow: hidden; border: 1px solid var(--border-strong); border-radius: var(--radius-panel); background: var(--surface-raised); transition: border-color var(--duration-fast) var(--ease-out); }
-.chat-pane .composer:focus-within { border-color: var(--muted); }
+.chat-pane .composer-frame { overflow: hidden; border: 1px solid var(--border-strong); border-radius: var(--radius-panel); background: var(--surface-raised); transition: border-color var(--duration-fast) var(--ease-out); }
+.chat-pane .composer-frame:focus-within { border-color: var(--muted); }
 .chat-pane .composer textarea { display: block; width: 100%; min-height: 82px; max-height: 220px; padding: 14px 16px 8px; border: 0; border-radius: 0; outline: 0; box-shadow: none; color: var(--text); background: none; resize: none; font-size: 14px; line-height: 1.85; field-sizing: content; }
 .chat-pane .composer textarea::placeholder { color: var(--dim); }
 .chat-pane .composer-bottom { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px; padding: 7px 10px 9px; }

@@ -1518,6 +1518,41 @@ const cases: Record<string, () => Promise<void>> = {
     assert(document.querySelector('.conversation-history-controls [role=status]')?.textContent === translate('workspace:chat.loadingHistory'), 'The disabled composer is missing its history loading status');
     await show(queued, { text: 'A newer draft' });
     assert(input('.composer textarea').value === 'A newer draft', 'Queue updates replaced the composer draft');
+    await show({ ...queued, messages: [
+      { id: 'plan', role: 'activity', text: 'Plan', createdAt: session.createdAt,
+        event: { id: 'plan', kind: 'plan', title: 'Plan', status: 'running', entries: [{ text: 'Review output', status: 'running' }] } },
+      { id: 'agent', role: 'activity', text: 'Reviewer', createdAt: session.createdAt,
+        event: { id: 'agent', kind: 'subagent', nativeId: 'reviewer', title: 'Reviewer', status: 'running' } },
+    ] });
+    const composerInput = input('.composer textarea');
+    await click('workspace:chat.editQueued');
+    const queueInput = input('.prompt-queue textarea');
+    await change(queueInput, 'A queue edit in progress');
+    const openDockSection = async (section: string) => {
+      const toggle = document.querySelector<HTMLButtonElement>(`.composer-dock button[aria-controls$="-${section}"]`);
+      assert(toggle, `Missing composer dock section ${section}`);
+      await act(async () => { toggle.click(); await tick(); });
+      const region = document.getElementById(toggle.getAttribute('aria-controls')!);
+      assert(region && !region.inert, `Composer dock section ${section} did not expand`);
+      return region;
+    };
+    assert((await openDockSection('plan')).textContent?.includes('Review output'), 'The current plan is missing from the composer');
+    assert((await openDockSection('agents')).textContent?.includes('Reviewer'), 'A running native agent is missing from the composer');
+    await openDockSection('queue');
+    assert(input('.composer textarea') === composerInput && input('.prompt-queue textarea') === queueInput
+      && queueInput.value === 'A queue edit in progress', 'Switching the dock moved the composer or discarded a queue edit');
+    const agent = { id: 'outside-tail', kind: 'subagent', nativeId: 'outside-native', title: 'Agent outside the tail', status: 'running' } as const;
+    window.workbench.sessionHistoryAround = async (sessionId, messageId) => {
+      assert(sessionId === queued.id && messageId === 'old-agent', 'Opening an older agent used the wrong history anchor');
+      return { messages: [{ id: messageId, role: 'activity', createdAt: session.createdAt, text: agent.title, event: agent }], hasMore: true, hasAfter: true };
+    };
+    await show({ ...queued, composerActivity: { plan: [], agents: [{ ...agent, messageId: 'old-agent' }] } });
+    const oldAgentButton = (await openDockSection('agents')).querySelector('button');
+    assert(oldAgentButton, 'An agent outside the tail has no detail entry');
+    await act(async () => { oldAgentButton.click(); await tick(); });
+    await waitFor(() => Boolean(document.querySelector('.native-agent-events')), 'An agent outside the tail could not open its details');
+    await show({ ...session, queue: [] });
+    assert(!document.querySelector('.composer-dock'), 'An empty session displays a composer dock');
   },
   'UX2-SHELL: add-tab menus remain inside the workspace at both ends of the tab strip': async () => {
     const values = Array.from({ length: 12 }, (_, index) => ({ ...session, id: `menu-${index}`, title: `Independent task ${index}` }));

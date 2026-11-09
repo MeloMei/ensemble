@@ -1,5 +1,6 @@
 import type { SessionStreamPatch, SnapshotFrame } from '../shared/backend';
 import type { Message, Session, Snapshot } from '../shared/types';
+import { sessionComposerActivity } from '../shared/session-composer-activity';
 
 export const SESSION_TAIL_LIMIT = 100;
 type SnapshotFields = Omit<Snapshot, 'sessions'>;
@@ -39,6 +40,7 @@ export class SnapshotProjection {
         attempts: session.attempts?.slice(-32).map(attempt => ({ ...attempt, prompt: '' })),
         draft: watched ? session.draft : undefined,
         queue: watched ? session.queue : session.queue?.map(item => ({ ...item, input: { text: '' } })),
+        composerActivity: watched ? sessionComposerActivity(session.messages) : undefined,
         historyLoaded: watched,
         historyCursor: messages.length && messages.length < session.messages.length ? messages[0].id : undefined };
       const summaryFingerprint = JSON.stringify(summary);
