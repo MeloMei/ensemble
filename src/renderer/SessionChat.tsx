@@ -26,7 +26,7 @@ import { SPRING_SNAPPY } from './vendor/open-claude-ui/ClaudeMotionPresets';
 import { useClaudeScrollPinning } from './vendor/open-claude-ui/useClaudeScrollPinning';
 import { useSessionHistory, type IndexedMessages } from './useSessionHistory';
 import { promptCommandInput, runSessionCommand, runSessionStopCommand } from './session-command';
-import { sessionIsUnread } from './session-attention';
+import { sessionAttentionMessage, sessionIsUnread, type SessionAttentionOpen } from './session-attention';
 import { Tooltip } from './Tooltip';
 import { DetailCard } from './ui-kit/DetailCard';
 import { RollingText } from './ui-kit/RollingText';
@@ -47,6 +47,8 @@ interface SessionChatProps {
   sessions?: Session[];
   openSession: (id: string) => void;
   connected?: boolean;
+  attentionOpen?: SessionAttentionOpen;
+  onAttentionOpened?: (request: SessionAttentionOpen) => void;
 }
 
 type ApprovalProps = Pick<SessionChatProps, 'pending' | 'perform'> & { approval: Approval };
@@ -617,6 +619,7 @@ const traceChoicesBySession = new Map<string, TraceChoices>();
 
 export function SessionChat({
   session, provider, providers, perform, pending, draft, draftError, onDraftChange, sessions = [], openSession, connected = true, readOnly = false,
+  attentionOpen, onAttentionOpened,
 }: SessionChatProps) {
   const { t } = useTranslation('workspace');
   const [showActivity, setShowActivity] = useState(false);
@@ -625,8 +628,9 @@ export function SessionChat({
   const [searchResult, setSearchResult] = useState<{ sessionId: string; query: string; messages: Message[]; truncated: boolean }>();
   const [searchError, setSearchError] = useState('');
   const [searching, setSearching] = useState(false);
-  const [scrollTarget, setScrollTarget] = useState<string>();
-  const [failureTarget, setFailureTarget] = useState<string>();
+  const [scrollTarget, setScrollTarget] = useState<{ id: string; attention?: boolean }>();
+  const [inspectedMessageId, setInspectedMessageId] = useState<string>();
+  const handledAttention = useRef<SessionAttentionOpen>(undefined);
   const [sendError, setSendError] = useState('');
   const [readingAnchor, setReadingAnchor] = useReadingAnchor(session.id);
   const [restoredTrace, setRestoredTrace] = useState(readingAnchor?.kind === 'event' ? readingAnchor : undefined);
@@ -774,14 +778,13 @@ export function SessionChat({
     useClaudeScrollPinning([session.id, history.showingHistory ? null : history.messages,
       history.showingHistory ? null : session.approvals, history.showingHistory ? null : session.status,
       history.showingHistory ? null : session.error], smooth => virtualScroll.current?.scrollToEnd({ behavior: smooth ? 'smooth' : 'auto' }), !readingAnchor);
-  const revealFailure = (trace: TraceEntry) => {
-    const id = trace.lastFailure;
-    if (!id) return;
+  const inspectMessage = (id: string, attention = false) => {
     setRestoredTrace(undefined);
     pauseForNavigation();
-    chooseTrace(trace, true);
-    setFailureTarget(id);
-    setScrollTarget(id);
+    const trace = conversation.at(conversation.rowOfMessage(messages.indexOf(id)));
+    if (trace?.kind === 'trace') chooseTrace(trace, true);
+    setInspectedMessageId(id);
+    setScrollTarget({ id, attention });
   };
   const rowCount = chatRows.length + 1;
   const rowSource = useRef(chatRows);
@@ -832,6 +835,7 @@ export function SessionChat({
   const showLatestOutput = (smooth = false) => {
     cancelReadingRestore();
     setRestoredTrace(undefined);
+    setInspectedMessageId(undefined);
     closeFind();
     history.showLatest();
     scrollToBottom(smooth);
@@ -866,19 +870,59 @@ export function SessionChat({
     void history.locateMessage(selectedMatch.id).then(found => {
       if (active && found) {
         setRevealedMatch({ id: selectedMatch.id, detail: true });
-        setFailureTarget(undefined);
-        setScrollTarget(selectedMatch.id);
+        setInspectedMessageId(undefined);
+        setScrollTarget({ id: selectedMatch.id });
       }
     });
     return () => { active = false; history.cancelJump(); };
   }, [session.id, selectedMatch?.id, history.cancelJump, cancelReadingRestore, pauseForNavigation]);
 
   useLayoutEffect(() => {
+    if (!attentionOpen || attentionOpen === handledAttention.current) return;
+    cancelReadingRestore();
+    if (!history.tailReady) return;
+    if (history.showingHistory) { closeFind(); history.showLatest(); return; }
+
+    const finish = () => {
+      handledAttention.current = attentionOpen;
+      onAttentionOpened?.(attentionOpen);
+    };
+    if (attentionOpen.reason === 'approval') {
+      const approval = session.approvals.find(item => item.id === attentionOpen.approvalId) ?? session.approvals.at(-1);
+      if (approval) {
+        const viewport = scroll.current;
+        const card = viewport?.querySelector<HTMLElement>(`[data-approval-id="${CSS.escape(approval.id)}"]`);
+        if (!viewport || !card) return;
+        pauseForNavigation();
+        markUserInput();
+        virtualizer.scrollToOffset(viewport.scrollTop + card.getBoundingClientRect().top - viewport.getBoundingClientRect().top - 12);
+        card.focus({ preventScroll: true });
+        handleScroll();
+        finish();
+        return;
+      }
+    } else if (session.attention?.revision === attentionOpen.revision) {
+      const target = sessionAttentionMessage(session, attentionOpen.reason);
+      if (target && messages.indexOf(target.id) >= 0) {
+        inspectMessage(target.id, true);
+        finish();
+        return;
+      }
+    }
+    showLatestOutput();
+    finish();
+  });
+
+  useLayoutEffect(() => {
     if (!scrollTarget) return;
-    const index = chatRows.rowOfMessage(messages.indexOf(scrollTarget));
+    const index = chatRows.rowOfMessage(messages.indexOf(scrollTarget.id));
     if (index < 0) return;
     virtualizer.scrollToIndex(index, { align: 'center', behavior: 'auto' });
-    const frame = requestAnimationFrame(() => { handleScroll(); setScrollTarget(undefined); });
+    const frame = requestAnimationFrame(() => {
+      if (scrollTarget.attention) markUserInput();
+      handleScroll();
+      setScrollTarget(undefined);
+    });
     return () => cancelAnimationFrame(frame);
   }, [scrollTarget, chatRows, messages]);
 
@@ -892,7 +936,7 @@ export function SessionChat({
   }, []);
   useEffect(() => {
     const revision = session.attention?.revision;
-    if (!revision || !sessionIsUnread(session) || !connected || !isPinned || history.showingHistory || history.waitingForTail || seenInFlight.current === revision) return;
+    if (attentionOpen || !revision || !sessionIsUnread(session) || !connected || !isPinned || history.showingHistory || history.waitingForTail || seenInFlight.current === revision) return;
     const frame = requestAnimationFrame(() => {
       const element = scroll.current;
       if (!element || document.visibilityState !== 'visible' || !document.hasFocus() || element.clientHeight <= 0
@@ -901,7 +945,7 @@ export function SessionChat({
       void window.workbench.markSessionSeen(session.id, revision).catch(() => { seenInFlight.current = undefined; });
     });
     return () => cancelAnimationFrame(frame);
-  }, [session.attention?.revision, session.attention?.seenRevision, connected, isPinned, history.showingHistory, history.waitingForTail, visibilityRevision, messages, virtualizer.getTotalSize()]);
+  }, [attentionOpen, session.attention?.revision, session.attention?.seenRevision, connected, isPinned, history.showingHistory, history.waitingForTail, visibilityRevision, messages, virtualizer.getTotalSize()]);
 
   useEffect(() => {
     if (!showActivity) return;
@@ -1018,19 +1062,19 @@ export function SessionChat({
             style={{ transform: `translateY(${item.start}px)` }}>
           {row?.kind === 'trace' ? <TraceHeading trace={row} live={row.key === liveTrace?.key}
             addedEvents={addedToLiveTrace} expanded={chatRows.at(item.index + 1)?.kind === 'event'}
-            onToggle={expanded => chooseTrace(row, expanded)} onFailure={() => revealFailure(row)} />
+            onToggle={expanded => chooseTrace(row, expanded)} onFailure={() => { if (row.lastFailure) inspectMessage(row.lastFailure); }} />
         : row?.kind === 'event' && message?.event ? <TraceEventRow message={message} event={message.event}
             end={row.start === row.trace.start + row.trace.length - 1}
             entering={row.trace.key === liveTrace?.key && Boolean(addedEvents?.has(message.id))}
-            matched={selectedMatch?.id === message.id || failureTarget === message.id}
+            matched={selectedMatch?.id === message.id || inspectedMessageId === message.id}
             expanded={traceChoices.events.has(message.id) || (revealedMatchId === message.id && Boolean(revealedMatch?.detail))
-              || (restoredTraceId === message.id && Boolean(restoredTrace?.detailsOpen)) || failureTarget === message.id}
+              || (restoredTraceId === message.id && Boolean(restoredTrace?.detailsOpen)) || inspectedMessageId === message.id}
             onExpandedChange={expanded => {
-              if (!expanded && failureTarget === message.id) setFailureTarget(undefined);
+              if (!expanded && inspectedMessageId === message.id) setInspectedMessageId(undefined);
               chooseEvent(message.id, expanded);
             }} openSession={openSession} openNativeAgent={setNativeAgentId} />
         : message ? <div className="messages"><article data-message-id={message.id}
-              className={`message message-${message.role}${selectedMatch?.id === message.id ? ' conversation-match' : ''}`}>
+              className={`message message-${message.role}${selectedMatch?.id === message.id || inspectedMessageId === message.id ? ' conversation-match' : ''}`}>
               {message.role === 'user'
                   ? <>
                     <div className="user-message">{message.text}
@@ -1065,6 +1109,8 @@ export function SessionChat({
         {history.showingHistory && session.approvals.length > 0 && <p className="pane-note">{t('chat.currentApprovals')}</p>}
         <AnimatePresence initial={false}>
           {session.approvals.map(approval => <motion.div key={approval.id}
+            tabIndex={-1} data-approval-id={approval.id} role="group"
+            aria-label={renderDisplayText(approval.title || t('approval.answerTitle'), approval.titleI18n)}
             initial={reducedMotion ? false : { opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -4 }} transition={transition}>
             <fieldset className="approval-availability" disabled={readOnly || !connected}><ApprovalCard approval={approval} pending={pending} perform={perform} /></fieldset>
