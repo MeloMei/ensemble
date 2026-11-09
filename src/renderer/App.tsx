@@ -15,6 +15,7 @@ import { PRODUCT_NAME } from '../shared/app-identity';
 import ensembleLogo from '../../docs/brand/ensemble-avatar.png';
 import { AgentIcon } from './AgentIcon';
 import { ApplicationUpdateNotice, useApplicationUpdates } from './ApplicationUpdates';
+import { CommandPalette } from './CommandPalette';
 import { FileReviewPanel } from './FileReviewPanel';
 import { ProjectRowActions, useProjectManagement } from './ProjectManagement';
 import { SettingsDialog, type SettingsSection } from './SettingsDialog';
@@ -201,13 +202,21 @@ export function App() {
     });
   }, [perform, selectWorkspace, t]);
   useEffect(() => window.workbench.onFocusSession(openSession), [openSession]);
+  const openAgentDialog = () => { setPage('workspace'); setDialog('agent'); setTabMenu(false); };
+  const openLocalTerminal = () => {
+    if (!workspace || pending.has('create-terminal')) return;
+    setPage('workspace');
+    setTabMenu(false);
+    void perform('create-terminal', () => window.workbench.createTerminal(workspace.id));
+  };
+  const showFiles = () => { setPage('workspace'); setRightPane(true); };
   const renderTab = (tab?: WorkspaceTab) => {
     const tabSession = tab?.kind === 'agent' ? sessions.find(item => item.id === tab.sessionId) : undefined;
     const tabTerminal = tab?.kind === 'terminal' ? snapshot?.terminals.find(item => item.id === tab.terminalId) : undefined;
     if (tabSession && workspace) return <SessionChat key={tabSession.id} session={tabSession} sessions={sessions} openSession={openSession} connected={connected} provider={providers.find(item => item.id === tabSession.providerId)} providers={providers} perform={perform} pending={pending} draft={drafts[tabSession.id] ?? tabSession.draft ?? { text: '' }} draftError={draftErrors[tabSession.id]} onDraftChange={(value, expected) => updateDraft(tabSession.id, value, expected)} />;
     if (tabTerminal && workspace) return <TerminalPane key={tabTerminal.id} info={tabTerminal} cwd={workspace.cwd} perform={perform} />;
     if (tab?.kind === 'preview') return <PreviewPane key={tab.id} tab={tab} />;
-    return <EmptyState icon={<Layers2 size={28} />} title={t('app.projectReady')} action={<div className="empty-actions"><button className="button" onClick={() => setDialog('agent')}><Plus size={14} />{t('app.addAgent')}</button><button className="button subtle" disabled={pending.has('create-terminal')} onClick={() => workspace && void perform('create-terminal', () => window.workbench.createTerminal(workspace.id))}><TerminalSquare size={14} />{t('app.openTerminal')}</button></div>}>{t('app.projectReadyNote')}</EmptyState>;
+    return <EmptyState icon={<Layers2 size={28} />} title={t('app.projectReady')} action={<div className="empty-actions"><button className="button" onClick={openAgentDialog}><Plus size={14} />{t('app.addAgent')}</button><button className="button subtle" disabled={pending.has('create-terminal')} onClick={openLocalTerminal}><TerminalSquare size={14} />{t('app.openTerminal')}</button></div>}>{t('app.projectReadyNote')}</EmptyState>;
   };
 
   const workspaceRow = (item: Workspace, group: string, last: boolean) => {
@@ -272,6 +281,16 @@ export function App() {
 
   return <div className="workbench">
     <aside className="workspace-sidebar"><div className="sidebar-titlebar"><img className="brand-symbol" src={ensembleLogo} alt="" /><span>{PRODUCT_NAME}<span className="brand-period">.</span></span></div>
+      <CommandPalette projects={workspaces} sessions={sessions} providers={providers} onSelectProject={selectWorkspace} onSelectSession={openSession}
+        actions={[
+          { id: 'new-project', label: t('commandPalette.newProject'), keywords: t('app.newWorkspace'), icon: <Plus size={16} aria-hidden="true" />, run: () => setDialog('workspace') },
+          ...(workspace ? [
+            { id: 'new-agent', label: t('app.newAgentSession'), icon: <MessageSquare size={16} aria-hidden="true" />, run: openAgentDialog },
+            ...(!pending.has('create-terminal') ? [{ id: 'open-terminal', label: t('app.openLocalTerminal'), icon: <TerminalSquare size={16} aria-hidden="true" />, run: openLocalTerminal }] : []),
+            { id: 'open-files', label: t('commandPalette.openFiles'), keywords: t('app.showFiles'), icon: <PanelRight size={16} aria-hidden="true" />, run: showFiles },
+          ] : []),
+          { id: 'settings', label: t('preferences.open'), icon: <Settings2 size={16} aria-hidden="true" />, run: () => openSettings() },
+        ]} />
       <nav className="sidebar-navigation" aria-label={t('app.navigation')}><button className="new-workspace-button" onClick={() => setDialog('workspace')}><Plus size={17} /><span>{t('app.newWorkspace')}</span></button><button className={page === 'workspace' ? 'selected' : ''} aria-current={page === 'workspace' ? 'page' : undefined} onClick={() => setPage('workspace')}><LayoutGrid size={17} /><span>{t('app.workspace')}</span><small>{workspaces.length || ''}</small></button><button className={page === 'history' ? 'selected' : ''} aria-current={page === 'history' ? 'page' : undefined} onClick={() => setPage('history')}><History size={17} />{t('app.history')}</button><button className={page === 'collaboration' ? 'selected' : ''} aria-current={page === 'collaboration' ? 'page' : undefined} onClick={() => setPage('collaboration')}><Network size={17} />{t('app.collaboration')}</button><button className={page === 'workflows' ? 'selected' : ''} aria-current={page === 'workflows' ? 'page' : undefined} onClick={() => setPage('workflows')}><GitBranch size={17} />{t('app.workflows')}</button></nav>
       <motion.div className="workspace-sidebar-scroll" layoutScroll>{sidebarItems}</motion.div>
       <div className={`sidebar-connection connection-${connected ? 'connected' : connection.status}`}><i /><span>{connected ? t('app.connected') : t(`connection.${connection.status}`)}</span><small>{t('app.thisMachine')}</small></div><footer className="sidebar-footer"><button onClick={() => setDialog('workspace')}><Plus size={15} />{t('app.addProject')}</button><IconButton label={t('preferences.open')} onClick={() => openSettings()}><Settings2 size={16} /></IconButton></footer>
@@ -306,7 +325,7 @@ export function App() {
             const index = items.indexOf(document.activeElement as HTMLButtonElement);
             const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowUp' ? -1 : 1) + items.length) % items.length;
             items[next]?.focus({ preventScroll: true });
-          }}><IconButton label={t('app.addTab')} aria-haspopup="menu" aria-expanded={tabMenu} onClick={() => setTabMenu(value => !value)}><Plus size={17} /></IconButton><AnimatePresence>{tabMenu && <><button key="dismiss" className="menu-dismiss" tabIndex={-1} aria-label={t('app.dismissAddMenu')} onClick={() => setTabMenu(false)} /><motion.div key="menu" className="tab-menu" role="menu" aria-label={t('app.addTabMenu')} initial={reducedMotion ? false : "initial"} animate="animate" exit={reducedMotion ? undefined : "exit"} variants={motionPopover}><button role="menuitem" onClick={() => { setDialog('agent'); setTabMenu(false); }}><MessageSquare size={15} />{t('app.newAgentSession')}</button><button role="menuitem" disabled={pending.has('create-terminal')} onClick={() => { setTabMenu(false); void perform('create-terminal', () => window.workbench.createTerminal(workspace.id)); }}><TerminalSquare size={15} />{t('app.openLocalTerminal')}</button><button role="menuitem" onClick={() => { setDialog('preview'); setTabMenu(false); }}><Globe size={15} />{t('app.addPreview')}</button></motion.div></>}</AnimatePresence></div></div>
+          }}><IconButton label={t('app.addTab')} aria-haspopup="menu" aria-expanded={tabMenu} onClick={() => setTabMenu(value => !value)}><Plus size={17} /></IconButton><AnimatePresence>{tabMenu && <><button key="dismiss" className="menu-dismiss" tabIndex={-1} aria-label={t('app.dismissAddMenu')} onClick={() => setTabMenu(false)} /><motion.div key="menu" className="tab-menu" role="menu" aria-label={t('app.addTabMenu')} initial={reducedMotion ? false : "initial"} animate="animate" exit={reducedMotion ? undefined : "exit"} variants={motionPopover}><button role="menuitem" onClick={openAgentDialog}><MessageSquare size={15} />{t('app.newAgentSession')}</button><button role="menuitem" disabled={pending.has('create-terminal')} onClick={openLocalTerminal}><TerminalSquare size={15} />{t('app.openLocalTerminal')}</button><button role="menuitem" onClick={() => { setDialog('preview'); setTabMenu(false); }}><Globe size={15} />{t('app.addPreview')}</button></motion.div></>}</AnimatePresence></div></div>
           <WorkspacePanes workspace={workspace} secondary={!!secondaryTab} perform={perform} primary={renderTab(activeTab)} other={renderTab(secondaryTab)} />
         </div><motion.div className="file-panel-transition" initial={false} animate={{ width: rightPane ? 'var(--file-width)' : 0, opacity: rightPane ? 1 : 0 }} transition={reducedMotion ? { duration: 0 } : SPRING_SNAPPY} inert={!rightPane} aria-hidden={!rightPane}><FileReviewPanel key={JSON.stringify([workspace.id, workspace.cwd])} workspace={workspace} onEditProject={connected ? () => projectManagement.open(workspace, 'edit') : undefined} refreshKey={refreshKey} perform={perform} sessions={sessions} onFeedback={activeSession ? text => { const draft = currentDrafts.current[activeSession.id] ?? activeSession.draft ?? { text: '' }; updateDraft(activeSession.id, { ...draft, text: [draft.text, text].filter(Boolean).join('\n\n') }); } : undefined} /></motion.div></div> : <FirstTask providers={providers} connected={connected} perform={perform} pending={pending} />)}
         {page === 'history' && (readingSession ? <section className="history-session-view">

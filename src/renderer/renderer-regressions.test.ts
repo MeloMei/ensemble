@@ -39,7 +39,7 @@ test('actual renderer components preserve approval, draft, recovery and settings
         await window.loadFile(${JSON.stringify(path.join(directory, 'index.html'))});
         const prefixes = ${JSON.stringify(selectedCases ?? null)};
         const names = await window.webContents.executeJavaScript('window.rendererRegressionNames');
-        const usesRendererInput = names.some(name => /^(HOVER-01|UI-05):/.test(name) && (!prefixes || prefixes.some(prefix => name.startsWith(prefix))));
+        const usesRendererInput = names.some(name => /^(COMMAND-01|HOVER-01|UI-05):/.test(name) && (!prefixes || prefixes.some(prefix => name.startsWith(prefix))));
         if (usesRendererInput || ${JSON.stringify(process.env.ENSEMBLE_REDUCED_MOTION === '1')}) window.webContents.debugger.attach('1.3');
         if (${JSON.stringify(process.env.ENSEMBLE_REDUCED_MOTION === '1')}) {
           await window.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', {features: [{name: 'prefers-reduced-motion', value: 'reduce'}]});
