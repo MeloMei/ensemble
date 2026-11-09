@@ -188,7 +188,39 @@ a { color: var(--accent); text-underline-offset: 3px; }
 .tab-menu button:hover { background: var(--surface); }
 .tab-menu button svg { color: var(--muted); }
 .tab-content { flex: 1; display: flex; min-width: 0; min-height: 0; }
-.file-panel-transition { flex-shrink: 0; display: flex; min-height: 0; overflow: hidden; }
+.file-panel-transition { position: relative; flex: 0 0 auto; min-height: 0; }
+.file-pane-content {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 0;
+  display: flex;
+  width: var(--file-width);
+  opacity: 1;
+  transition: opacity var(--duration-normal) var(--ease-out);
+}
+.file-panel-transition[aria-hidden=true] { pointer-events: none; }
+.file-panel-transition[aria-hidden=true] .file-pane-content { opacity: 0; }
+.file-panel-transition[aria-hidden=true] .file-pane-handle { visibility: hidden; }
+.split-handle.file-pane-handle {
+  position: absolute;
+  z-index: 2;
+  inset-block: 0;
+  inset-inline-start: -4px;
+  width: 8px;
+  background: transparent;
+}
+.file-pane-handle::after {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 3px;
+  width: 2px;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity var(--duration-fast) ease;
+}
+.file-pane-handle:hover::after, .file-pane-handle:focus-visible::after, .file-pane-handle[data-dragging=true]::after { opacity: 1; }
+.file-pane-space-note { color: var(--muted); font-size: 11px; }
 .status { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; white-space: nowrap; color: var(--muted); }
 .status > svg { stroke-width: 1.8; }
 .status-running { color: var(--accent); }

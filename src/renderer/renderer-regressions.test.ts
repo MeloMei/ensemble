@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -27,7 +27,19 @@ test('actual renderer components preserve approval, draft, recovery and settings
           return { contents: 'export default class extends Worker { constructor() { super(new URL("layout-worker.js", window.location.href)); } }', loader: 'js' };
         });
       } }, { name: 'controlled-editor', setup(builder) {
-        builder.onLoad({ filter: /[/\\]CodeEditor\.tsx$/ }, () => ({ contents: 'export function CodeEditor({value, onChange, readOnly}) { return <textarea data-test-editor value={value} readOnly={readOnly} onChange={event => onChange(event.target.value)} />; }', loader: 'tsx' }));
+        builder.onResolve({ filter: /CodeEditor\.tsx\?actual$/ }, args => ({
+          path: path.resolve(args.resolveDir, 'CodeEditor.tsx'), namespace: 'actual-editor',
+        }));
+        builder.onLoad({ filter: /.*/, namespace: 'actual-editor' }, async args => ({
+          contents: await readFile(args.path, 'utf8'), loader: 'tsx', resolveDir: path.dirname(args.path),
+        }));
+        builder.onLoad({ filter: /[/\\]CodeEditor\.tsx$/, namespace: 'file' }, () => ({
+          contents: `import { CodeEditor as ActualEditor } from './CodeEditor.tsx?actual';
+            export function CodeEditor(props) {
+              if (props.location) return <ActualEditor {...props} />;
+              return <textarea data-test-editor value={props.value} readOnly={props.readOnly} onChange={event => props.onChange(event.target.value)} />;
+            }`, loader: 'tsx',
+        }));
       } }],
     });
     await writeFile(path.join(directory, 'index.html'), '<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="fixture.css"><script src="fixture.js"></script>');
