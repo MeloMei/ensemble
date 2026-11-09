@@ -1647,7 +1647,8 @@ const cases: Record<string, () => Promise<void>> = {
 
     const search = await expand();
     const catalog = persistentPanel.querySelector('.composer-model-catalog-content')!;
-    await waitFor(() => !catalog.getAnimations().some(animation => animation.playState === 'running'), 'The model catalog did not finish expanding');
+    await frames(2);
+    await waitFor(() => [catalog, persistentPanel].every(element => !element.getAnimations().some(animation => animation.playState === 'running')), 'The model picker did not finish expanding');
     const expandedBounds = persistentPanel.getBoundingClientRect();
     await change(search, 'no matching model');
     assert(picker()?.querySelector('.composer-model-empty')?.textContent === translate('workspace:chat.noMatchingModels'), 'The model search did not report no results');
@@ -2330,6 +2331,99 @@ const cases: Record<string, () => Promise<void>> = {
     await act(async () => { publish(snapshot); await tick(); }); await frames();
     assert(visible() && strip.scrollLeft === 0, 'Returning to the first session did not reveal it');
     assert(document.querySelector('.workspace-header-actions button[aria-label="' + translate('shell:app.collaboration') + '"]'), 'Compact collaboration action has no accessible name');
+  },
+  'INBOX-01: cross-project attention opens the matching approval, failure, or result without marking the list read': async () => {
+    const approvalProject = { ...workspace, id: 'approval-project', name: 'Approval project', cwd: '/approval-project' };
+    const resultProject = { ...workspace, id: 'result-project', name: 'Archived result project', cwd: '/result-project', archived: true };
+    const at = (hour: string) => `2026-10-23T${hour}:00Z`;
+    const message = (id: string, role: Message['role'], text: string, time: string): Message => ({ id, role, text, createdAt: at(time) });
+    const failedEvent = (id: string, time: string): Message => ({
+      ...message(id, 'activity', id, time), event: { id, kind: 'tool', title: id, status: 'failed', output: 'Provider failure output' },
+    });
+    const approval = (id: string) => ({ id, sessionId: 'inbox-approval', title: id, detail: 'Approval detail', choices: [{ id: 'yes', label: 'Allow' }] });
+    const attention = (reason: 'approval' | 'failure' | 'result', time: string, seenRevision = 0) => ({
+      reason, updatedAt: at(time), revision: 1, seenRevision, sourceId: `attempt:${reason}:composite-id`,
+    });
+    const waiting: Session = { ...session, id: 'inbox-approval', title: 'Approval session', cwd: approvalProject.cwd, status: 'waiting_approval',
+      approvals: [approval('Older approval'), approval('Latest approval')], attention: attention('approval', '02:01', 1) };
+    const failure: Session = { ...session, id: 'inbox-failure', title: 'Failure with Trace', status: 'running', attention: attention('failure', '02:06'),
+      attempts: [
+        { id: 'failed-attempt', status: 'failed', userMessageId: 'failed-prompt', prompt: '', startedAt: at('02:00'), endedAt: at('02:05') },
+        { id: 'retry-attempt', status: 'running', userMessageId: 'retry-prompt', prompt: '', startedAt: at('04:00') },
+      ],
+      messages: [message('old-prompt', 'user', 'Old prompt', '01:00'), failedEvent('older-failed-event', '01:01'),
+        message('failed-prompt', 'user', 'Failed prompt', '02:00'), failedEvent('matching-failed-event', '02:02'),
+        message('retry-prompt', 'user', 'Retry prompt', '04:00'), failedEvent('retry-event', '04:01'),
+        ...messageRange(1, 30).map(item => ({ ...item, createdAt: at('04:02') }))] };
+    const fallback: Session = { ...session, id: 'inbox-fallback', title: 'Failure without Trace', status: 'failed', error: 'Provider stopped before output',
+      updatedAt: at('06:00'), attention: attention('failure', '01:20'), messages: [message('fallback-prompt', 'user', 'Fallback prompt', '01:00')] };
+    const result: Session = { ...session, id: 'inbox-result', title: 'Completed session', cwd: resultProject.cwd, status: 'completed',
+      attention: attention('result', '04:00'), messages: [message('inbox-result-prompt', 'user', 'Result prompt', '03:00'),
+        message('inbox-old-output', 'assistant', 'Earlier output', '03:01'), message('inbox-final-output', 'assistant', 'Final result', '03:02')] };
+    const sourceSessions = [fallback, result, waiting, failure, { ...result, id: 'already-read', attention: attention('result', '05:00', 1) }];
+    let snapshot: Snapshot = { version: 1, sessions: sourceSessions.map(value => ({ ...value, messages: [], historyLoaded: false })),
+      workspaces: [workspace, approvalProject, resultProject], providers: [provider], workflows: [], terminals: [], pluginErrors: [], pluginPath: '/plugins', dataPath: '/data' };
+    let publish!: (snapshot: Snapshot) => void;
+    const seen: string[] = [], opens: { workspaceId: string; sessionId: string }[] = [];
+    window.workbench = {
+      subscribe: (listener: typeof publish) => { publish = listener; return () => {}; }, snapshot: async () => snapshot,
+      ...applicationUpdateApi, getConnection: async () => ({ status: 'connected', synced: true }),
+      onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
+      listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {},
+      watchSessions: async (ids: string[]) => {
+        snapshot = { ...snapshot, sessions: sourceSessions.map(value => ids.includes(value.id) ? { ...value, historyLoaded: true }
+          : { ...value, messages: [], historyLoaded: false }) };
+        publish(snapshot);
+      },
+      openSessionTab: async (workspaceId: string, sessionId: string) => {
+        opens.push({ workspaceId, sessionId });
+        snapshot = { ...snapshot, workspaces: snapshot.workspaces.map(project => project.id === workspaceId
+          ? { ...project, tabs: [{ kind: 'agent', id: sessionId, sessionId }], activeTabId: sessionId } : project) };
+        publish(snapshot);
+      },
+      markSessionSeen: async (id: string) => { seen.push(id); },
+      sessionHistoryAround: async () => { throw new Error('The attention source key is not a history cursor'); },
+    } as unknown as Window['workbench'];
+
+    const visitInbox = async () => { await click('shell:attention.inboxTitle'); await frames(3); };
+    const select = async (id: string) => await act(async () => {
+      const row = document.querySelector<HTMLButtonElement>(`.attention-inbox-row[data-session-id="${id}"]`);
+      assert(row, `Missing attention entry ${id}`);
+      row.click(); await tick();
+    });
+    const isVisible = (selector: string) => {
+      const bounds = document.querySelector(selector)?.getBoundingClientRect();
+      const viewport = document.querySelector('.message-scroll')?.getBoundingClientRect();
+      return Boolean(bounds && viewport && bounds.top < viewport.bottom && bounds.bottom > viewport.top);
+    };
+    const originalFocus = document.hasFocus;
+    const originalVisibility = Object.getOwnPropertyDescriptor(document, 'visibilityState');
+    document.hasFocus = () => true;
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
+    try {
+      await render(<App />); await visitInbox();
+      const groups = [...document.querySelectorAll<HTMLElement>('.attention-inbox-group')];
+      assert(groups.map(group => group.dataset.attentionReason).join(',') === 'approval,failure,result', 'The inbox ignored attention priority');
+      assert([...groups[1].querySelectorAll<HTMLElement>('.attention-inbox-row')].map(row => row.dataset.sessionId).join(',') === 'inbox-failure,inbox-fallback', 'Two failures in one project were collapsed or sorted by an unrelated update');
+      assert(groups[0].textContent?.includes(approvalProject.name) && groups[2].textContent?.includes(resultProject.name)
+        && groups[2].querySelector('time')?.dateTime === result.attention!.updatedAt, 'The inbox lost project or timestamp context');
+      assert(seen.length === 0 && !document.querySelector('[data-session-id="already-read"]'), 'Browsing marked items read or kept an already-read result');
+      await select(waiting.id);
+      await waitFor(() => (document.activeElement as HTMLElement)?.dataset.approvalId === 'Latest approval', 'Opening the approval did not focus its card');
+      assert(opens[0]?.workspaceId === approvalProject.id, 'The approval opened the wrong project');
+      await visitInbox(); await select(failure.id);
+      await waitFor(() => isVisible('[data-message-id="matching-failed-event"].conversation-match') &&
+        Boolean(document.querySelector('[data-message-id="matching-failed-event"] .process-reveal[data-expanded=true]')), 'Opening a failure selected an unrelated attempt or did not reveal its Trace');
+      assert(opens[1]?.sessionId === failure.id && !seen.includes(failure.id), 'Opening an earlier failure targeted the wrong session or marked unseen tail output');
+      await visitInbox(); await select(fallback.id);
+      await waitFor(() => document.querySelector('.inline-error')?.textContent?.includes(fallback.error!) === true, 'A failure without a Trace lost its existing error state');
+      await visitInbox(); await select(result.id);
+      await waitFor(() => isVisible('.chat-pane-readonly [data-message-id="inbox-final-output"].conversation-match'), 'The latest result did not open at the output in the retained project');
+      await waitFor(() => seen.includes(result.id), 'Viewing the latest result did not preserve the existing read acknowledgment');
+    } finally {
+      document.hasFocus = originalFocus;
+      if (originalVisibility) Object.defineProperty(document, 'visibilityState', originalVisibility); else Reflect.deleteProperty(document, 'visibilityState');
+    }
   },
   'UI-09: cached snapshots cannot mask disconnects or clear unread failures before reading': async () => {
     const originalFocus = document.hasFocus;
