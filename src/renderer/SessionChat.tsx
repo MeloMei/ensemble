@@ -31,6 +31,7 @@ import { Tooltip } from './Tooltip';
 import { DetailCard } from './ui-kit/DetailCard';
 import { RollingText } from './ui-kit/RollingText';
 import { expandConversation, type TraceEntry } from './conversation-index';
+import { measureConversationRow, useReadingAnchor, useSessionReadingPosition } from './useSessionReadingPosition';
 import './SessionChat.css';
 
 interface SessionChatProps {
@@ -627,6 +628,9 @@ export function SessionChat({
   const [scrollTarget, setScrollTarget] = useState<string>();
   const [failureTarget, setFailureTarget] = useState<string>();
   const [sendError, setSendError] = useState('');
+  const [readingAnchor, setReadingAnchor] = useReadingAnchor(session.id);
+  const [restoredTrace, setRestoredTrace] = useState(readingAnchor?.kind === 'event' ? readingAnchor : undefined);
+  const finishReadingRestore = useCallback(() => setReadingAnchor(undefined), [setReadingAnchor]);
   const [traceChoices, setTraceChoices] = useState<TraceChoices>(() => traceChoicesBySession.get(session.id) ?? {
     groups: new Map(), events: new Set(),
   });
@@ -686,6 +690,7 @@ export function SessionChat({
   const matches = searchQuery && searchResult?.sessionId === session.id && searchResult.query === searchQuery ? searchResult.messages : [];
   const selectedMatch = matches[matchIndex % Math.max(matches.length, 1)];
   const revealedMatchId = selectedMatch?.id === revealedMatch?.id ? revealedMatch?.id : undefined;
+  const restoredTraceId = restoredTrace?.id;
   const traceChoiceIndex = useCallback((anchor: string, choice: TraceChoice) => {
     const index = messages.indexOf(anchor);
     return index < 0 && choice.tailAnchor ? messages.indexOf(choice.tailAnchor) : index;
@@ -706,12 +711,13 @@ export function SessionChat({
         carriedChoice = { anchor, choice: { ...choice, tailAnchor: messages.at(end)!.id } };
       }
     }
-    if (revealedMatchId) {
-      const row = conversation.rowOfMessage(messages.indexOf(revealedMatchId));
+    for (const id of [revealedMatchId, restoredTraceId]) {
+      if (!id) continue;
+      const row = conversation.rowOfMessage(messages.indexOf(id));
       if (conversation.at(row)?.kind === 'trace') open.add(row);
     }
     return { chatRows: expandConversation(conversation, open, index => messages.at(index)!.id), carriedChoice };
-  }, [conversation, messages, history.liveTailStart, liveTraceRow, traceChoices.groups, traceChoiceIndex, revealedMatchId]);
+  }, [conversation, messages, history.liveTailStart, liveTraceRow, traceChoices.groups, traceChoiceIndex, revealedMatchId, restoredTraceId]);
 
   useLayoutEffect(() => {
     if (!carriedChoice) return;
@@ -721,6 +727,7 @@ export function SessionChat({
   }, [carriedChoice, saveTraceChoices, traceChoices]);
 
   const chooseTrace = (trace: TraceEntry, expanded: boolean) => {
+    cancelReadingRestore();
     const groups = new Map(traceChoices.groups);
     for (const [anchor, choice] of groups) {
       const index = traceChoiceIndex(anchor, choice);
@@ -732,12 +739,18 @@ export function SessionChat({
       const index = messages.indexOf(revealedMatchId);
       if (index >= trace.start && index < trace.start + trace.length) setRevealedMatch(undefined);
     }
+    if (!expanded && restoredTraceId) {
+      const index = messages.indexOf(restoredTraceId);
+      if (index >= trace.start && index < trace.start + trace.length) setRestoredTrace(undefined);
+    }
     saveTraceChoices({ ...traceChoices, groups });
   };
   const chooseEvent = (id: string, expanded: boolean) => {
+    cancelReadingRestore();
     const events = new Set(traceChoices.events);
     if (expanded) events.add(id); else events.delete(id);
     if (!expanded && revealedMatchId === id) setRevealedMatch({ id, detail: false });
+    if (!expanded && restoredTrace?.id === id && restoredTrace.detailsOpen) setRestoredTrace({ ...restoredTrace, detailsOpen: false });
     saveTraceChoices({ ...traceChoices, events });
   };
   const children = sessions.filter(item => item.parentSessionId === session.id);
@@ -757,13 +770,14 @@ export function SessionChat({
     });
   };
   const virtualScroll = useRef<{ scrollToEnd(options: { behavior: 'smooth' | 'auto' }): void } | null>(null);
-  const { containerRef: scroll, isPinned, showJumpControl, markUserInput, pauseForNavigation, handleScroll, scrollToBottom } =
+  const { containerRef: scroll, isPinned, isFollowingOutput, showJumpControl, markUserInput, pauseForNavigation, handleScroll, scrollToBottom } =
     useClaudeScrollPinning([session.id, history.showingHistory ? null : history.messages,
       history.showingHistory ? null : session.approvals, history.showingHistory ? null : session.status,
-      history.showingHistory ? null : session.error], smooth => virtualScroll.current?.scrollToEnd({ behavior: smooth ? 'smooth' : 'auto' }));
+      history.showingHistory ? null : session.error], smooth => virtualScroll.current?.scrollToEnd({ behavior: smooth ? 'smooth' : 'auto' }), !readingAnchor);
   const revealFailure = (trace: TraceEntry) => {
     const id = trace.lastFailure;
     if (!id) return;
+    setRestoredTrace(undefined);
     pauseForNavigation();
     chooseTrace(trace, true);
     setFailureTarget(id);
@@ -778,6 +792,7 @@ export function SessionChat({
     count: rowCount,
     getScrollElement: () => scroll.current,
     getItemKey,
+    measureElement: measureConversationRow,
     estimateSize: index => {
       const row = chatRows.at(index);
       if (!row) return 80 + session.approvals.length * 240;
@@ -797,8 +812,26 @@ export function SessionChat({
     scrollEndThreshold: 40,
   });
   virtualScroll.current = virtualizer;
+  const followLatestAfterMissingAnchor = useCallback(() => {
+    setRestoredTrace(undefined);
+    scrollToBottom();
+  }, [scrollToBottom]);
+  const { cancelRestore: cancelReadingRestore, capture: captureReadingPosition } = useSessionReadingPosition({
+    sessionId: session.id, virtualizer, anchor: readingAnchor, finish: finishReadingRestore,
+    index: readingAnchor ? chatRows.rowOfMessage(messages.indexOf(readingAnchor.id), readingAnchor.kind === 'trace') : -1,
+    ready: history.tailReady, connected, showingHistory: history.showingHistory, isFollowingOutput,
+    identifyRow(index) {
+      const row = chatRows.at(index);
+      const message = row && messages.at(row.start);
+      if (row && message) return { id: message.id, kind: row.kind };
+    },
+    locate: history.locateMessage, cancelLookup: history.cancelJump, followLatest: followLatestAfterMissingAnchor,
+  });
+  const markReadingInput = () => { cancelReadingRestore(); markUserInput(); };
   const closeFind = () => { history.cancelJump(); setScrollTarget(undefined); setRevealedMatch(undefined); setFind(null); };
   const showLatestOutput = (smooth = false) => {
+    cancelReadingRestore();
+    setRestoredTrace(undefined);
     closeFind();
     history.showLatest();
     scrollToBottom(smooth);
@@ -827,6 +860,8 @@ export function SessionChat({
   useEffect(() => {
     if (!selectedMatch) return;
     let active = true;
+    cancelReadingRestore();
+    setRestoredTrace(undefined);
     pauseForNavigation();
     void history.locateMessage(selectedMatch.id).then(found => {
       if (active && found) {
@@ -836,7 +871,7 @@ export function SessionChat({
       }
     });
     return () => { active = false; history.cancelJump(); };
-  }, [session.id, selectedMatch?.id, history.cancelJump, pauseForNavigation]);
+  }, [session.id, selectedMatch?.id, history.cancelJump, cancelReadingRestore, pauseForNavigation]);
 
   useLayoutEffect(() => {
     if (!scrollTarget) return;
@@ -890,6 +925,8 @@ export function SessionChat({
         await runSessionCommand(`send:${session.id}`, input, async commandId => {
           await window.workbench.sendPrompt(session.id, input, commandId);
           if (currentDraft.current === draft) { setSendError(''); onDraftChange({ text: '' }, draft); }
+          cancelReadingRestore();
+          setRestoredTrace(undefined);
           history.showLatest();
           scrollToBottom();
         });
@@ -911,7 +948,10 @@ export function SessionChat({
       <div className="chat-toolbar-actions">
         {!readOnly && providers && <SessionContinuation session={session} providers={providers} connected={connected} perform={perform} />}
         <IconButton label={find === null ? t('chat.find') : t('chat.closeFind')} aria-pressed={find !== null}
-          onClick={() => find === null ? setFind('') : closeFind()}><Search size={15} /></IconButton>
+          onClick={() => {
+            if (find === null) { cancelReadingRestore(); setFind(''); }
+            else closeFind();
+          }}><Search size={15} /></IconButton>
         <Tooltip label={t('chat.activity')}><button className={`text-button chat-activity-button ${showActivity ? 'selected' : ''}`} aria-label={t('chat.activity')}
           aria-expanded={showActivity} aria-controls={activityId} onClick={() => setShowActivity(value => !value)}>
           <Activity size={14} /><span className="chat-activity-label">{t('chat.activity')}</span>{activity.length > 0 && <RollingText className="chat-count" value={formatNumber(activity.length)} animate={active && !history.showingHistory} />}
@@ -955,20 +995,20 @@ export function SessionChat({
     </nav>}
     {(!historyReady || history.hasMore || history.showingHistory || history.loading || history.error) && <div className="conversation-history-controls">
       {!historyReady && <span role="status">{t('chat.loadingHistory')}</span>}
-      {history.hasMore && <button disabled={history.loading || !connected} onClick={() => { markUserInput(); void history.loadOlder(); }}>
+      {history.hasMore && <button disabled={history.loading || !connected} onClick={() => { markReadingInput(); void history.loadOlder(); }}>
         {history.loading ? <LoaderCircle className="spin" size={12} /> : <ArrowUp size={12} />}{t('chat.loadEarlier')}
       </button>}
       {history.showingHistory && <><span>{t('chat.historyWindow')}</span>
-        {history.hasAfter && <button disabled={history.loading || !connected} onClick={() => void history.loadNewer()}><ArrowDown size={12} />{t('chat.loadLater')}</button>}
+        {history.hasAfter && <button disabled={history.loading || !connected} onClick={() => { cancelReadingRestore(); void history.loadNewer(); }}><ArrowDown size={12} />{t('chat.loadLater')}</button>}
         <button onClick={() => showLatestOutput()}><ArrowDown size={12} />{t('chat.returnLatest')}</button></>}
       {history.error && <span className="chat-history-error" role="alert">{history.error}</span>}
     </div>}
     <div className="message-scroll" ref={scroll} tabIndex={0} aria-label={t('chat.conversation')}
-      onScroll={handleScroll} onWheel={markUserInput} onTouchStart={markUserInput}
-      onPointerDown={event => { if (event.target === event.currentTarget) markUserInput(); }}
+      onScroll={event => { handleScroll(); captureReadingPosition(event.currentTarget); }} onWheel={markReadingInput} onTouchStart={markReadingInput}
+      onPointerDown={event => { if (event.target === event.currentTarget) markReadingInput(); }}
       onKeyDown={event => {
         if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)
-          && event.target instanceof HTMLElement && !event.target.closest('input, textarea, select, [contenteditable="true"]')) markUserInput();
+          && event.target instanceof HTMLElement && !event.target.closest('input, textarea, select, [contenteditable="true"]')) markReadingInput();
       }}>
       <div className="virtual-conversation" style={{ height: virtualizer.getTotalSize() }}>
         {virtualizer.getVirtualItems().map(item => {
@@ -983,7 +1023,8 @@ export function SessionChat({
             end={row.start === row.trace.start + row.trace.length - 1}
             entering={row.trace.key === liveTrace?.key && Boolean(addedEvents?.has(message.id))}
             matched={selectedMatch?.id === message.id || failureTarget === message.id}
-            expanded={traceChoices.events.has(message.id) || (revealedMatchId === message.id && Boolean(revealedMatch?.detail)) || failureTarget === message.id}
+            expanded={traceChoices.events.has(message.id) || (revealedMatchId === message.id && Boolean(revealedMatch?.detail))
+              || (restoredTraceId === message.id && Boolean(restoredTrace?.detailsOpen)) || failureTarget === message.id}
             onExpandedChange={expanded => {
               if (!expanded && failureTarget === message.id) setFailureTarget(undefined);
               chooseEvent(message.id, expanded);

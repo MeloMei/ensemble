@@ -1645,6 +1645,99 @@ const cases: Record<string, () => Promise<void>> = {
     await click('workspace:chat.saveQueued'); await settle();
     assert((writes[0] as { attachments: unknown[] }).attachments.length === 4, 'Saving the corrected queue draft lost an attachment');
   },
+  'READ-01: remounting a session preserves the visible message and width reflow keeps it steady': async () => {
+    const messages = messageRange(0, 100).map(message => ({ ...message, text: message.text + ' Wide output that wraps at different widths.'.repeat(18) }));
+    let current: Session = { ...session, id: 'reading-message', status: 'running', historyLoaded: true, messages, messageCount: 100 };
+    window.workbench = {} as Window['workbench'];
+    const show = (value = current, width = 740) => render(<React.StrictMode><div style={{ display: 'flex', width, height: 560 }}>
+      {React.cloneElement(chat({ session: value }), { key: value.id })}
+    </div></React.StrictMode>);
+    const scroller = () => document.querySelector<HTMLElement>('.message-scroll')!;
+    const visible = () => [...scroller().querySelectorAll<HTMLElement>('.virtual-conversation-row')].find(row =>
+      row.getBoundingClientRect().bottom > scroller().getBoundingClientRect().top && row.querySelector('[data-message-id]'));
+    const readOffset = (row: Element) => row.getBoundingClientRect().top - scroller().getBoundingClientRect().top;
+    const readAt = async (top: number) => { await act(async () => {
+      scroller().dispatchEvent(new WheelEvent('wheel', { bubbles: true }));
+      scroller().scrollTop = top;
+      scroller().dispatchEvent(new Event('scroll'));
+      await tick();
+    }); await frames(4); };
+    await show(); await frames();
+    await readAt(scroller().scrollHeight / 2);
+    await readAt(scroller().scrollTop - 90);
+    const anchor = visible();
+    assert(anchor, 'No message was visible before switching');
+    const id = anchor.querySelector<HTMLElement>('[data-message-id]')!.dataset.messageId;
+    const offset = readOffset(anchor);
+    const target = () => document.querySelector(`[data-message-id="${id}"]`)?.closest('.virtual-conversation-row');
+    const nearAnchor = () => Boolean(target() && Math.abs(readOffset(target()!) - offset) < 4);
+    await show({ ...session, id: 'reading-other' });
+    await show({ ...current, messages: [], historyLoaded: false }, 680);
+    await show(current, 680);
+    await waitFor(nearAnchor, () => `Returning to the session moved ${id} (${offset} → ${target() && readOffset(target()!)})`);
+    await frames(4);
+    await readAt(scroller().scrollTop + 15);
+    await readAt(scroller().scrollTop - 15);
+    const priorHeight = target()!.getBoundingClientRect().height;
+    await show(current, 550); await frames(6);
+    assert(nearAnchor() && target()!.getBoundingClientRect().height > priorHeight, `Width reflow moved ${id} (${offset} → ${target() && readOffset(target()!)}) or did not rewrap it`);
+    current = { ...current, messages: [...current.messages, ...messageRange(100, 102)], messageCount: 102 };
+    await show(current, 550); await frames(5);
+    assert(nearAnchor(), 'Appended output moved an unpinned reader');
+    await readAt(scroller().scrollHeight);
+    assert(scroller().scrollHeight - scroller().scrollTop - scroller().clientHeight <= 40, 'The session was not at the bottom before switching');
+    await show({ ...session, id: 'reading-other' });
+    current = { ...current, messages: [...current.messages, ...messageRange(102, 103)], messageCount: 103 };
+    await show(current, 550);
+    await waitFor(() => scroller().scrollHeight - scroller().scrollTop - scroller().clientHeight <= 40
+      && Boolean(document.querySelector('[data-message-id="message-102"]')), 'A session left at the bottom did not follow new output on return');
+  },
+  'READ-02: an unloaded Trace event and its offset are restored through one history window': async () => {
+    const events: Message[] = Array.from({ length: 100 }, (_, index) => ({
+      id: `reading-tool-${index}`, role: 'activity', text: `Tool ${index}`, createdAt: session.createdAt,
+      event: { id: `reading-tool-${index}`, kind: 'tool', title: `Tool ${index}`, status: 'completed', output: 'Original tool output' },
+    }));
+    let current: Session = { ...session, id: 'reading-trace', status: 'running', historyLoaded: true, messages: events, messageCount: 100 };
+    const around: { id: string; limit: number }[] = [];
+    window.workbench = {
+      sessionHistoryAround: async (_sessionId: string, id: string, limit: number) => {
+        around.push({ id, limit });
+        return { messages: events, hasMore: false, hasAfter: true, afterCursor: events.at(-1)!.id };
+      },
+    } as unknown as Window['workbench'];
+    const show = (value = current) => render(<React.StrictMode><div style={{ display: 'flex', width: 700, height: 560 }}>
+      {React.cloneElement(chat({ session: value }), { key: value.id })}
+    </div></React.StrictMode>);
+    const scroller = () => document.querySelector<HTMLElement>('.message-scroll')!;
+    const relativeTop = (row: Element) => row.getBoundingClientRect().top - scroller().getBoundingClientRect().top;
+    await show(); await frames();
+    await act(async () => {
+      scroller().dispatchEvent(new WheelEvent('wheel', { bubbles: true }));
+      scroller().scrollTop = 1265;
+      scroller().dispatchEvent(new Event('scroll'));
+      await tick();
+    });
+    await frames(5);
+    const anchor = [...scroller().querySelectorAll<HTMLElement>('.virtual-conversation-row')].find(row =>
+      row.getBoundingClientRect().bottom > scroller().getBoundingClientRect().top && row.querySelector('.message-process'));
+    assert(anchor, 'No Trace event was visible before switching');
+    const id = anchor.querySelector<HTMLElement>('[data-message-id]')!.dataset.messageId;
+    const offset = relativeTop(anchor);
+    await show({ ...session, id: 'reading-trace-other' });
+    current = { ...current, status: 'completed', messages: messageRange(100, 200), messageCount: 200, historyCursor: 'message-100' };
+    await show();
+    const target = () => document.querySelector(`[data-message-id="${id}"]`)?.closest('.virtual-conversation-row');
+    await waitFor(() => Boolean(target() && Math.abs(relativeTop(target()!) - offset) < 4), () => `The old Trace event ${id} did not return to its prior offset (${offset} → ${target() && relativeTop(target()!)})`);
+    assert(around.length === 1 && around[0].id === id && around[0].limit === 100, 'Restoring a Trace did not use one bounded lookup');
+    assert(document.querySelector('.conversation-history-controls')?.textContent?.includes(translate('workspace:chat.historyWindow')), 'Restoring an unloaded event did not enter the historical window');
+    await frames(3);
+    await show({ ...session, id: 'reading-trace-other' });
+    await show();
+    await waitFor(() => Boolean(target() && Math.abs(relativeTop(target()!) - offset) < 4), 'Switching away from a historical window discarded its anchor');
+    assert(Number(around.length) === 2 && around[1].id === id, 'A second remount did not reuse the historical event');
+    await click('workspace:chat.returnLatest');
+    await waitFor(() => Boolean(document.querySelector('[data-message-id="message-199"]')), 'Returning to latest did not leave the restored historical window');
+  },
   'TRACE-01: live events enter once, update in place and keep manual choices': async () => {
     const tool = (id: string, title: string, status: NonNullable<Message['event']>['status'], input?: string, output?: string): Message => ({
       id, role: 'activity', text: title, createdAt: session.createdAt, event: { id, kind: 'tool', title, status, input, output },
