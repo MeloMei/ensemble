@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { WorkbenchEngine, WorkspaceUnavailableError } from './engine';
+import { WorkbenchEngine } from './engine';
 import { StateStore } from './store';
 import { createCodexProvider } from './providers/codex';
 import { createClaudeProvider } from './providers/claude';
@@ -343,13 +343,7 @@ export async function createWorkbenchService(options: {
     });
     handle('workbench:git-state', (_event, workspaceId: unknown) => workspaceFiles.gitState(engine.workspace(idSchema.parse(workspaceId)).cwd));
     handle('workbench:file-diff', (_event, workspaceId: unknown, path: unknown) => workspaceFiles.diff(engine.workspace(idSchema.parse(workspaceId)).cwd, z.string().min(1).max(4096).parse(path)));
-    handle('workbench:send-prompt', (_event, id, input, commandId) => {
-      try { engine.sendPrompt(idSchema.parse(id), promptInputSchema.parse(input), commandIdSchema.parse(commandId)); }
-      catch (error) {
-        if (error instanceof WorkspaceUnavailableError) return { rejected: 'workspace-unavailable' as const };
-        throw error;
-      }
-    });
+    handle('workbench:send-prompt', (_event, id, input, commandId) => engine.sendPrompt(idSchema.parse(id), promptInputSchema.parse(input), commandIdSchema.parse(commandId)));
     handle('workbench:save-session-draft', (_event, id, input) => engine.saveSessionDraft(idSchema.parse(id), draftInputSchema.parse(input)));
     handle('workbench:add-session-attachment', async (_event, id, input) => {
       const sessionId = idSchema.parse(id);

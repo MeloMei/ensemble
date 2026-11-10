@@ -130,7 +130,6 @@ test('receipt recovery completes late send/create callbacks, retires only their 
   } finally { releaseLookup?.(receipt('cleanup', 'cleanup', null)); releaseOperation?.(); runtime.restore(); }
 });
 
-
 test('known rejection retires the intent without receipt recovery, including a manual retry', async () => {
   let queries = 0;
   const runtime = environment(async () => { queries++; return undefined; });
@@ -150,7 +149,6 @@ test('known rejection retires the intent without receipt recovery, including a m
     await recoverSessionCommands(); assert.equal(queries, queriesBeforeRetry + 1);
   } finally { runtime.restore(); }
 });
-
 
 test('known rejection during automatic recovery retires the original intent', async () => {
   let queries = 0, receiptReady = false, calls = 0;

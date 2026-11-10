@@ -8,6 +8,10 @@ import { SnapshotGapError, SnapshotReplica } from '../shared/snapshot-stream';
 
 class BackendProtocolError extends Error {}
 
+export class BackendCommandError extends Error {
+  constructor(message: string, readonly errorCode?: BackendReply['errorCode']) { super(message); }
+}
+
 export class BackendFrameTooLargeError extends Error {
   readonly code = 'FRAME_TOO_LARGE';
   constructor(readonly limitBytes: number) {
@@ -63,7 +67,7 @@ export class BackendClient {
       }) } : {}),
     });
     const body = await response.json() as BackendReply<T>;
-    if (!response.ok || body.error) throw new Error(body.error ?? `后台返回 ${response.status}`);
+    if (!response.ok || body.error) throw new BackendCommandError(body.error ?? `后台返回 ${response.status}`, body.errorCode);
     return body.result as T;
   }
 

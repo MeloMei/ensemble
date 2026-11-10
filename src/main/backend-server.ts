@@ -6,6 +6,7 @@ import type { BackendEndpoint, TerminalOutputEvent } from '../shared/backend';
 import { BACKEND_STREAM_VERSION } from '../shared/backend';
 import type { Snapshot } from '../shared/types';
 import { createWorkbenchService, type WorkbenchService } from './workbench-service';
+import { WorkspaceUnavailableError } from './engine';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createWorkbenchMcpServer } from './mcp-server';
 import { SnapshotProjection } from './snapshot-projection';
@@ -162,7 +163,8 @@ export async function startBackend(options: {
     } catch (error) {
       if (response.headersSent) { response.destroy(); return; }
       response.writeHead(400, { 'Content-Type': 'application/json' });
-      response.end(JSON.stringify({ error: error instanceof Error ? error.message : '后台命令失败。' }));
+      response.end(JSON.stringify({ error: error instanceof Error ? error.message : '后台命令失败。',
+        ...(error instanceof WorkspaceUnavailableError ? { errorCode: 'workspace-unavailable' } : {}) }));
     }
   });
   try {

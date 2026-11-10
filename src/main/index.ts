@@ -4,7 +4,7 @@ import { mkdir, realpath } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
-import { BackendConnectionTracker, connectBackend, type BackendClient } from './backend-client';
+import { BackendCommandError, BackendConnectionTracker, connectBackend, type BackendClient } from './backend-client';
 import { buildCodexLink } from './codex-link';
 import { WorkbenchNotifications } from './notifications';
 import { DesktopPreferences } from './preferences';
@@ -150,7 +150,13 @@ function registerIPC(commands: string[]): void {
   };
   for (const command of commands) if (command !== 'workbench:snapshot') handle(command, async (...args) => {
     await updates.waitForStartupConfirmation();
-    return backend.call(command, ...args);
+    try { return await backend.call(command, ...args); }
+    catch (error) {
+      if (command === 'workbench:send-prompt' && error instanceof BackendCommandError && error.errorCode === 'workspace-unavailable') {
+        return { rejected: 'workspace-unavailable' as const };
+      }
+      throw error;
+    }
   });
   handle('workbench:snapshot', () => latestSnapshot ?? backend.snapshot());
   handle('workbench:get-connection', () => connection.current);
