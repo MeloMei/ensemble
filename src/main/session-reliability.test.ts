@@ -229,8 +229,16 @@ test('stopped queues persist edits, removals and captured execution settings unt
     engine.updateSession(id, { settings: { permission: 'read-only', effort: 'low' } });
     engine.sendPrompt(id, { text: 'A' }, 'A'); await until(() => seen.length === 1);
     engine.sendPrompt(id, { text: 'B' }, 'B'); engine.sendPrompt(id, { text: 'C' }, 'C'); engine.sendPrompt(id, { text: 'D' }, 'D');
-    const [b, c] = engine.getSession(id).queue!;
-    engine.updateQueuedPrompt(id, b.id, { text: 'B edited' }); engine.removeQueuedPrompt(id, c.id);
+    const [b, c, d] = engine.getSession(id).queue!;
+    assert.deepEqual(engine.beginQueuedPromptEdit(id, b.id, 0, 'b-edit', 'first-window'), { text: 'B' });
+    engine.saveQueuedPromptDraft(id, b.id, 'b-edit', 2, { text: 'B edited' });
+    engine.saveQueuedPromptDraft(id, b.id, 'b-edit', 1, { text: 'stale draft' });
+    assert.throws(() => engine.removeQueuedPrompt(id, b.id, 0), /正在编辑或已变更/);
+    engine.removeQueuedPrompt(id, c.id, 0, 'remove-c');
+    engine.removeQueuedPrompt(id, c.id, 0, 'remove-c');
+    engine.beginQueuedPromptEdit(id, d.id, 0, 'd-edit', 'first-window');
+    engine.saveQueuedPromptDraft(id, d.id, 'd-edit', 1, { text: 'Discard this change' });
+    engine.finishQueuedPromptEdit(id, d.id, 'd-edit');
     engine.cancelSession(id, 'stop'); await engine.waitSession(id);
     assert.equal(engine.getSession(id).queuePaused, true); assert.equal(seen.length, 1);
     engine.updateSession(id, { modelId: 'm2', settings: { permission: 'review' } });
@@ -239,6 +247,14 @@ test('stopped queues persist edits, removals and captured execution settings unt
     restarted = new WorkbenchEngine(restored, '', () => {}); restarted.setProviders([runtime], [], []); await restarted.prepareExecutionKeys();
     assert.equal(restarted.getSession(id).queuePaused, true); assert.equal(seen.length, 1);
     restarted.setSessionQueuePaused(id, false); await restarted.waitSession(id);
+    assert.equal(seen.length, 1);
+    assert.throws(() => restarted!.beginQueuedPromptEdit(id, b.id, 1, 'another-edit', 'another-window'), /另一窗口正在编辑/);
+    assert.deepEqual(restarted.beginQueuedPromptEdit(id, b.id, 1, 'b-recovered', 'first-window'), { text: 'B edited' });
+    assert.throws(() => restarted!.beginQueuedPromptEdit(id, b.id, 1, 'stale-edit', 'first-window'), /已变更/);
+    assert.throws(() => restarted!.finishQueuedPromptEdit(id, b.id, 'b-edit', { text: 'Old window' }), /其他窗口/);
+    restarted.finishQueuedPromptEdit(id, b.id, 'b-recovered', { text: 'B edited' });
+    restarted.finishQueuedPromptEdit(id, b.id, 'b-recovered', { text: 'B edited' });
+    await restarted.waitSession(id);
     assert.deepEqual(seen, [
       { prompt: 'A', modelId: 'm1', permission: 'read-only' }, { prompt: 'B edited', modelId: 'm1', permission: 'read-only' },
       { prompt: 'D', modelId: 'm1', permission: 'read-only' },

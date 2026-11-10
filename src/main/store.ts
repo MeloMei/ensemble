@@ -8,6 +8,7 @@ import type { AgentMail, MutationReceipt, Session, Workflow, Workspace, Worktree
 import { moveSession, moveStep, moveWorkflow } from './lifecycle';
 import { recordSessionAttention } from './attention';
 import { workspacePathContains } from './workspace-path';
+import { draftEvidenceListSchema } from './draft-evidence-schema';
 import {
   collaborationEventInputSchema, collaborationReceiptSchema, collaborationStateSchema, emptyCollaborationState,
   type CollaborationEvent, type CollaborationEventInput, type CollaborationReceipt, type CollaborationState,
@@ -45,7 +46,7 @@ const record = <T extends z.ZodRawShape>(shape: T) => z.object(shape).passthroug
 const sessionStatus = z.enum(['idle', 'queued', 'running', 'waiting_approval', 'waiting_children', 'completed', 'failed', 'cancelled', 'interrupted']);
 const stepStatus = z.enum(['pending', 'running', 'completed', 'failed', 'blocked', 'cancelled']);
 const attachmentSchema = record({ id: z.string(), name: z.string(), kind: z.enum(['image', 'text']), mimeType: z.string(), size: z.number(), sha256: z.string(), ownedPath: z.string() });
-const promptInputSchema = record({ text: z.string(), attachments: z.array(attachmentSchema).optional() });
+const promptInputSchema = record({ text: z.string(), attachments: z.array(attachmentSchema).optional(), evidence: draftEvidenceListSchema.optional() });
 const sessionSettingsSchema = record({ effort: z.string().optional(), permission: z.enum(['review', 'read-only']).optional(), skillIds: z.array(z.string()).optional() });
 const eventSchema = record({
   id: z.string(), kind: z.enum(['tool', 'plan', 'task', 'subagent', 'diff']), title: z.string(),
@@ -56,6 +57,7 @@ const eventSchema = record({
 const messageSchema = record({
   id: z.string(), role: z.enum(['user', 'assistant', 'activity']), text: z.string(), createdAt: z.string(),
   attachments: z.array(attachmentSchema).optional(), nativeTurnId: z.string().optional(), event: eventSchema.optional(),
+  evidence: draftEvidenceListSchema.optional(), originalPrompt: z.string().optional(),
   delivery: z.object({ id: z.string(), clientUserMessageId: z.string(), status: z.enum(['pending', 'accepted', 'rejected', 'unknown']),
     createdAt: z.string(), updatedAt: z.string(), nativeThreadId: z.string().optional(), nativeTurnId: z.string().optional(),
     nativeItemId: z.string().optional(), reason: z.string().optional() }).strict().optional(),
@@ -70,12 +72,16 @@ const savedSchema = record({
     id: z.string(), title: z.string(), providerId: z.string(), modelId: z.string().optional(), cwd: z.string(), status: sessionStatus,
     settings: sessionSettingsSchema.optional(),
     archived: z.boolean().optional(), parentSessionId: z.string().optional(), parentAttemptId: z.string().optional(),
+    forkedFrom: z.object({ sessionId: z.string(), messageId: z.string().optional() }).strict().optional(),
     draft: promptInputSchema.optional(),
-    queue: z.array(z.object({ id: z.string(), commandId: z.string(), input: z.object({ text: z.string(), attachments: z.array(attachmentSchema).optional() }).strict(), modelId: z.string().optional(),
+    queue: z.array(z.object({ id: z.string(), commandId: z.string(), input: promptInputSchema, modelId: z.string().optional(),
+      revision: z.number().int().nonnegative().optional(),
+      edit: z.object({ id: z.string(), draft: promptInputSchema.optional(), draftRevision: z.number().int().positive().optional(),
+        lease: z.object({ ownerId: z.string(), expiresAt: z.number().int().nonnegative() }).strict().optional() }).strict().optional(),
       settings: z.object({ effort: z.string().optional(), permission: z.enum(['review', 'read-only']).optional(), skillIds: z.array(z.string()).optional() }).strict().optional(), createdAt: z.string(), updatedAt: z.string() }).strict()).optional(),
     queuePaused: z.boolean().optional(), queueHoldReason: z.string().optional(), waitingForProject: z.literal(true).optional(),
     attention: z.object({ revision: z.number().int().positive(), seenRevision: z.number().int().nonnegative(),
-      reason: z.enum(['approval', 'result', 'failure']), updatedAt: z.string(), sourceId: z.string().optional() }).strict().optional(),
+      reason: z.enum(['approval', 'result', 'failure']), updatedAt: z.string(), sourceId: z.string().optional(), messageId: z.string().optional() }).strict().optional(),
     attempts: z.array(record({ id: z.string(), status: sessionStatus, prompt: z.string(), userMessageId: z.string(), retryOf: z.string().optional(), startedAt: z.string(), endedAt: z.string().optional(), error: z.string().optional(),
       modelId: z.string().optional(), settings: sessionSettingsSchema.optional(), queueItemId: z.string().optional(), commandId: z.string().optional() })).optional(),
     usage: z.array(record({ id: z.string(), source: z.string(), scope: z.enum(['turn', 'cumulative', 'context']), inputTokens: z.number().optional(), outputTokens: z.number().optional(), cachedTokens: z.number().optional(), contextUsed: z.number().optional(), contextSize: z.number().optional(), cost: z.number().optional(), currency: z.string().optional(), createdAt: z.string() })).optional(),

@@ -1,4 +1,5 @@
 import type { Session } from '../shared/types';
+import { sessionAttentionMessage } from '../shared/session-attention-message';
 
 export function recordSessionAttention(session: Session): void {
   const reason = session.status === 'waiting_approval' ? 'approval'
@@ -10,4 +11,9 @@ export function recordSessionAttention(session: Session): void {
   if (session.attention?.sourceId === sourceId) return;
   session.attention = { revision: (session.attention?.revision ?? 0) + 1, seenRevision: session.attention?.seenRevision ?? 0,
     reason, updatedAt: new Date().toISOString(), sourceId };
+  if (reason !== 'approval') {
+    const target = sessionAttentionMessage(session, reason);
+    const messageId = target?.id ?? session.attempts?.at(-1)?.userMessageId;
+    if (messageId) session.attention.messageId = messageId;
+  }
 }

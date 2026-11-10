@@ -340,8 +340,10 @@ async function runCodex(connection: CodexSessionConnection, context: TurnContext
       return;
     }
     if (['commandExecution', 'fileChange', 'mcpToolCall', 'dynamicToolCall', 'webSearch'].includes(String(item.type))) {
+      const status = processStatus(item.status ?? (completed ? 'completed' : 'running'));
+      const commandFailed = item.type === 'commandExecution' && status === 'completed' && typeof item.exitCode === 'number' && item.exitCode !== 0;
       emitProcess(context, { kind: 'tool', nativeId: String(item.id), title: item.type === 'commandExecution' ? String(item.command ?? '执行命令') : item.type === 'mcpToolCall' ? `${String(item.server ?? '')}/${String(item.tool ?? '')}` : String(item.type),
-        status: processStatus(item.status ?? (completed ? 'completed' : 'running')), input: processText(item.command ?? item.arguments ?? item.changes ?? item.query),
+        status: commandFailed ? 'failed' : status, input: processText(item.command ?? item.arguments ?? item.changes ?? item.query),
         output: processText(item.aggregatedOutput ?? item.result ?? item.error ?? (item.exitCode === undefined ? undefined : { exitCode: item.exitCode })) });
       return;
     }

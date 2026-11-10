@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
-import type { Session } from '../shared/types';
+import type { Session, SessionAttentionOpen } from '../shared/types';
 import { WorkbenchNotifications } from './notifications';
 import { setLanguage } from '../shared/i18n';
 
@@ -16,11 +16,12 @@ function session(status: Session['status']): Session {
 }
 
 test('notifications follow actual transitions once, track delivery failure, and focus the owning session', () => {
-  const notices: Notice[] = []; const opened: string[] = [];
+  const notices: Notice[] = []; const opened: SessionAttentionOpen[] = [];
   const manager = new WorkbenchNotifications(id => opened.push(id), { supported: true, create() { const notice = new Notice(); notices.push(notice); return notice; } });
   manager.observe({ sessions: [session('completed')] }); assert.equal(notices.length, 0);
   assert.equal(manager.status().state, 'idle');
-  manager.observe({ sessions: [session('running')] }); manager.observe({ sessions: [session('completed')] });
+  manager.observe({ sessions: [session('running')] });
+  manager.observe({ sessions: [{ ...session('completed'), attention: { reason: 'result', seenRevision: 0, revision: 1, updatedAt: session('completed').updatedAt, messageId: 'first-result' } }] });
   manager.observe({ sessions: [session('completed')] }); assert.equal(notices.length, 1);
   assert.equal(manager.status().state, 'requested');
   notices[0].emit('failed', {}, 'codesign required'); assert.equal(manager.status().state, 'failed');
@@ -29,7 +30,14 @@ test('notifications follow actual transitions once, track delivery failure, and 
   manager.observe({ sessions: [approval] }); manager.observe({ sessions: [approval] }); assert.equal(notices.length, 2);
   assert.equal(manager.status().state, 'requested');
   notices[1].emit('show'); assert.equal(manager.status().state, 'shown');
-  notices[1].emit('click'); assert.deepEqual(opened, ['one']);
+  const secondApproval = { ...approval.approvals[0], id: 'another-approval' };
+  manager.observe({ sessions: [{ ...approval, approvals: [secondApproval] }] });
+  notices[1].emit('click');
+  notices[0].emit('click');
+  assert.deepEqual(opened, [
+    { sessionId: 'one', reason: 'approval', approvalId: 'approval', revision: undefined },
+    { sessionId: 'one', reason: 'result', messageId: 'first-result', revision: 1 },
+  ]);
   manager.dispose();
 });
 

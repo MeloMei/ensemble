@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, shell, systemPreferences } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { mkdir, realpath } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
@@ -10,9 +10,14 @@ import { WorkbenchNotifications } from './notifications';
 import { DesktopPreferences } from './preferences';
 import { DATA_DIRECTORY_NAME, PRODUCT_NAME } from '../shared/app-identity';
 import { initializeI18n, resolveLanguage, setLanguage, translate, type LanguagePreference, type LanguageState } from '../shared/i18n';
-import type { Snapshot, UnsavedFileSummary } from '../shared/types';
+import type { PromptAttachment, Snapshot, UnsavedFileSummary } from '../shared/types';
 import type { AppUpdateState } from '../shared/application-updates';
 import { ApplicationUpdates } from './application-updates';
+import { AttachmentService, attachmentMetadataSchema } from './attachment-service';
+import { ATTACHMENT_LIMITS } from '../shared/prompt-attachments';
+import { capturePreviewElement, displayPreviewAnnotations, previewPointSchema } from './preview-annotations';
+import { previewEvidenceSourceSchema } from './draft-evidence-schema';
+import { captureWindow, WINDOW_CAPTURE_SHORTCUT } from './window-capture';
 
 app.setName(PRODUCT_NAME);
 app.setPath('userData', process.env.WORKBENCH_DATA_DIR ?? join(app.getPath('appData'), DATA_DIRECTORY_NAME));
@@ -30,6 +35,7 @@ let quitting = false;
 let updatesDisposed = false;
 let notifications: WorkbenchNotifications;
 const preferences = new DesktopPreferences(app.getPath('userData'));
+const attachments = new AttachmentService(join(app.getPath('userData'), 'attachments'));
 let languageState: LanguageState;
 let languageUpdates: Promise<void> = Promise.resolve();
 interface CloseRequest {
@@ -49,6 +55,36 @@ let watchedSessions: string[] = [];
 const terminalWatches = new Map<string, { controller: AbortController; client: BackendClient }>();
 const connection = new BackendConnectionTracker(state => window?.webContents.send('workbench:connection-changed', state));
 const cwdSchema = z.string().min(1).max(4096);
+let windowCapture: AbortController | undefined;
+
+async function captureSelectedWindow(): Promise<PromptAttachment | undefined> {
+  if (process.platform !== 'darwin' || windowCapture) return;
+  const access = systemPreferences.getMediaAccessStatus('screen');
+  if (access === 'denied' || access === 'restricted') throw new Error(translate('native:capture.permission'));
+  const capture = new AbortController();
+  windowCapture = capture;
+  try {
+    await updates.waitForStartupConfirmation();
+    return await captureWindow(path => backend.call<PromptAttachment[]>('workbench:import-attachments', [path]), capture.signal);
+  } finally {
+    windowCapture = undefined;
+  }
+}
+
+function registerWindowCapture(): boolean {
+  if (process.platform !== 'darwin') return false;
+  return globalShortcut.isRegistered(WINDOW_CAPTURE_SHORTCUT) || globalShortcut.register(WINDOW_CAPTURE_SHORTCUT, () => {
+    if (!window || window.isDestroyed()) return;
+    if (windowCapture) { windowCapture.abort(); return; }
+    void captureSelectedWindow().then(attachment => {
+      if (!attachment || !window || window.isDestroyed()) return;
+      if (window.isMinimized()) window.restore();
+      window.show();
+      window.focus();
+      window.webContents.send('workbench:window-captured', attachment);
+    }, error => dialog.showErrorBox(translate('native:capture.title'), error instanceof Error ? error.message : String(error)));
+  });
+}
 const closeReplySchema = z.object({ requestId: z.string().uuid(), error: z.string().nullable(),
   unsavedFiles: z.object({ count: z.number().int().nonnegative(), names: z.array(z.string().max(4400)).max(8) }).strict(),
 }).strict();
@@ -108,7 +144,7 @@ function registerIPC(commands: string[]): void {
   });
   const handle = (channel: string, handler: (...args: unknown[]) => unknown) => {
     ipcMain.handle(channel, (event, ...args: unknown[]) => {
-      if (!window || event.sender.id !== window.webContents.id) throw new Error(translate('native:error.windowMismatch'));
+      if (!window || event.sender.id !== window.webContents.id || event.senderFrame?.parent !== null) throw new Error(translate('native:error.windowMismatch'));
       return handler(...args);
     });
   };
@@ -144,6 +180,26 @@ function registerIPC(commands: string[]): void {
     const result = await dialog.showOpenDialog(window!, { title: translate('native:dialog.chooseAttachments'), buttonLabel: translate('native:dialog.chooseAttachmentsButton'), properties: ['openFile', 'multiSelections'] });
     return result.canceled ? [] : backend.call('workbench:import-attachments', result.filePaths);
   });
+  handle('workbench:import-pasted-image', (name, bytes) => {
+    if (!(bytes instanceof Uint8Array) || bytes.byteLength > ATTACHMENT_LIMITS.imageBytes) throw new Error('剪贴板图片超过附件大小限制。');
+    return attachments.importImage(z.string().min(1).max(300).parse(name), bytes);
+  });
+  handle('workbench:read-image-attachment', async input => {
+    const attachment = attachmentMetadataSchema.parse(input);
+    if (attachment.kind !== 'image') throw new Error('该附件不是图片。');
+    const [image] = await attachments.load([attachment]);
+    return `data:${image.mimeType};base64,${image.data.toString('base64')}`;
+  });
+  const previewTabId = (input: unknown) => {
+    const id = z.string().min(1).max(200).parse(input);
+    if (!latestSnapshot?.workspaces.some(workspace => workspace.tabs.some(tab => tab.kind === 'preview' && tab.id === id))) {
+      throw new Error('预览标签页不存在。');
+    }
+    return id;
+  };
+  handle('workbench:capture-preview-element', (id, point) => capturePreviewElement(window!.webContents, previewTabId(id), previewPointSchema.parse(point)));
+  handle('workbench:display-preview-annotations', (id, values, revealId) => displayPreviewAnnotations(window!.webContents, previewTabId(id),
+    z.array(previewEvidenceSourceSchema).max(256).parse(values), z.string().uuid().optional().parse(revealId)));
   handle('workbench:launch-codex', async input => {
     const parsed = z.object({ cwd: cwdSchema, prompt: z.string().max(200_000) }).strict().parse(input);
     const link = buildCodexLink(parsed);
@@ -155,6 +211,28 @@ function registerIPC(commands: string[]): void {
     const error = await shell.openPath(path); if (error) throw new Error(error);
   });
   handle('workbench:notification-status', () => notifications.status());
+  handle('workbench:notification-preferences', () => preferences.notificationPreferences);
+  handle('workbench:capture-window', () => captureSelectedWindow());
+  handle('workbench:cancel-window-capture', () => { windowCapture?.abort(); });
+  handle('workbench:window-capture-shortcut', () => process.platform === 'darwin' && globalShortcut.isRegistered(WINDOW_CAPTURE_SHORTCUT));
+  handle('workbench:set-window-capture-shortcut', async input => {
+    const enabled = z.boolean().parse(input);
+    const wasRegistered = globalShortcut.isRegistered(WINDOW_CAPTURE_SHORTCUT);
+    if (enabled && !registerWindowCapture()) throw new Error(translate('native:capture.shortcutUnavailable'));
+    try { await preferences.setWindowCaptureShortcut(enabled); }
+    catch (error) {
+      if (!wasRegistered && enabled) globalShortcut.unregister(WINDOW_CAPTURE_SHORTCUT);
+      throw error;
+    }
+    if (!enabled && wasRegistered) globalShortcut.unregister(WINDOW_CAPTURE_SHORTCUT);
+    return enabled;
+  });
+  handle('workbench:set-notification-preferences', async input => {
+    const patch = z.object({ enabled: z.boolean(), backgroundOnly: z.boolean(), approvals: z.boolean(),
+      results: z.boolean(), failures: z.boolean(), sound: z.boolean() }).partial().strict().parse(input);
+    await preferences.setNotificationPreferences(patch);
+    return preferences.notificationPreferences;
+  });
   handle('workbench:application-update', () => updates.snapshot);
   handle('workbench:check-application-update', () => updates.check());
   handle('workbench:download-application-update', () => updates.download());
@@ -262,6 +340,11 @@ async function createWindow(): Promise<void> {
     return { action: 'deny' };
   });
   window.webContents.on('will-navigate', event => event.preventDefault());
+  const blockSameOriginFrame = (event: { isMainFrame: boolean; url: string; preventDefault(): void }) => {
+    if (!event.isMainFrame && URL.parse(event.url)?.origin === currentWindow.webContents.mainFrame.origin) event.preventDefault();
+  };
+  window.webContents.on('will-frame-navigate', blockSameOriginFrame);
+  window.webContents.on('will-redirect', blockSameOriginFrame);
   currentWindow.on('closed', () => {
     if (closeRequest?.window === currentWindow) {
       if (closeRequest.timer) clearTimeout(closeRequest.timer);
@@ -295,11 +378,12 @@ if (gotLock) void app.whenReady().then(async () => {
     requestQuit: () => { allowWindowClose = true; window?.close(); },
   });
   await updates.load();
-  notifications = new WorkbenchNotifications(sessionId => {
-    window?.show(); window?.focus(); window?.webContents.send('workbench:focus-session', sessionId);
-  });
+  notifications = new WorkbenchNotifications(target => {
+    window?.show(); window?.focus(); window?.webContents.send('workbench:focus-session', target);
+  }, undefined, () => preferences.notificationPreferences, () => window?.isFocused() === true);
   registerIPC(await backend.request<string[]>('/commands'));
   await createWindow();
+  if (preferences.windowCaptureShortcut) registerWindowCapture();
   updates.schedule();
   void (async () => {
     while (!subscription.signal.aborted) {
@@ -335,6 +419,7 @@ if (gotLock) void app.whenReady().then(async () => {
 app.on('second-instance', () => { if (window?.isMinimized()) window.restore(); window?.focus(); });
 app.on('activate', () => { if (!quitting && backend && !window) void createWindow(); });
 app.on('window-all-closed', () => app.quit());
+app.on('before-quit', () => { windowCapture?.abort(); });
 app.on('will-quit', event => {
   if (updates && !updatesDisposed) {
     event.preventDefault();
@@ -345,6 +430,7 @@ app.on('will-quit', event => {
     return;
   }
   subscription.abort(); connection.stop(); notifications?.dispose();
+  if (process.platform === 'darwin') globalShortcut.unregister(WINDOW_CAPTURE_SHORTCUT);
   for (const watched of terminalWatches.values()) watched.controller.abort();
   terminalWatches.clear();
 });

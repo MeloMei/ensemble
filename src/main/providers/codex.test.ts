@@ -107,6 +107,7 @@ createInterface({ input: process.stdin }).on('line', line => {
       event('item/started', { turnId, item: { type: 'commandExecution', id: 'native-command', command: 'literal command', status: 'inProgress' } });
       event('item/commandExecution/outputDelta', { turnId, itemId: 'native-command', delta: 'actual output' });
       event('item/completed', { turnId, item: { type: 'commandExecution', id: 'native-command', command: 'literal command', status: 'completed', aggregatedOutput: 'actual output', exitCode: 0 } });
+      event('item/completed', { turnId, item: { type: 'commandExecution', id: 'failed-command', command: 'verify config', status: 'completed', aggregatedOutput: 'invalid config', exitCode: 1 } });
       event('turn/plan/updated', { turnId, plan: [{ step: 'Observed native task', status: 'completed' }] });
       event('thread/tokenUsage/updated', { turnId, tokenUsage: { last: { inputTokens: 12, outputTokens: 3, cachedInputTokens: 4, totalTokens: 15 }, total: { inputTokens: 100 }, modelContextWindow: 1000 } });
       event('item/completed', { turnId, item: { type: 'collabAgentToolCall', id: 'collab', tool: 'spawnAgent', receiverThreadIds: ['native-child'], agentsStates: { 'native-child': { status: 'completed', message: 'child result' } }, status: 'completed' } });
@@ -287,6 +288,7 @@ test('Codex provider uses the app-server protocol and cleans up owned processes'
       await provider.run(first);
       assert(first.events.some(event => event.type === 'native-turn' && event.turnId === 'turn-1'));
       assert(first.events.some(event => event.type === 'structured' && event.event.kind === 'tool' && event.event.status === 'completed' && event.event.output === 'actual output'));
+      assert(first.events.some(event => event.type === 'structured' && event.event.title === 'verify config' && event.event.status === 'failed'));
       assert(first.events.some(event => event.type === 'structured' && event.event.kind === 'plan' && event.event.entries?.[0].text === 'Observed native task'));
       assert(first.events.some(event => event.type === 'structured' && event.event.kind === 'subagent' && event.event.nativeId === 'native-child'));
       const diffs = first.events.flatMap(event => event.type === 'structured' && event.event.kind === 'diff' ? [event.event] : []);

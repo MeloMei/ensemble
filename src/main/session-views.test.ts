@@ -48,6 +48,15 @@ test('closing a running terminal tab requires confirmation and keeps the tab on 
       await new Promise(resolve => setTimeout(resolve, 10));
     }
     assert.equal(service.terminalSnapshot(terminalId).status, 'exited');
+    const sessionId = await service.engine.createSession({ title: 'Keep writing', providerId: fixture.info.id, cwd: fixture.firstProject });
+    const primary = service.engine.workspace(workspaceId).activeTabId;
+    await assert.rejects(service.call('workbench:create-terminal', [workspaceId, 'stale-session']), /会话已经切换/);
+    const besideId = await service.call('workbench:create-terminal', [workspaceId, sessionId]) as string;
+    const split = service.engine.workspace(workspaceId);
+    assert.equal(split.activeTabId, primary);
+    assert.equal(split.tabs.find(item => item.id === split.secondaryTabId)?.kind, 'terminal');
+    assert.equal(await service.call('workbench:create-terminal', [workspaceId, sessionId]), besideId);
+    assert.equal(service.engine.workspace(workspaceId).tabs.length, 2);
   } finally { await fixture.close(); }
 });
 

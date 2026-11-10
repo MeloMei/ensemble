@@ -109,6 +109,17 @@ a { color: var(--accent); text-underline-offset: 3px; }
 .workspace-row-entry.group-pinned.workspace-group-end { margin-bottom: 11px; }
 .workspace-row-entry:hover, .workspace-row-entry:focus-within { background: var(--hover); }
 .workspace-row-entry.selected { background: var(--selected); }
+.workspace-row-entry.with-sessions { display: block; }
+.workspace-row-main { display: flex; align-items: flex-start; }
+.workspace-session-toggle.icon-button { width: 21px; height: 26px; margin: 5px 0 0 3px; color: var(--muted); }
+.workspace-session-toggle[aria-expanded=true] svg { transform: rotate(90deg); }
+.workspace-session-list { list-style: none; margin: 0 5px 0 24px; padding: 0 0 5px; }
+.workspace-session-list li > button {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 3px 6px; width: 100%;
+  padding: 5px 7px; border-radius: var(--radius-control); color: var(--muted); text-align: left;
+}
+.workspace-session-list li > button:hover, .workspace-session-list li > button[aria-current] { background: var(--surface-raised); color: var(--text); }
+.workspace-session-title { flex: 1 1 calc(100% - 19px); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 .workspace-row { position: relative; display: flex; flex: 1; min-width: 0; align-items: flex-start; gap: 8px; padding: 7px 5px 7px 9px; border-radius: var(--radius-control); text-align: left; }
 .workspace-row.selected::before, .sidebar-navigation button.selected::before, .list-item.selected::before { content: ""; position: absolute; top: 8px; bottom: 8px; left: 0; width: 2px; border-radius: 2px; background: var(--accent); }
 .workspace-row.selected .workspace-glyph { color: var(--accent); }
@@ -154,6 +165,8 @@ a { color: var(--accent); text-underline-offset: 3px; }
 .workspace-heading > span { color: var(--dim); font-size: 12px; white-space: nowrap; max-width: 150px; overflow: hidden; text-overflow: ellipsis; }
 .workspace-heading .icon-button { width: 25px; height: 27px; color: var(--dim); }
 .workspace-heading .icon-button[aria-pressed=true] { color: var(--accent); }
+.visit-history-controls { display: flex; flex-shrink: 0; gap: 2px; -webkit-app-region: no-drag; }
+.visit-history-controls .icon-button:hover:not(:disabled) { background: var(--hover); color: var(--text); }
 .workspace-header-actions { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
 .local-indicator { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; padding: 0 5px; }
 .local-indicator i { height: 5px; width: 5px; border-radius: 50%; background: var(--success); }

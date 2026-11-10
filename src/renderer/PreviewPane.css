@@ -1,0 +1,6 @@
+.preview-annotation-stage { position: relative; display: flex; flex: 1; min-height: 0; }
+.preview-toolbar .preview-annotate-button, .preview-annotation-hint { display: flex; gap: 6px; align-items: center; }
+.preview-toolbar .preview-annotate-button[aria-pressed="true"] { color: var(--accent); }
+.preview-annotation-hint { padding: 6px 12px; background: var(--surface); color: var(--muted); font-size: 11px; }
+.preview-annotation-target { position: absolute; inset: 0; z-index: 1; cursor: crosshair; outline: 2px solid var(--accent); outline-offset: -2px; }
+.preview-annotation-crosshair { position: absolute; transform: translate(-50%, -50%); border-radius: 50%; color: white; background: #6754cd; pointer-events: none; }

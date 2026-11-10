@@ -22,8 +22,9 @@ function terminalTheme(element: HTMLElement): ITheme {
   return Object.fromEntries(Object.entries(terminalColors).map(([key, token]) => [key, styles.getPropertyValue(`--terminal-${token}`).trim()]));
 }
 
-export function TerminalPane({ info, cwd, perform, onHide, onStop }: {
+export function TerminalPane({ info, cwd, perform, onHide, onStop, onReturn, focusRequest }: {
   info: TerminalInfo; cwd: string; perform: Perform; onHide?: () => void; onStop?: () => void;
+  onReturn?: () => void; focusRequest?: object;
 }) {
   const { t } = useTranslation('workspace');
   const { theme } = useAppearance();
@@ -85,6 +86,8 @@ export function TerminalPane({ info, cwd, perform, onHide, onStop }: {
     return () => { unsubscribe(); observer.disconnect(); cancelAnimationFrame(frame); input.dispose(); terminal.dispose(); instance.current = null; consumedEnd.current = null; };
   }, [info.id]);
 
+  useEffect(() => { if (focusRequest) instance.current?.focus(); }, [focusRequest]);
+
   useEffect(() => {
     Terminal.strings.promptLabel = t('terminal.input');
     Terminal.strings.tooMuchOutput = t('terminal.tooMuchOutput');
@@ -106,6 +109,7 @@ export function TerminalPane({ info, cwd, perform, onHide, onStop }: {
 
   return <section className="terminal-pane"><div className="terminal-toolbar"><span title={cwd}><TerminalSquare size={14} /><span>{cwd}</span></span>
     <span className={`terminal-status ${info.status === 'running' ? 'running' : ''}`}><i />{info.status === 'running' ? t('terminal.running') : info.exitCode !== null ? t('terminal.exitedCode', { code: info.exitCode }) : t('terminal.exited')}</span>
+    {onReturn && <button className="text-button" onClick={onReturn}>{t('terminal.returnToChat')}</button>}
     {onHide && <button className="text-button" onClick={onHide}><Minus size={13} />{t('shell:app.hideTerminal')}</button>}
     {info.status === 'running' && onStop && <button className="text-button terminal-stop" onClick={onStop}><CircleStop size={13} />{t('common.stop')}</button>}
   </div><TerminalServicePreviews key={info.id} info={info} perform={perform} /><div className="terminal-surface" ref={container} /></section>;

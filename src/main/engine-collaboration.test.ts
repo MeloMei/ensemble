@@ -29,6 +29,37 @@ async function fixture(run: (context: TurnContext) => Promise<void>, extra: Part
 }
 const caller = (context: TurnContext): CollaborationCaller => ({ sessionId: context.session.id, attemptId: context.session.attempts!.at(-1)!.id });
 
+test('answer fork opens beside the source without moving it or editing its draft', async () => {
+  const f = await fixture(async context => {
+    context.emit({ type: 'text', itemId: 'answer', text: 'selected answer' });
+  });
+  try {
+    const source = await f.engine.createSession({ title: 'source', providerId: 'test', cwd: f.cwd });
+    f.engine.sendPrompt(source, { text: 'question' });
+    await f.engine.waitSession(source);
+    f.engine.saveSessionDraft(source, { text: 'keep my draft' });
+    const other = await f.engine.createSession({ title: 'other', providerId: 'test', cwd: f.cwd });
+    const before = f.engine.snapshot().workspaces[0];
+    const sourceTabId = before.tabs.find(tab => tab.kind === 'agent' && tab.sessionId === source)!.id;
+    f.engine.splitWorkspace(before.id, { tabId: sourceTabId, direction: 'vertical', placement: 'before', ratio: 0.6 });
+    const original = f.engine.getSession(source);
+    const messageId = original.messages.find(message => message.role === 'assistant')!.id;
+    const fork = await f.engine.forkSession(source, messageId, undefined, true);
+    const after = f.engine.workspace(before.id);
+    assert.equal(after.activeTabId, sourceTabId);
+    assert.equal(after.secondaryTabId, after.tabs.find(tab => tab.kind === 'agent' && tab.sessionId === fork)?.id);
+    assert.equal(after.secondaryPlacement, 'after');
+    assert.equal(after.splitDirection, 'vertical');
+    assert.equal(after.splitRatio, 0.6);
+    assert(after.tabs.some(tab => tab.kind === 'agent' && tab.sessionId === other));
+    assert.deepEqual(f.engine.getSession(source).draft, { text: 'keep my draft' });
+    const forked = f.engine.getSession(fork);
+    assert.deepEqual(forked.forkedFrom, { sessionId: source, messageId });
+    assert.equal(forked.cwd, original.cwd);
+    assert.match(forked.draft!.text, /selected answer/);
+  } finally { await f.cleanup(); }
+});
+
 test('overlapping non-Git directories are refused before creating an orphan worker', async () => {
   let engine!: WorkbenchEngine; let nested = '';
   const f = await fixture(async context => {

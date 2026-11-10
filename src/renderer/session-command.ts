@@ -121,7 +121,8 @@ export async function runSessionCommand<T>(scope: string, input: unknown, operat
 }
 
 export function promptCommandInput(input: PromptInput): PromptInput {
-  return { text: input.text.trim(), ...(input.attachments?.length ? { attachments: input.attachments } : {}) };
+  return { text: input.text.trim(), ...(input.attachments?.length ? { attachments: input.attachments } : {}),
+    ...(input.evidence?.length ? { evidence: input.evidence } : {}) };
 }
 
 export function runSessionStopCommand<T>(session: Pick<Session, 'id' | 'attempts'>, operation: (commandId: string, expectedAttemptId?: string) => Promise<T>): Promise<T> {

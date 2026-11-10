@@ -1,6 +1,6 @@
-import { useId, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { FolderCog, MessageCircle, Palette, Plug } from 'lucide-react';
+import { FolderCog, MessageCircle, Palette, Plug, Search } from 'lucide-react';
 import type { Session, Snapshot, Workspace } from '../shared/types';
 import { ThemeOptions } from './appearance';
 import { LanguageOptions } from './language';
@@ -10,11 +10,14 @@ import { ProvidersContent } from './WorkflowViews';
 import { WorkspaceToolsPanel, type WorkspaceToolsHandle } from './WorkspaceTools';
 import { SessionSettingsPanel } from './SessionChat';
 import { Modal, type Perform } from './ui';
+import { NotificationSettings } from './NotificationSettings';
+import { WindowCaptureSettings } from './WindowCapture';
+import { searchableSettings, type SettingsSection, type SettingsTarget } from './settings-targets';
 import './SettingsDialog.css';
 
-export type SettingsSection = 'general' | 'providers' | 'project' | 'session';
+export type { SettingsSection } from './settings-targets';
 
-export function SettingsDialog({ snapshot, workspace, sessions, session, perform, pending, updates, initialSection, openSession, onClose }: {
+export function SettingsDialog({ snapshot, workspace, sessions, session, perform, pending, updates, initialSection, initialTarget, openSession, onClose }: {
   snapshot: Snapshot | null;
   workspace?: Workspace;
   sessions: Session[];
@@ -23,6 +26,7 @@ export function SettingsDialog({ snapshot, workspace, sessions, session, perform
   pending: Set<string>;
   updates: ReturnType<typeof useApplicationUpdates>;
   initialSection: SettingsSection;
+  initialTarget?: SettingsTarget;
   openSession: (id: string) => void;
   onClose: () => void;
 }) {
@@ -33,6 +37,11 @@ export function SettingsDialog({ snapshot, workspace, sessions, session, perform
   const [projectBusy, setProjectBusy] = useState(false);
   const projectTools = useRef<WorkspaceToolsHandle>(null);
   const tabs = useRef<HTMLDivElement>(null);
+  const content = useRef<HTMLDivElement>(null);
+  const search = useRef<HTMLInputElement>(null);
+  const [query, setQuery] = useState('');
+  const [searchIndex, setSearchIndex] = useState(0);
+  const [target, setTarget] = useState<SettingsTarget | undefined>(initialTarget);
   const id = useId();
   const projects = (snapshot?.workspaces ?? (workspace ? [workspace] : [])).filter(item => !item.archived);
   const projectWorkspace = projects.find(item => item.id === projectId) ?? projects.find(item => item.id === workspace?.id) ?? projects[0];
@@ -51,10 +60,68 @@ export function SettingsDialog({ snapshot, workspace, sessions, session, perform
     if (projectTools.current) projectTools.current.requestClose(action); else action();
   };
   const close = () => guardProjectEdits(onClose);
+  const words = query.trim().toLocaleLowerCase().split(/\s+/u).filter(Boolean);
+  const results = words.length ? searchableSettings(t, projectWorkspace?.name, session?.title).filter(item => {
+    const text = [item.title, item.detail, item.keywords].join(' ').toLocaleLowerCase();
+    return words.every(word => text.includes(word));
+  }) : [];
+  const resultIndex = Math.min(searchIndex, results.length - 1);
+  const openTarget = (next: SettingsTarget) => {
+    select(next.section);
+    setTarget({ ...next });
+  };
+
+  useLayoutEffect(() => {
+    if (!target || target.section !== section || !content.current) return;
+    const id = target.id;
+    const row = content.current.querySelector<HTMLElement>(`[data-setting-anchor="${id}"]`);
+    if (!row) return;
+    row.scrollIntoView({ block: 'nearest' });
+    row.classList.add('setting-search-highlight');
+    const clear = () => row.classList.remove('setting-search-highlight');
+    const timer = window.setTimeout(clear, 1400);
+    return () => { window.clearTimeout(timer); clear(); };
+  }, [target, section, projectWorkspace?.id]);
+
+  useEffect(() => {
+    const find = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() !== 'f' || !(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey || event.isComposing) return;
+      if (document.activeElement?.closest('dialog[open]') !== search.current?.closest('dialog[open]')) return;
+      event.preventDefault();
+      event.stopPropagation();
+      search.current?.focus();
+      search.current?.select();
+    };
+    window.addEventListener('keydown', find, true);
+    return () => window.removeEventListener('keydown', find, true);
+  }, []);
+
 
   return <Modal title={t('preferences.title')} subtitle={t('preferences.subtitle')} size="wide" busy={Boolean(projectWorkspace && projectBusy)} onClose={close}>
     <div className="settings-layout">
-      <div className="settings-nav" ref={tabs} role="tablist" aria-label={t('preferences.title')} aria-orientation="vertical"
+      <aside className="settings-sidebar">
+      <label className="settings-search"><Search size={13} aria-hidden="true" />
+        <input ref={search} role="combobox" aria-label={t('settings.search.label')} placeholder={t('settings.search.label')}
+          aria-controls={`${id}-settings-results`} aria-expanded={words.length > 0}
+          aria-activedescendant={resultIndex >= 0 ? `${id}-setting-${resultIndex}` : undefined}
+          value={query} onChange={event => { setQuery(event.target.value); setSearchIndex(0); }}
+          onKeyDown={event => {
+            if (event.nativeEvent.isComposing || event.keyCode === 229 || !results.length) return;
+            if (event.key === 'Enter') { event.preventDefault(); openTarget(results[resultIndex]); }
+            if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+              event.preventDefault();
+              setSearchIndex((resultIndex + (event.key === 'ArrowDown' ? 1 : -1) + results.length) % results.length);
+            }
+          }} />
+      </label>
+      <div hidden={!words.length} className="settings-search-results" role="listbox" id={`${id}-settings-results`}>
+        {results.map((item, index) => <div role="option" id={`${id}-setting-${index}`} aria-selected={index === resultIndex}
+          key={item.id} onMouseDown={event => event.preventDefault()} onClick={() => { setSearchIndex(index); openTarget(item); }}>
+          <strong>{item.title}</strong><small>{item.detail}</small>
+        </div>)}
+        {words.length > 0 && !results.length && <small role="status">{t('commandPalette.empty')}</small>}
+      </div>
+      <div hidden={words.length > 0} className="settings-nav" ref={tabs} role="tablist" aria-label={t('preferences.title')} aria-orientation="vertical"
         onKeyDown={event => {
           if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
           event.preventDefault();
@@ -68,26 +135,29 @@ export function SettingsDialog({ snapshot, workspace, sessions, session, perform
           onClick={() => select(item.id)}><item.Icon size={15} /><span>{item.label}</span></button>)}
         {workspace && <span className="settings-workspace" title={workspace.cwd}>{workspace.name}</span>}
       </div>
-      <div className="settings-content">
+      </aside>
+      <div className="settings-content" ref={content}>
         <section className="settings-panel" id={`${id}-general`} role="tabpanel" aria-labelledby={`${id}-general-tab`} hidden={section !== 'general'}>
           {visited.has('general') && <>
             <header className="settings-section-heading"><h3>{t('settings.general')}</h3><p>{t('settings.generalDescription')}</p></header>
-            <LanguageOptions />
-            <section className="settings-appearance"><h3 className="preferences-heading">{t('preferences.theme')}</h3><ThemeOptions /><p className="appearance-note">{t('preferences.themeNote')}</p></section>
-            <ApplicationUpdateSettings {...updates} />
+            <div data-setting-anchor="language"><LanguageOptions /></div>
+            <section className="settings-appearance" data-setting-anchor="theme"><h3 className="preferences-heading">{t('preferences.theme')}</h3><ThemeOptions /><p className="appearance-note">{t('preferences.themeNote')}</p></section>
+            <NotificationSettings perform={perform} />
+            <WindowCaptureSettings perform={perform} />
+            <div data-setting-anchor="updates"><ApplicationUpdateSettings {...updates} /></div>
           </>}
         </section>
         <section className="settings-panel" id={`${id}-providers`} role="tabpanel" aria-labelledby={`${id}-providers-tab`} hidden={section !== 'providers'}>
           {visited.has('providers') && <>
             <header className="settings-section-heading"><h3>{t('app.providers')}</h3><p>{t('provider.refreshAfterSetup')}</p></header>
-            {snapshot && <ProvidersContent snapshot={snapshot} perform={perform} pending={pending} />}
+            {snapshot && <div data-setting-anchor="providers"><ProvidersContent snapshot={snapshot} perform={perform} pending={pending} /></div>}
           </>}
         </section>
         <section className="settings-panel" id={`${id}-project`} role="tabpanel" aria-labelledby={`${id}-project-tab`} hidden={section !== 'project'}>
           {visited.has('project') && <>
             <header className="settings-section-heading"><h3>{t('settings.project')}</h3><p>{t('settings.projectDescription')}</p></header>
             {projectWorkspace ? <>
-              <div className="settings-project-picker">
+              <div className="settings-project-picker" data-setting-anchor="project-path">
                 <label htmlFor={`${id}-project-scope`}>{t('settings.projectScope')}</label>
                 <AppSelect id={`${id}-project-scope`} label={t('settings.projectScope')} aria-describedby={`${id}-project-path`}
                   value={projectWorkspace.id} disabled={projectBusy}
@@ -96,15 +166,15 @@ export function SettingsDialog({ snapshot, workspace, sessions, session, perform
                 <small id={`${id}-project-path`} title={projectWorkspace.cwd}>{projectWorkspace.cwd}</small>
               </div>
               <WorkspaceToolsPanel ref={projectTools} workspace={projectWorkspace} sessions={sessions} perform={perform}
-                onBusyChange={setProjectBusy} onRemoved={close} />
+                onBusyChange={setProjectBusy} onRemoved={close} target={target?.section === 'project' ? target : undefined} />
             </> : <p className="settings-project-empty">{t('settings.projectEmpty')}</p>}
           </>}
         </section>
         <section className="settings-panel" id={`${id}-session`} role="tabpanel" aria-labelledby={`${id}-session-tab`} hidden={section !== 'session'}>
           {visited.has('session') && <>
             <header className="settings-section-heading"><h3>{t('settings.session')}</h3><p>{session?.title ?? t('settings.sessionEmpty')}</p></header>
-            {session && workspace && <SessionSettingsPanel key={session.id} session={session} workspaceId={workspace.id}
-              visible={section === 'session'} perform={perform} openSession={openSession} />}
+            {session && workspace && <div data-setting-anchor="session-skills"><SessionSettingsPanel key={session.id} session={session} workspaceId={workspace.id}
+              visible={section === 'session'} perform={perform} openSession={openSession} /></div>}
           </>}
         </section>
       </div>

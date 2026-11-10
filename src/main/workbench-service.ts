@@ -20,7 +20,7 @@ import { MissingWorkspaceDirectoryError, WorkspaceFiles } from './workspace-file
 import type { Snapshot } from '../shared/types';
 import { PROMPT_TEXT_LIMIT, SIDE_QUESTION_LIMIT, SIDE_QUESTION_REFERENCE_LIMIT } from '../shared/types';
 import type { TerminalOutputEvent } from '../shared/backend';
-import { AttachmentService } from './attachment-service';
+import { AttachmentService, attachmentMetadataSchema } from './attachment-service';
 import { RuntimeSettings, readDeepSeekBalance } from './runtime-settings';
 import { CollaborationServer } from './collaboration-server';
 import { reviewPullRequest } from './pull-request-review';
@@ -33,6 +33,9 @@ import { sessionHistory, searchMessages } from './session-history';
 import { searchableMessageText } from '../shared/message-text';
 import { ATTACHMENT_LIMITS, attachmentLimitIssue } from '../shared/prompt-attachments';
 import { ApplicationUpdateGuard } from './application-update-guard';
+import { draftPromptText, localPreviewUrl } from '../shared/draft-evidence';
+import { draftEvidenceListSchema, draftEvidenceSchema } from './draft-evidence-schema';
+import type { DraftEvidence } from '../shared/types';
 
 const idSchema = z.string().min(1).max(200);
 const cwdSchema = z.string().min(1).max(4096);
@@ -44,16 +47,25 @@ const sessionUpdateSchema = z.object({
   modelId: modelIdSchema.nullable(), settings: settingsSchema.optional(),
   skillAssignment: z.object({ skillId: idSchema, enabled: z.boolean() }).strict().optional(),
 }).strict();
-const attachmentSchema = z.object({ id: idSchema, name: z.string().min(1).max(300), kind: z.enum(['image', 'text']), mimeType: z.string().min(1).max(100), size: z.number().int().min(0).max(20_000_000), sha256: z.string().regex(/^[a-f0-9]{64}$/), ownedPath: cwdSchema }).strict();
 // Older oversized drafts stay editable until the user removes the excess files.
-const draftInputSchema = z.object({ text: z.string().max(PROMPT_TEXT_LIMIT), attachments: z.array(attachmentSchema).max(8).optional() }).strict();
+const draftInputSchema = z.object({ text: z.string().max(PROMPT_TEXT_LIMIT), attachments: z.array(attachmentMetadataSchema).max(8).optional(), evidence: draftEvidenceListSchema.optional() }).strict();
 const promptInputSchema = draftInputSchema.refine(input => !attachmentLimitIssue(input.attachments ?? []), {
   path: ['attachments'], message: `每轮最多 ${ATTACHMENT_LIMITS.count} 个附件，总大小最多 ${ATTACHMENT_LIMITS.totalBytes / 1024 / 1024} MiB。`,
-});
+}).refine(input => draftPromptText(input).length <= PROMPT_TEXT_LIMIT, { path: ['text'], message: '任务和引用合计超过文本长度限制。' });
 const commandIdSchema = z.string().min(1).max(200).optional();
+const queueRevisionSchema = z.number().int().nonnegative();
+const queueEditIdSchema = z.string().uuid();
 const pageLimitSchema = z.number().int().min(1).max(200).optional();
 const messageCursorSchema = z.string().min(1).max(4096);
-const sessionInputSchema = z.object({ title: z.string().max(200), providerId: idSchema, cwd: cwdSchema, modelId: modelIdSchema, commandId: commandIdSchema, initialDraft: draftInputSchema.shape.text.optional() }).strict();
+const branchNameSchema = z.string().min(1).max(4096);
+const sessionLocationSchema = z.object({ workspaceId: idSchema, choice: z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('current'), branch: branchNameSchema.nullable() }).strict(),
+  z.object({ kind: z.literal('registered'), cwd: cwdSchema, branch: branchNameSchema.nullable() }).strict(),
+  z.object({ kind: z.literal('managed'), planId: z.string().uuid(), cwd: cwdSchema, branch: branchNameSchema,
+    fromRef: branchNameSchema.regex(/^refs\/heads\/[^\0\r\n]+$/u) }).strict(),
+]) }).strict();
+const sessionInputSchema = z.object({ title: z.string().max(200), providerId: idSchema, cwd: cwdSchema, modelId: modelIdSchema,
+  commandId: commandIdSchema, initialDraft: draftInputSchema.shape.text.optional(), location: sessionLocationSchema.optional() }).strict();
 const continuationTargetSchema = sessionInputSchema.pick({ providerId: true, modelId: true });
 const sideQuestionSchema = z.object({
   question: z.string().trim().min(1).max(SIDE_QUESTION_LIMIT),
@@ -207,8 +219,16 @@ export async function createWorkbenchService(options: {
       engine.publishState();
     });
     handle('workbench:command-receipt', (_event, id) => engine.commandReceipt(idSchema.parse(id)));
-    handle('workbench:update-queued-prompt', (_event, id, itemId, input) => engine.updateQueuedPrompt(idSchema.parse(id), idSchema.parse(itemId), promptInputSchema.parse(input)));
-    handle('workbench:remove-queued-prompt', (_event, id, itemId) => engine.removeQueuedPrompt(idSchema.parse(id), idSchema.parse(itemId)));
+    handle('workbench:begin-queued-prompt-edit', (_event, id, itemId, revision, editId, ownerId) =>
+      engine.beginQueuedPromptEdit(idSchema.parse(id), idSchema.parse(itemId), queueRevisionSchema.parse(revision), queueEditIdSchema.parse(editId), queueEditIdSchema.parse(ownerId)));
+    handle('workbench:renew-queued-prompt-edit', (_event, id, itemId, editId) =>
+      engine.renewQueuedPromptEdit(idSchema.parse(id), idSchema.parse(itemId), queueEditIdSchema.parse(editId)));
+    handle('workbench:save-queued-prompt-draft', (_event, id, itemId, editId, revision, input) =>
+      engine.saveQueuedPromptDraft(idSchema.parse(id), idSchema.parse(itemId), queueEditIdSchema.parse(editId), queueRevisionSchema.positive().parse(revision), draftInputSchema.parse(input)));
+    handle('workbench:finish-queued-prompt-edit', (_event, id, itemId, editId, input) =>
+      engine.finishQueuedPromptEdit(idSchema.parse(id), idSchema.parse(itemId), queueEditIdSchema.parse(editId), promptInputSchema.optional().parse(input)));
+    handle('workbench:remove-queued-prompt', (_event, id, itemId, revision, commandId, editId) =>
+      engine.removeQueuedPrompt(idSchema.parse(id), idSchema.parse(itemId), queueRevisionSchema.parse(revision), commandIdSchema.parse(commandId), queueEditIdSchema.optional().parse(editId)));
     handle('workbench:set-session-queue-paused', (_event, id, paused) => engine.setSessionQueuePaused(idSchema.parse(id), z.boolean().parse(paused)));
     handle('workbench:reconcile-session-delivery', (_event, id) => engine.reconcileSessionDelivery(idSchema.parse(id)));
     handle('workbench:provider-health', (_event, cwd) => engine.liveSnapshot().providers.map(provider => health.describe(provider, cwdSchema.optional().parse(cwd))));
@@ -229,7 +249,13 @@ export async function createWorkbenchService(options: {
       runId: idSchema.parse(runId), afterSeq: z.number().int().nonnegative().optional().parse(afterSeq), limit: z.number().int().min(1).max(1000).optional().parse(limit),
     }));
     handle('workbench:refresh-providers', () => refreshProviders());
-    handle('workbench:create-session', (_event, input: unknown) => engine.createSession(sessionInputSchema.parse(input)));
+    handle('workbench:session-locations', (_event, id) => managedWorktrees!.sessionLocations(idSchema.parse(id)));
+    handle('workbench:create-session', (_event, input: unknown) => {
+      const parsed = sessionInputSchema.parse(input);
+      const location = parsed.location;
+      return engine.createSession(parsed, location
+        ? () => managedWorktrees!.resolveSessionLocation(location.workspaceId, parsed.cwd, parsed.title, location.choice) : undefined);
+    });
     handle('workbench:send-message', (_event, id, prompt, commandId) => engine.sendMessage(idSchema.parse(id), promptSchema.parse(prompt), commandIdSchema.parse(commandId)));
     handle('workbench:cancel-session', (_event, id, commandId, expectedAttemptId) => engine.cancelSession(idSchema.parse(id), commandIdSchema.parse(commandId), idSchema.optional().parse(expectedAttemptId)));
     handle('workbench:decide-approval', (_event, id, choice, commandId) => engine.decideApproval(idSchema.parse(id), idSchema.parse(choice), commandIdSchema.parse(commandId)));
@@ -267,13 +293,22 @@ export async function createWorkbenchService(options: {
       }
       engine.closeTab(workspace.id, id);
     });
-    handle('workbench:open-session-tab', (_event, workspaceId: unknown, sessionId: unknown) => engine.openSessionTab(idSchema.parse(workspaceId), idSchema.parse(sessionId)));
-    handle('workbench:create-terminal', (_event, workspaceId: unknown) => {
+    handle('workbench:open-session-tab', (_event, workspaceId: unknown, sessionId: unknown, besideSessionId?: unknown) =>
+      engine.openSessionTab(idSchema.parse(workspaceId), idSchema.parse(sessionId), idSchema.optional().parse(besideSessionId)));
+    handle('workbench:create-terminal', (_event, workspaceId: unknown, besideSessionId?: unknown) => {
       const workspace = engine.workspace(idSchema.parse(workspaceId));
       managedWorktrees!.assertWorkspaceAvailable(workspace.id);
+      const beside = idSchema.optional().parse(besideSessionId);
+      if (beside) {
+        const primary = workspace.tabs.find(tab => tab.id === workspace.activeTabId);
+        if (primary?.kind !== 'agent' || primary.sessionId !== beside) throw new Error('会话已经切换，请从当前会话打开终端。');
+        const secondary = workspace.tabs.find(tab => tab.id === workspace.secondaryTabId);
+        if (secondary?.kind === 'terminal' && terminalManager.metadata().some(terminal =>
+          terminal.id === secondary.terminalId && terminal.status === 'running')) return secondary.terminalId;
+      }
       const terminal = terminalManager.create(workspace.id, workspace.cwd);
       engine.setTerminals(terminalManager.metadata());
-      engine.addTab(workspace.id, { id: randomUUID(), kind: 'terminal', terminalId: terminal.id });
+      engine.addTab(workspace.id, { id: randomUUID(), kind: 'terminal', terminalId: terminal.id }, beside ? 'secondary' : 'active');
       return terminal.id;
     });
     handle('workbench:write-terminal', (_event, id: unknown, data: unknown) => terminalManager.write(idSchema.parse(id), z.string().max(65_536).parse(data)));
@@ -282,15 +317,26 @@ export async function createWorkbenchService(options: {
     handle('workbench:list-terminal-services', (_event, id: unknown) => terminalManager.listServices(idSchema.parse(id)));
     handle('workbench:create-preview', (_event, workspaceId: unknown, input: unknown) => {
       const id = idSchema.parse(workspaceId);
-      const url = new URL(z.string().url().max(4096).parse(input));
-      if (!['http:', 'https:'].includes(url.protocol) || !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) || url.username || url.password) throw new Error('预览仅支持本机 localhost 页面。');
+      const url = localPreviewUrl(z.string().max(4096).parse(input));
+      if (!url) throw new Error('预览仅支持本机 localhost 页面。');
       engine.addTab(id, { id: randomUUID(), kind: 'preview', url: url.toString() });
+    });
+    handle('workbench:preview-draft-evidence', (_event, input) => {
+      const tabId = idSchema.parse(input);
+      const entries: Array<[string, DraftEvidence[]]> = [];
+      for (const item of store.state.sessions) {
+        const matches = item.draft?.evidence?.filter(({ source }) => source.kind === 'preview' && source.tabId === tabId);
+        if (matches?.length) entries.push([item.id, matches]);
+      }
+      return Object.fromEntries(entries);
     });
     handle('workbench:list-files', async (_event, workspaceId, path) => {
       const cwd = engine.workspace(idSchema.parse(workspaceId)).cwd;
       try { return await workspaceFiles.list(cwd, z.string().max(4096).optional().parse(path)); }
       catch (error) { if (error instanceof MissingWorkspaceDirectoryError) return null; throw error; }
     });
+    handle('workbench:find-workspace-files', (_event, workspaceId, query) =>
+      workspaceFiles.find(engine.workspace(idSchema.parse(workspaceId)).cwd, z.string().max(4096).parse(query)));
     handle('workbench:read-file', async (_event, workspaceId: unknown, path: unknown) => {
       try { return await workspaceFiles.read(engine.workspace(idSchema.parse(workspaceId)).cwd, z.string().min(1).max(4096).parse(path)); }
       catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
@@ -299,8 +345,16 @@ export async function createWorkbenchService(options: {
     handle('workbench:file-diff', (_event, workspaceId: unknown, path: unknown) => workspaceFiles.diff(engine.workspace(idSchema.parse(workspaceId)).cwd, z.string().min(1).max(4096).parse(path)));
     handle('workbench:send-prompt', (_event, id, input, commandId) => engine.sendPrompt(idSchema.parse(id), promptInputSchema.parse(input), commandIdSchema.parse(commandId)));
     handle('workbench:save-session-draft', (_event, id, input) => engine.saveSessionDraft(idSchema.parse(id), draftInputSchema.parse(input)));
+    handle('workbench:add-session-attachment', async (_event, id, input) => {
+      const sessionId = idSchema.parse(id);
+      const attachment = attachmentMetadataSchema.parse(input);
+      await attachments.load([attachment]);
+      return engine.addSessionAttachment(sessionId, attachment);
+    });
+    handle('workbench:add-session-evidence', (_event, id, evidence) => engine.addSessionEvidence(idSchema.parse(id), draftEvidenceSchema.parse(evidence)));
     handle('workbench:update-session', (_event, id, input) => engine.updateSession(idSchema.parse(id), sessionUpdateSchema.parse(input)));
-    handle('workbench:fork-session', (_event, id, before) => engine.forkSession(idSchema.parse(id), idSchema.optional().parse(before)));
+    handle('workbench:fork-session', (_event, id, before, beside) => engine.forkSession(
+      idSchema.parse(id), idSchema.optional().parse(before), undefined, z.boolean().optional().parse(beside)));
     handle('workbench:continue-session', (_event, id, target) => engine.forkSession(idSchema.parse(id), undefined, continuationTargetSchema.parse(target)));
     handle('workbench:ask-side-question', (_event, id, input, commandId) => engine.askSideQuestion(idSchema.parse(id), sideQuestionSchema.parse(input), commandIdSchema.parse(commandId)));
     handle('workbench:rewind-session', (_event, id, messageId) => engine.rewindSession(idSchema.parse(id), idSchema.parse(messageId)));

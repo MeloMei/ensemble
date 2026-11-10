@@ -92,7 +92,7 @@ export function WorkspacePanes({ workspace, active, secondary, renderTab, perfor
   };
 
   return <div className={`workspace-dual ${vertical ? 'vertical' : ''}`} ref={container}>
-    <div key={`pane:${first?.id ?? ''}`} className="tab-content" style={second ? { flex: `0 0 ${ratio * 100}%` } : undefined}>{renderTab(first)}</div>
+    <div key={`pane:${first?.id ?? ''}`} className="tab-content" data-workspace-pane={first?.id} style={second ? { flex: `0 0 ${ratio * 100}%` } : undefined}>{renderTab(first)}</div>
     {second && <div key="divider" className="split-handle" role="separator" aria-label={t('app.resizeSplit')} aria-valuemin={20} aria-valuemax={80}
       aria-valuenow={Math.round(ratio * 100)} aria-orientation={vertical ? 'horizontal' : 'vertical'} tabIndex={0}
       onPointerDown={event => event.currentTarget.setPointerCapture(event.pointerId)}
@@ -113,7 +113,7 @@ export function WorkspacePanes({ workspace, active, secondary, renderTab, perfor
         const step = event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -0.05 : 0.05;
         saveRatio(Math.max(0.2, Math.min(0.8, ratio + step)));
       }} />}
-    {second && <div key={`pane:${second.id}`} className="tab-content">{renderTab(second)}</div>}
+    {second && <div key={`pane:${second.id}`} className="tab-content" data-workspace-pane={second.id}>{renderTab(second)}</div>}
     {draggedTabId && <SplitDropTarget key={`drag:${draggedTabId}`} workspace={workspace} tabId={draggedTabId} ratio={ratio} onDropTab={onDropTab} />}
   </div>;
 }

@@ -7,7 +7,7 @@ import { constants } from 'node:fs';
 import { lstat, open, opendir, realpath, rename, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { TextDecoder } from 'node:util';
-import type { FileContent, FileDiff, FileEntry, GitBranchComparison, GitCommitPreview, GitMutation, GitState } from '../shared/types';
+import type { FileContent, FileDiff, FileEntry, GitBranchComparison, GitCommitPreview, GitMutation, GitState, WorkspaceFileMatch } from '../shared/types';
 import { parsePorcelainV1Records, type PorcelainV1Record } from './vendor/orca/porcelain-v1-records';
 
 const FILE_LIMIT = 1024 * 1024;
@@ -218,7 +218,55 @@ async function statusRecords(root: string): Promise<{ repoRoot: string; records:
 
 export class MissingWorkspaceDirectoryError extends Error {}
 
+const FILE_SEARCH_EXCLUDED = new Set(['.git', '.hg', '.svn', 'node_modules', '.worktrees', '.venv']);
+
+async function plainWorkspacePaths(root: string): Promise<string[]> {
+  const files: string[] = [];
+  const directories = [''];
+  let examined = 0;
+  for (const directory of directories) {
+    const entries = await opendir(path.join(root, directory)).catch(error => {
+      if (['ENOENT', 'EACCES'].includes((error as NodeJS.ErrnoException).code ?? '')) return undefined;
+      throw error;
+    });
+    if (!entries) continue;
+    for await (const entry of entries) {
+      if (++examined > 30_000) return files;
+      if (FILE_SEARCH_EXCLUDED.has(entry.name)) continue;
+      const relativePath = path.join(directory, entry.name);
+      if (entry.isDirectory()) directories.push(relativePath);
+      else if (entry.isFile()) files.push(normalizedRelative(relativePath));
+    }
+  }
+  return files;
+}
+
 export class WorkspaceFiles {
+  async find(cwd: string, query: string): Promise<WorkspaceFileMatch[]> {
+    let root: string;
+    try { root = await workspaceRoot(cwd); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
+    const gitFiles = await git(root, ['ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', '.'], [0, 128], true).catch(() => undefined);
+    const paths = !gitFiles || gitFiles.code === 128 ? await plainWorkspacePaths(root) : gitFiles.stdout.split('\0').slice(0, -1);
+    const needle = query.trim().toLowerCase();
+    const candidates = [...new Set(paths)].flatMap(relativePath => {
+      if (relativePath.split('/').some(part => FILE_SEARCH_EXCLUDED.has(part))) return [];
+      const name = path.basename(relativePath);
+      const file = name.toLowerCase();
+      const match = relativePath.toLowerCase().indexOf(needle);
+      if (match < 0) return [];
+      const rank = file === needle ? 0 : file.startsWith(needle) ? 1 : file.includes(needle) ? 2 : 3;
+      return [{ path: relativePath, name, rank }];
+    }).sort((left, right) => left.rank - right.rank || left.path.length - right.path.length || left.path.localeCompare(right.path));
+    const matches: WorkspaceFileMatch[] = [];
+    for (const candidate of candidates) {
+      const file = await scopedPath(root, candidate.path).then(value => stat(value)).catch(() => undefined);
+      if (file?.isFile()) matches.push({ path: candidate.path, name: candidate.name });
+      if (matches.length === 30) break;
+    }
+    return matches;
+  }
+
   async list(cwd: string, relativePath = ''): Promise<FileEntry[]> {
     const root = await workspaceRoot(cwd).catch(error => {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new MissingWorkspaceDirectoryError(error.message, { cause: error });
