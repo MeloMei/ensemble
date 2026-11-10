@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Session, SessionCommandReceipt } from '../shared/types';
-import { recoverSessionCommands, runSessionCommand, runSessionStopCommand } from './session-command';
+import { recoverSessionCommands, runSessionCommand, runSessionStopCommand, SessionCommandRejectedError } from './session-command';
 
 function environment(lookup: (id: string) => Promise<SessionCommandReceipt | undefined>) {
   const previous = ['localStorage', 'window'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const);
@@ -128,4 +128,40 @@ test('receipt recovery completes late send/create callbacks, retires only their 
     await recoverSessionCommands(); await recoverSessionCommands();
     assert.equal(failedCalls, 2); assert.equal(queries, queriesAfterFailure);
   } finally { releaseLookup?.(receipt('cleanup', 'cleanup', null)); releaseOperation?.(); runtime.restore(); }
+});
+
+test('known rejection retires the intent without receipt recovery, including a manual retry', async () => {
+  let queries = 0;
+  const runtime = environment(async () => { queries++; return undefined; });
+  const ids: string[] = [], input = { text: 'retain draft' }, scope = 'send:known-rejection';
+  try {
+    const reject = async (id: string) => { ids.push(id); throw new SessionCommandRejectedError('workspace unavailable'); };
+    await assert.rejects(runSessionCommand(scope, input, reject), SessionCommandRejectedError);
+    assert.equal(queries, 0); assert.equal(runtime.values.size, 0);
+    await runSessionCommand(scope, input, async id => { ids.push(id); });
+    assert.notEqual(ids[0], ids[1]);
+
+    let firstId = '';
+    await assert.rejects(runSessionCommand(scope, input, async id => { firstId = id; throw new Error('offline'); }), /核对/);
+    const queriesBeforeRetry = queries;
+    await assert.rejects(runSessionCommand(scope, input, async id => { assert.equal(id, firstId); throw new SessionCommandRejectedError('workspace unavailable'); }), SessionCommandRejectedError);
+    assert.equal(queries, queriesBeforeRetry + 1); assert.equal(runtime.values.size, 0);
+    await recoverSessionCommands(); assert.equal(queries, queriesBeforeRetry + 1);
+  } finally { runtime.restore(); }
+});
+
+test('known rejection during automatic recovery retires the original intent', async () => {
+  let queries = 0, receiptReady = false, calls = 0;
+  const runtime = environment(async id => { queries++; return receiptReady ? receipt(id, 'send-prompt', null) : undefined; });
+  const scope = 'send:auto-known-rejection', input = { text: 'retain draft' };
+  try {
+    await assert.rejects(runSessionCommand(scope, input, async () => {
+      calls++;
+      if (calls === 1) throw new Error('offline');
+      throw new SessionCommandRejectedError('workspace unavailable');
+    }), /核对/);
+    receiptReady = true; await recoverSessionCommands();
+    assert.equal(calls, 2); assert.equal(runtime.values.size, 0);
+    const afterRecovery = queries; await recoverSessionCommands(); assert.equal(queries, afterRecovery);
+  } finally { runtime.restore(); }
 });

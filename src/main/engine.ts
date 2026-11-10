@@ -21,6 +21,10 @@ import { recordSessionAttention } from './attention';
 import { addDraftEvidence, draftPromptText, hasPromptInput, samePromptDraft } from '../shared/draft-evidence';
 import { attachmentLimitIssue, supportsPromptAttachment } from '../shared/prompt-attachments';
 
+export class WorkspaceUnavailableError extends Error {
+  constructor() { super('项目执行目录尚未就绪，请检查目录是否仍然存在且可访问。'); }
+}
+
 const now = () => new Date().toISOString();
 function executionPathsOverlap(left: string, right: string): boolean {
   return executionPathContains(left, right) || executionPathContains(right, left);
@@ -146,7 +150,7 @@ export class WorkbenchEngine {
 
   private executionKey(cwd: string): string {
     const key = this.executionKeys.get(cwd);
-    if (key === undefined) throw new Error('项目执行目录尚未就绪，请检查目录是否仍然存在且可访问。');
+    if (key === undefined) throw new WorkspaceUnavailableError();
     return key;
   }
 

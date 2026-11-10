@@ -2701,9 +2701,15 @@ const cases: Record<string, () => Promise<void>> = {
     const gate = deferred<void>(), laterGate = deferred<void>();
     const sends: { id?: string; input: unknown }[] = [], edits: unknown[] = [], removals: string[] = [], pauses: boolean[] = [];
     const draft = { text: 'Next task' };
-    let cleared = 0;
+    let cleared = 0, receiptLookups = 0, projectUnavailable = false;
     window.workbench = {
-      sendPrompt: async (_id: string, input: unknown, id?: string) => { sends.push({ id, input }); if (sends.length === 1) await gate.promise; if (sends.length === 3) await laterGate.promise; },
+      sendPrompt: async (_id: string, input: unknown, id?: string) => {
+        sends.push({ id, input });
+        if (projectUnavailable) return { rejected: 'workspace-unavailable' };
+        if (sends.length === 1) await gate.promise;
+        if (sends.length === 3) await laterGate.promise;
+      },
+      commandReceipt: async () => { receiptLookups++; return undefined; },
       beginQueuedPromptEdit: async () => ({ text: 'Queued before' }),
       renewQueuedPromptEdit: async () => {},
       saveQueuedPromptDraft: async () => {},
@@ -2731,6 +2737,13 @@ const cases: Record<string, () => Promise<void>> = {
     await act(async () => { laterGate.resolve(); await tick(); }); await settle();
     assert(Number(cleared) === 1 && input('.composer textarea').value === 'A later draft while awaiting the send', 'An older send response cleared a later draft');
     assert(sends[2].id !== sends[1].id, 'A new intentional send reused the completed command');
+    projectUnavailable = true;
+    const priorLookups = receiptLookups;
+    await click('workspace:chat.sendTask'); await settle();
+    assert(document.querySelector('.composer-area [role=alert]')?.textContent === translate('workspace:chat.workspaceUnavailable'),
+      'A confirmed directory rejection did not show its specific reason');
+    assert(receiptLookups === priorLookups && Number(cleared) === 1
+      && input('.composer textarea').value === 'A later draft while awaiting the send', 'A confirmed directory rejection looked up a receipt or erased the draft');
     await click('workspace:chat.editQueued'); await change(input('.prompt-queue textarea'), 'Edited next task'); await click('workspace:chat.saveQueued'); await settle();
     assert(JSON.stringify(edits) === JSON.stringify([{ item: 'queued-a', input: { text: 'Edited next task' } }]), 'Editing a queue item sent the wrong input');
     await click('workspace:chat.pauseQueue'); await settle();

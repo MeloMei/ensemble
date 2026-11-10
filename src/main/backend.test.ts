@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
 import { startBackend } from './backend-server';
-import { BackendClient, connectBackend } from './backend-client';
+import { BackendClient, BackendCommandError, connectBackend } from './backend-client';
 import { createWorkbenchService } from './workbench-service';
 import type { PromptAttachment, Snapshot } from '../shared/types';
 import type { CollaborationArtifactVersion } from '../shared/collaboration';
@@ -368,4 +368,43 @@ test('file artifact versions pass the service attachment enricher, reject tamper
     assert.equal(service.core.queryEvents(user, { runId }).some(event => event.type === 'input.injected' && event.taskId === cancelled.taskId), false);
     assert.equal(service.store.state.collaboration.artifacts.find(item => item.id === artifact.id)?.path, artifact.path);
   } finally { release(); await service.shutdown(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('missing project rejects a new send while replaying an existing receipt', async () => {
+  const dataPath = await realpath(await mkdtemp(join(tmpdir(), 'workbench-missing-project-')));
+  const cwd = join(dataPath, 'project'); await mkdir(cwd);
+  let runs = 0;
+  const options = { dataPath, command: process.execPath, bridgePath: join(dataPath, 'bridge.cjs'), publish() {}, providers: [{
+    info: { id: 'controlled', name: 'Controlled', source: 'plugin' as const, available: true, detail: '', capabilities: { resume: true, approvals: false } },
+    async run() { runs++; },
+  }] };
+  let service = await createWorkbenchService(options);
+  try {
+    const id = await service.engine.createSession({ title: 'missing project', providerId: 'controlled', cwd });
+    await service.call('workbench:send-prompt', [id, { text: 'accepted' }, 'accepted']);
+    await service.engine.waitSession(id);
+    await service.call('workbench:save-session-draft', [id, { text: 'keep draft' }]);
+    await service.shutdown(); await rm(cwd, { recursive: true });
+    service = await createWorkbenchService(options);
+    assert.equal(await service.call('workbench:send-prompt', [id, { text: 'accepted' }, 'accepted']), undefined);
+    await assert.rejects(service.call('workbench:send-prompt', [id, { text: 'keep draft' }, 'rejected']), /项目执行目录尚未就绪/);
+    assert.equal(await service.call('workbench:command-receipt', ['rejected']), undefined);
+    assert.deepEqual(service.engine.getSession(id).draft, { text: 'keep draft' });
+    assert.equal(runs, 1);
+    await service.shutdown();
+    const backend = await startBackend(options);
+    try {
+      const client = new BackendClient(backend.endpoint);
+      const response = await fetch(`${backend.endpoint.url}/command`, { method: 'POST',
+        headers: { Authorization: `Bearer ${backend.endpoint.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command: 'workbench:send-prompt', args: [id, { text: 'keep draft' }, 'rejected'] }) });
+      assert.equal(response.status, 400);
+      assert.deepEqual(await response.json(), { error: '项目执行目录尚未就绪，请检查目录是否仍然存在且可访问。', errorCode: 'workspace-unavailable' });
+      await assert.rejects(client.call('workbench:send-prompt', id, { text: 'keep draft' }, 'rejected'),
+        (error: unknown) => error instanceof BackendCommandError && error.errorCode === 'workspace-unavailable');
+      assert.equal(await client.call('workbench:send-prompt', id, { text: 'accepted' }, 'accepted'), null);
+      assert.equal(await client.call('workbench:command-receipt', 'rejected'), null);
+      assert.equal(runs, 1);
+    } finally { await backend.close(); }
+  } finally { await service.shutdown(); await rm(dataPath, { recursive: true, force: true }); }
 });

@@ -339,7 +339,7 @@ export interface WorkbenchAPI {
   chooseAttachments(): Promise<PromptAttachment[]>;
   importPastedImage(name: string, bytes: Uint8Array): Promise<PromptAttachment>;
   readImageAttachment(attachment: PromptAttachment): Promise<string>;
-  sendPrompt(sessionId: string, input: PromptInput, commandId?: string): Promise<void>;
+  sendPrompt(sessionId: string, input: PromptInput, commandId?: string): Promise<void | { rejected: 'workspace-unavailable' }>;
   saveSessionDraft(sessionId: string, input: PromptInput): Promise<void>;
   addSessionEvidence(sessionId: string, evidence: DraftEvidence): Promise<PromptInput>;
   updateSession(sessionId: string, input: SessionUpdate & { skillAssignment: SessionSkillAssignment }): Promise<SessionSkillAssignmentReceipt>;

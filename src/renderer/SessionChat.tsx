@@ -27,7 +27,7 @@ import { BusyIcon, IconButton, Modal, ModelField, ProviderSelect, Status, defaul
 import { SPRING_SNAPPY } from './vendor/open-claude-ui/ClaudeMotionPresets';
 import { useClaudeScrollPinning } from './vendor/open-claude-ui/useClaudeScrollPinning';
 import { useSessionHistory, type IndexedMessages } from './useSessionHistory';
-import { promptCommandInput, runSessionCommand, runSessionStopCommand } from './session-command';
+import { promptCommandInput, runSessionCommand, runSessionStopCommand, SessionCommandRejectedError } from './session-command';
 import { sessionAttentionMessage, sessionIsUnread, type SessionAttentionOpen } from './session-attention';
 import { Tooltip } from './Tooltip';
 import { DetailCard } from './ui-kit/DetailCard';
@@ -794,7 +794,7 @@ export function SessionChat({
   const latestAttention = useRef(attentionOpen);
   latestAttention.current = attentionOpen;
   const handledAttention = useRef<SessionAttentionOpen>(undefined);
-  const [sendError, setSendError] = useState('');
+  const [sendError, setSendError] = useState<{ message: string; rejected: boolean }>();
   const [readingAnchor, setReadingAnchor] = useReadingAnchor(session.id);
   const [restoredTrace, setRestoredTrace] = useState(readingAnchor?.kind === 'event' ? readingAnchor : undefined);
   const finishReadingRestore = useCallback(() => setReadingAnchor(undefined), [setReadingAnchor]);
@@ -1201,20 +1201,27 @@ export function SessionChat({
     if (readOnly || !hasPromptInput(draft) || unsupportedAttachments || attachmentIssue || promptLengthIssue
       || !connected || !historyReady || busy || settingsBusy || sendLock.current || attachmentLock.current || !provider?.available) return;
     sendLock.current = true;
-    setSendError('');
+    setSendError(undefined);
     void perform(`send-${session.id}`, async () => {
       try {
         const input = promptCommandInput(draft);
         await runSessionCommand(`send:${session.id}`, input, async commandId => {
-          await window.workbench.sendPrompt(session.id, input, commandId);
-          if (currentDraft.current === draft) { setSendError(''); onDraftChange({ text: '' }, draft); }
+          const result = await window.workbench.sendPrompt(session.id, input, commandId);
+          if (result?.rejected === 'workspace-unavailable') {
+            const error = new SessionCommandRejectedError(t('chat.workspaceUnavailable'));
+            setSendError({ message: error.message, rejected: true });
+            throw error;
+          }
+          if (currentDraft.current === draft) { setSendError(undefined); onDraftChange({ text: '' }, draft); }
           cancelReadingRestore();
           setRestoredTrace(undefined);
           history.showLatest();
           scrollToBottom();
         });
       } catch (error) {
-        setSendError(error instanceof Error ? error.message : String(error));
+        if (!(error instanceof SessionCommandRejectedError)) {
+          setSendError({ message: error instanceof Error ? error.message : String(error), rejected: false });
+        }
         throw error;
       } finally {
         sendLock.current = false;
@@ -1482,7 +1489,7 @@ export function SessionChat({
           <span className="composer-shortcut"><CornerDownLeft size={11} />{queuesNextTurn ? t('chat.queueNextTurn') : t('chat.send')}<span>·</span>{t('chat.newLine')}</span>
         </div>
         {!connected && <p className="composer-note" role="status"><CircleAlert size={13} />{t('chat.connectionUnavailable')}</p>}
-        {sendError && <p className="composer-note" role="alert"><CircleAlert size={13} />{t('chat.sendUnconfirmed', { error: sendError })}</p>}
+        {sendError && <p className="composer-note" role="alert"><CircleAlert size={13} />{sendError.rejected ? sendError.message : t('chat.sendUnconfirmed', { error: sendError.message })}</p>}
         {draftError && <p className="composer-note" role="alert"><CircleAlert size={13} />{t('chat.draftError', { error: draftError })}<button className="text-button" onClick={() => onDraftChange(draft)}>{t('chat.retrySave')}</button></p>}
         {unsupportedAttachments && <p className="composer-note" role="alert"><CircleAlert size={13} />{t(attachmentsSupported ? 'chat.pluginAttachmentKindsRemove' : 'chat.pluginAttachmentsRemove')}</p>}
         <AttachmentLimitNotice issue={attachmentIssue} />
