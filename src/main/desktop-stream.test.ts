@@ -63,7 +63,7 @@ test('main frame reload and renderer loss release view subscriptions without tou
   };
   const require = createRequire(import.meta.url);
   const mocks: Record<string, unknown> = {
-    electron: { app, BrowserWindow: MockWindow, ipcMain, dialog: {}, shell: {} },
+    electron: { app, BrowserWindow: MockWindow, ipcMain, dialog: {}, globalShortcut: { unregister: () => {} }, shell: {} },
     './backend-client': { BackendConnectionTracker, connectBackend: async () => client },
     './codex-link': { buildCodexLink: () => '' },
     './notifications': { WorkbenchNotifications: class { observe() {} dispose() {} } },
@@ -80,7 +80,7 @@ test('main frame reload and renderer loss release view subscriptions without tou
     entryPoints: [fileURLToPath(new URL('./index.ts', import.meta.url))], bundle: true, platform: 'node', format: 'cjs', write: false,
     external: Object.keys(mocks), define: { 'import.meta.url': JSON.stringify(new URL('./index.ts', import.meta.url).href) },
   });
-  const sender = { sender: { id: 1 } };
+  const sender = { sender: { id: 1 }, senderFrame: { parent: null } };
   try {
     vm.runInNewContext(bundle.outputFiles[0].text, {
       require: (name: string) => mocks[name] ?? require(name), process,
