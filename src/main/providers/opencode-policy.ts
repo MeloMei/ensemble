@@ -21,6 +21,9 @@ export function openCodeReadOnlyPermissions(servers: McpServerConfig[]): Permiss
 }
 
 export function openCodeAgentConfiguration(session: Session, servers: McpServerConfig[]) {
+  if (session.settings?.permission === 'full-access') {
+    return { agents: { build: { permissions: [{ action: '*', resource: '*', effect: 'allow' }] } } };
+  }
   if (session.settings?.permission !== 'read-only') return {};
   return { agents: { plan: { permissions: openCodeReadOnlyPermissions(servers) } } };
 }

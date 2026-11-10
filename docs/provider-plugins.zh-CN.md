@@ -26,6 +26,8 @@
 
 版本 2 的 `turn` 增加 `apiVersion`、稳定的 `clientUserMessageId`、`settings`、可选 `modelId` 和 `attachments`。附件包含 `id`、`name`、`kind`、`mimeType`、`size`、`sha256`、`encoding: "base64"`、`data`，不发送平台保存文件的本地路径。图片需要 `images`，UTF-8 文本文件需要 `textAttachments`。思考档和权限设置也分别要求声明并协商相应能力。Skill 内容继续经过现有提示词准备流程。
 
+在 manifest 和 `ready` 中用 `permissionTiers` 列出插件支持的 `settings.permission` 值，可选 `review`、`read-only` 和 `full-access`。`ready` 可以缩小 manifest 中声明的范围。只声明 `permissions: true` 的旧插件保留 `review` 和 `read-only` 两档。插件负责在新建和续接会话时应用所选档位。选择 `full-access` 后，插件应跳过普通工具审批，仍把问题交给用户回答。
+
 可选输出帧使用与内置适配器相同的规范化事件：
 
 ```jsonl

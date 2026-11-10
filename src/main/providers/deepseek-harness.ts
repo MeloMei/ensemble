@@ -1,13 +1,47 @@
 import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
-import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { promisify } from 'node:util';
 import type { AcpRuntimeDescriptor } from './acp-types';
+import { SESSION_PERMISSION_TIERS } from '../../shared/session-permissions';
 
 const execute = promisify(execFile);
 const FLASH_MODEL_ID = 'flash';
+const permissionPresets = {
+  review: { sandbox: 'workspace-write', approval: 'ask' },
+  'read-only': { sandbox: 'read-only', approval: 'ask' },
+  'full-access': { sandbox: 'danger-full-access', approval: 'never' },
+} as const;
+
+function permissionGuard(input: { sandbox: string; approval: string; cwd: string; externalId?: string; readyPath: string }): string {
+  return `import { realpathSync, writeFileSync } from 'node:fs';
+const config = ${JSON.stringify(input)};
+
+export default function ensemblePermission(ctx) {
+  let ready = false;
+  ctx.on('agent/created', ({ agent, source }) => {
+    if (ready || (source !== 'startup' && source !== 'resume')) return;
+    const session = agent.session;
+    if (config.externalId ? session.id !== config.externalId : source !== 'startup') return;
+    if (realpathSync(session.header.cwd) !== config.cwd) return;
+    const presets = ctx.get('permissionPresets');
+    const sandbox = ctx.get('sandboxPolicy');
+    const preset = presets?.resolve(config.sandbox);
+    if (preset?.sandbox !== config.sandbox || preset.approval !== config.approval || !sandbox) {
+      throw new Error('Ensemble could not verify the DeepSeek permission preset.');
+    }
+    presets.set(session, config.sandbox);
+    if (presets.current(session) !== config.sandbox || sandbox.resolve({ session }).mode !== config.sandbox) {
+      throw new Error('DeepSeek did not apply the selected Ensemble permission preset.');
+    }
+    writeFileSync(config.readyPath, JSON.stringify({ sessionId: session.id, sandbox: config.sandbox, approval: config.approval }), { flag: 'wx', mode: 0o600 });
+    ready = true;
+  });
+}
+`;
+}
 
 export async function deepSeekChildEnvironment(
   environment: NodeJS.ProcessEnv,
@@ -74,6 +108,10 @@ export async function createDeepSeekHarnessDescriptor(options: {
     `    maxTokens: ${maxTokens}`,
     '    reasoningEffort: off',
     '',
+    '- insert:',
+    '    - id: ensemble-permission',
+    '      name: ./permission.mjs',
+    '',
   ].join('\n');
   return {
     id: 'deepseek-harness', name: 'DeepSeek Harness', version,
@@ -83,6 +121,8 @@ export async function createDeepSeekHarnessDescriptor(options: {
     defaultModelId: FLASH_MODEL_ID,
     reasoningPreference: ['off', 'low'],
     efforts: ['off', 'low', 'high', 'max'],
+    permissionTiers: SESSION_PERMISSION_TIERS,
+    permissionDecision: (_tool, session) => session.settings?.permission === 'read-only' ? 'deny' : 'ask',
     selectModel(choices, modelId) {
       if (modelId !== FLASH_MODEL_ID) throw new Error('DeepSeek Harness 目前仅支持 Flash 模型');
       const offered = choices.flatMap(choice => {
@@ -96,19 +136,33 @@ export async function createDeepSeekHarnessDescriptor(options: {
       if (!flash) throw new Error('DeepSeek Harness 未提供可用的 Flash 模型选项');
       return flash.choice;
     },
-    async launch() {
+    async launch(session) {
       const environment = await deepSeekChildEnvironment(process.env);
+      const preset = permissionPresets[session.settings?.permission ?? 'review'];
+      const cwd = await realpath(session.cwd);
       const root = join(options.dataPath, 'deepseek-harness');
       await mkdir(root, { recursive: true, mode: 0o700 });
       const directory = await mkdtemp(join(root, 'runtime-'));
       const path = join(directory, 'runtime.patch.yml');
+      const readyPath = join(directory, 'permission-ready.json');
       const cleanup = () => rm(directory, { recursive: true, force: true });
-      try { await writeFile(path, overlay, { mode: 0o600, flag: 'wx' }); }
+      try {
+        await writeFile(path, overlay, { mode: 0o600, flag: 'wx' });
+        await writeFile(join(directory, 'permission.mjs'), permissionGuard({ ...preset, cwd, externalId: session.externalId, readyPath }), { mode: 0o600, flag: 'wx' });
+      }
       catch (error) { await cleanup(); throw error; }
       return {
         command,
         args: ['--profile', 'acp', '--patch', path],
-        env: { ...environment, DSH_PERMISSION_MODE: 'workspace-write', DSH_TELEMETRY_DISABLED: '1' },
+        env: { ...environment, DSH_PERMISSION_MODE: preset.sandbox, DSH_TELEMETRY_DISABLED: '1' },
+        async waitUntilReady(signal, nativeSessionId) {
+          signal.throwIfAborted();
+          const ready = await readFile(readyPath, 'utf8').catch(() => undefined);
+          signal.throwIfAborted();
+          if (ready !== JSON.stringify({ sessionId: nativeSessionId, ...preset })) {
+            throw new Error('DeepSeek Harness 未确认所选会话权限，任务未发送。请检查 CLI 版本及 ACP 配置。');
+          }
+        },
         cleanup,
       };
     },

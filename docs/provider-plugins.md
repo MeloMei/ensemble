@@ -24,6 +24,8 @@ The plugin must reply within five seconds:
 
 The effective capabilities may be a subset of the manifest. Adding an undeclared capability, emitting output before `ready`, or sending `ready` twice fails the process. If the effective set cannot handle the pending attachments or settings, the turn is rejected before its task payload is sent.
 
+Declare `permissionTiers` in both the manifest and `ready` to list the supported `settings.permission` values (`review`, `read-only`, `full-access`). The `ready` list may narrow the manifest list. A plugin that only declares `permissions: true` keeps the two existing tiers, `review` and `read-only`. Plugins enforce the selected tier on both new and resumed turns. A plugin offering `full-access` should bypass ordinary tool approvals for that turn and continue to route questions to the user.
+
 The version 2 `turn` adds `apiVersion`, a stable `clientUserMessageId`, `settings`, optional `modelId`, and `attachments`. Each attachment contains `id`, `name`, `kind`, `mimeType`, `size`, `sha256`, `encoding: "base64"`, and `data`. Local owned-file paths are not sent. Images require `images`; UTF-8 text files require `textAttachments`. Requested effort and permission settings require the corresponding capabilities. Skill content continues through the normal prompt enrichment path.
 
 Optional output frames use the same normalized events as built-in adapters:

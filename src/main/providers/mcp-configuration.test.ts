@@ -50,6 +50,8 @@ test('OpenCode registers only issued platform MCP natively as direct tools and p
     assert(!permissions.some(rule => rule.action.startsWith('user-tools_')));
     assert(!permissions.some(rule => ['execute', 'shell', 'edit', 'subagent'].includes(rule.action) && rule.effect === 'allow'));
     assert.deepEqual(openCodeAgentConfiguration({ settings: { permission: 'review' } } as never, [user, issued.config]), {});
+    assert.deepEqual(openCodeAgentConfiguration({ settings: { permission: 'full-access' } } as never, [user, issued.config]),
+      { agents: { build: { permissions: [{ action: '*', resource: '*', effect: 'allow' }] } } });
     const clone = { ...issued.config };
     assert.deepEqual(prepareOpenCodeMcp([clone]), { mcpServers: [clone], nativeServers: {} });
     assert(!openCodeReadOnlyPermissions([clone]).some(rule => rule.action.startsWith('workbench_')));

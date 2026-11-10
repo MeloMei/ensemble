@@ -45,7 +45,7 @@ export async function createPiExtension(context: TurnContext, sdkEntry: string):
   const cleanup = () => rm(directory, { recursive: true, force: true });
   try {
     await writeFile(configPath, JSON.stringify({ command, readyMarker, servers, expected,
-      readOnly: context.session.settings?.permission === 'read-only', timeoutMs: PI_MCP_READY_TIMEOUT_MS }), { flag: 'wx', mode: 0o600 });
+      permission: context.session.settings?.permission ?? 'review', timeoutMs: PI_MCP_READY_TIMEOUT_MS }), { flag: 'wx', mode: 0o600 });
     await writeFile(extensionPath, `import {readFile} from 'node:fs/promises';
 import {setTimeout as delay} from 'node:timers/promises';
 import {createMcpExtension} from ${JSON.stringify(pathToFileURL(sdkEntry).href)};
@@ -63,8 +63,8 @@ export default async function ensemble(pi) {
   pi.on('tool_call', async (event, ctx) => {
     try {
       if (!ready || !toolsPresent()) return {block: true, terminate: true, reason: 'Ensemble Pi 工具守卫尚未就绪。'};
-      if (readable.has(event.toolName) || expected.has(event.toolName)) return;
-      if (config.readOnly) return {block: true, terminate: true, reason: 'Ensemble 只读模式拒绝该工具：' + event.toolName};
+      if (config.permission === 'full-access' || readable.has(event.toolName) || expected.has(event.toolName)) return;
+      if (config.permission === 'read-only') return {block: true, terminate: true, reason: 'Ensemble 只读模式拒绝该工具：' + event.toolName};
       const allowed = await ctx.ui.confirm('允许 Pi 执行工具？', event.toolName + '\\n' + JSON.stringify(event.input).slice(0, 16000));
       if (!allowed) return {block: true, terminate: true, reason: '用户拒绝该工具调用。'};
     } catch {

@@ -265,6 +265,45 @@ test('stopped queues persist edits, removals and captured execution settings unt
   } finally { await restarted?.shutdown(); await engine.shutdown(); await rm(directory, { recursive: true, force: true }); }
 });
 
+test('revoking full access restricts already queued turns after restart', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'ensemble-queued-permission-'));
+  const store = new StateStore(join(directory, 'state.json'));
+  const engine = new WorkbenchEngine(store, '', () => {});
+  const received: (string | undefined)[] = [];
+  const runtime = adapter(async context => {
+    received.push(context.session.settings?.permission);
+    if (context.prompt === 'first') await new Promise<void>(resolve => context.signal.addEventListener('abort', () => resolve(), { once: true }));
+  });
+  runtime.info.capabilities.permissionTiers = ['review', 'read-only', 'full-access'];
+  engine.setProviders([runtime], [], []);
+  let restarted: WorkbenchEngine | undefined;
+  try {
+    const id = await engine.createSession({ title: 'queue', providerId: runtime.info.id, cwd: directory });
+    engine.updateSession(id, { settings: { permission: 'full-access' } });
+    engine.sendPrompt(id, { text: 'first' }, 'first');
+    await until(() => received.length === 1);
+    engine.sendPrompt(id, { text: 'pending' }, 'pending');
+    engine.cancelSession(id, 'stop');
+    await engine.waitSession(id);
+    engine.updateSession(id, { settings: { permission: 'read-only' } });
+    await engine.shutdown();
+    const restored = new StateStore(store.path);
+    await restored.load();
+    restarted = new WorkbenchEngine(restored, '', () => {});
+    restarted.setProviders([runtime], [], []);
+    await restarted.prepareExecutionKeys();
+    assert.equal(restarted.getSession(id).queue?.[0].settings?.permission, 'read-only');
+    restarted.setSessionQueuePaused(id, false);
+    await restarted.waitSession(id);
+    assert.deepEqual(received, ['full-access', 'read-only']);
+    assert.equal(restarted.getSession(id).attempts?.at(-1)?.settings?.permission, 'read-only');
+  } finally {
+    await restarted?.shutdown();
+    await engine.shutdown();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('approval and cancellation replays never resolve or cancel a later live request', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'ensemble-live-command-'));
   const store = new StateStore(join(directory, 'state.json'));

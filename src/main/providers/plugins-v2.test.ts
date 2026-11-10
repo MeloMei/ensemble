@@ -33,6 +33,7 @@ lines.on('line', line => {
       if (mode === 'no-' + suffix) effective[field] = false;
     }
     if (mode === 'undeclared-ready') effective.steer = true;
+    if (mode === 'undeclared-permission-tier') effective.permissionTiers = ['review', 'read-only', 'full-access'];
     send({ type: 'ready', apiVersion: 2, capabilities: effective });
     if (mode === 'duplicate-ready') send({ type: 'ready', apiVersion: 2, capabilities: effective });
     return;
@@ -53,12 +54,12 @@ lines.on('line', line => {
 });
 `;
 
-async function fixture(mode = 'full') {
+async function fixture(mode = 'full', declared = capabilities) {
   const root = await mkdtemp(join(tmpdir(), 'ensemble-plugin-v2-'));
   const plugin = join(root, 'plugin'), trace = join(root, 'trace.jsonl'); await mkdir(plugin);
   const script = join(plugin, 'agent.mjs'); await writeFile(script, source);
   await writeFile(join(plugin, 'manifest.json'), JSON.stringify({ apiVersion: 2, id: 'fixture-v2', name: 'Fixture v2',
-    command: process.execPath, args: [script, mode, trace], capabilities }));
+    command: process.execPath, args: [script, mode, trace], capabilities: declared }));
   const loaded = await loadPluginProviders(root);
   assert.deepEqual(loaded.errors, []); assert.equal(loaded.adapters.length, 1);
   return { root, trace, adapter: loaded.adapters[0], async records() { return (await readFile(trace, 'utf8')).trim().split('\n').map(line => JSON.parse(line)); } };
@@ -131,9 +132,29 @@ test('ready capability narrowing rejects unsupported inputs and undeclared rich 
 });
 
 test('plugin v2 rejects output before ready, duplicate ready and negotiation of undeclared capabilities', async t => {
-  for (const [mode, expected] of [['early-output', /before protocol negotiation/], ['duplicate-ready', /duplicate ready/], ['undeclared-ready', /undeclared capability steer/]] as const) await t.test(mode, async () => {
+  for (const [mode, expected] of [['early-output', /before protocol negotiation/], ['duplicate-ready', /duplicate ready/], ['undeclared-ready', /undeclared capability steer/],
+    ['undeclared-permission-tier', /undeclared permission tier/]] as const) await t.test(mode, async () => {
     const f = await fixture(mode);
     try { await assert.rejects(f.adapter.run(context(f.root)), expected); }
     finally { await rm(f.root, { recursive: true, force: true }); }
   });
+});
+
+test('plugin v2 receives full access only when declared and negotiated', async () => {
+  const legacy = await fixture();
+  const current = await fixture('full', { ...capabilities, permissionTiers: ['review', 'read-only', 'full-access'] });
+  const turn = (cwd: string) => {
+    const input = context(cwd, { approve: async () => JSON.stringify({ outputs: ['Text', 'Image'] }) });
+    input.session.settings = { permission: 'full-access' };
+    return input;
+  };
+  try {
+    await assert.rejects(legacy.adapter.run(turn(legacy.root)), /permission settings for the requested tier/);
+    assert(!(await legacy.records()).some(frame => frame.type === 'turn'));
+    await current.adapter.run(turn(current.root));
+    assert.equal((await current.records()).find(frame => frame.type === 'turn').settings.permission, 'full-access');
+  } finally {
+    await rm(legacy.root, { recursive: true, force: true });
+    await rm(current.root, { recursive: true, force: true });
+  }
 });

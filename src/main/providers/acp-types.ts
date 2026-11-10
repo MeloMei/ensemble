@@ -1,5 +1,6 @@
 import type { McpServerConfig, ProviderModel, Session } from '../../shared/types';
 import type { DisplayText } from '../../shared/display-text';
+import type { SessionPermission } from '../../shared/session-permissions';
 import type { ToolCallUpdate } from '@agentclientprotocol/sdk';
 import type { TurnContext } from './types';
 
@@ -10,7 +11,7 @@ export interface AcpLaunchSpec {
   args: string[];
   env: NodeJS.ProcessEnv;
   mcpServers?: McpServerConfig[];
-  waitUntilReady?(signal: AbortSignal): Promise<void>;
+  waitUntilReady?(signal: AbortSignal, nativeSessionId: string): Promise<void>;
   cleanup?(): Promise<void>;
 }
 
@@ -29,7 +30,8 @@ export interface AcpRuntimeDescriptor {
   selectModel(choices: AcpConfigChoice[], modelId: string): AcpConfigChoice;
   reasoningPreference?: string[];
   efforts?: string[];
-  sessionModes?: { review: string; 'read-only': string };
+  permissionTiers?: readonly SessionPermission[];
+  sessionModes?: Partial<Record<SessionPermission, string>>;
   permissionDecision?(tool: ToolCallUpdate, session: Session, servers: McpServerConfig[]): 'allow' | 'deny' | 'ask';
   clientRequests?: Record<string, (params: unknown, context: TurnContext, signal: AbortSignal) => Promise<unknown>>;
   clientRequestCancellation?: Record<string, unknown>;

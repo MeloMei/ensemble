@@ -5,12 +5,14 @@ import { access, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { promisify } from 'node:util';
+import { SESSION_PERMISSION_TIERS, type SessionPermission } from '../../shared/session-permissions';
 import type { McpServerConfig } from '../../shared/types';
 import { isIssuedWorkbenchMcpServer, waitForWorkbenchMcpReady } from '../collaboration-server';
 import { WORKBENCH_MCP_TOOLS } from './mcp-configuration';
 import type { AcpRuntimeDescriptor } from './acp-types';
 
 const execute = promisify(execFile);
+const sessionModes = { review: 'default', 'read-only': 'plan', 'full-access': 'default' } as const;
 
 export async function resolveGeminiBinary(): Promise<string | undefined> {
   const name = process.platform === 'win32' ? 'gemini.cmd' : 'gemini';
@@ -41,11 +43,12 @@ async function requireSupplementalPolicy(directory: string): Promise<void> {
   if (entries.some(entry => entry.endsWith('.toml'))) throw new Error('Gemini 已配置系统策略，会忽略临时工具守卫；无法验证 Ensemble 权限，任务未启动。');
 }
 
-export function geminiToolPolicy(servers: McpServerConfig[]): string {
+function geminiToolPolicy(servers: McpServerConfig[], permission: SessionPermission): string {
   const rule = (toolName: string | string[], decision: string, priority: number) => [
     '[[rule]]', `toolName = ${JSON.stringify(toolName)}`,
     `decision = ${JSON.stringify(decision)}`, `priority = ${priority}`, '',
   ].join('\n');
+  if (permission === 'full-access') return rule('*', 'allow', 998);
   const issued = servers.some(isIssuedWorkbenchMcpServer);
   return [rule('*', 'ask_user', 998), ...(issued ? [rule(WORKBENCH_MCP_TOOLS.map(tool => geminiMcpToolName('workbench', tool)), 'allow', 999)] : [])].join('\n');
 }
@@ -87,7 +90,8 @@ export async function createGeminiDescriptor(options: {
     models: undefined, defaultModelId: undefined,
     tracksDelivery: true,
     usageScope: 'turn',
-    sessionModes: { review: 'default', 'read-only': 'plan' },
+    permissionTiers: SESSION_PERMISSION_TIERS,
+    sessionModes,
     permissionDecision(tool, session) {
       if (tool.kind === 'read' || tool.kind === 'search') return 'allow';
       return session.settings?.permission === 'read-only' ? 'deny' : 'ask';
@@ -98,14 +102,15 @@ export async function createGeminiDescriptor(options: {
       return choice;
     },
     async launch(session, servers = []) {
+      const permission = session.settings?.permission ?? 'review';
       await requireSupplementalPolicy(policies);
       requireUnambiguousMcpNames(servers);
       const directory = await mkdtemp(join(tmpdir(), 'ensemble-gemini-'));
       const policyPath = join(directory, 'tools.toml');
       const cleanup = () => rm(directory, { recursive: true, force: true });
-      try { await writeFile(policyPath, geminiToolPolicy(servers), { flag: 'wx', mode: 0o600 }); }
+      try { await writeFile(policyPath, geminiToolPolicy(servers, permission), { flag: 'wx', mode: 0o600 }); }
       catch (error) { await cleanup(); throw error; }
-      return { command, args: ['--acp', '--admin-policy', policyPath, '--approval-mode', session.settings?.permission === 'read-only' ? 'plan' : 'default', '--extensions', 'none',
+      return { command, args: ['--acp', '--admin-policy', policyPath, '--approval-mode', sessionModes[permission], '--extensions', 'none',
         '--skip-trust', '--allowed-mcp-server-names', servers.map(server => server.name).join(',') || `ensemble-none-${randomUUID()}`],
         env: { ...env, ELECTRON_RUN_AS_NODE: '1', GEMINI_TELEMETRY_ENABLED: 'false' }, mcpServers: servers,
         async waitUntilReady(signal) { await Promise.all(servers.filter(isIssuedWorkbenchMcpServer).map(server => waitForWorkbenchMcpReady(server, signal))); }, cleanup };

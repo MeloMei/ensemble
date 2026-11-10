@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { sessionPermissionSchema } from '../shared/session-permissions';
 import { collaborationParticipantSchema, collaborationPermissionsSchema, collaborationLimitsSchema, collaborationTaskTemplateSchema } from '../shared/collaboration';
 
 const id = z.string().min(1).max(200);
@@ -8,7 +9,7 @@ const runId = id;
 const permissions = collaborationPermissionsSchema.strict().extend({ workspace: z.object({ cwd: z.string(), access: z.enum(['read-only', 'read-write']) }).strict().optional() });
 const participant = collaborationParticipantSchema.strict().extend({ permissions,
   binding: z.object({ identityId: z.string().optional(), sessionId: z.string().optional(), nativeId: z.string().optional() }).strict().optional(),
-  settings: z.object({ effort: z.string().optional(), permission: z.enum(['review', 'read-only']).optional(), skillIds: z.array(z.string()).optional() }).strict().optional(),
+  settings: z.object({ effort: z.string().optional(), permission: sessionPermissionSchema.optional(), skillIds: z.array(z.string()).optional() }).strict().optional(),
 });
 const limits = collaborationLimitsSchema.strict();
 const step = collaborationTaskTemplateSchema.strict();

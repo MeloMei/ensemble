@@ -10,6 +10,7 @@ import { createNdjsonDecoder } from './ndjson';
 import { signalProcessTree } from './process-tree';
 import { providerCapabilitiesSchema, type ProviderCapabilities } from '../../shared/provider-capabilities';
 import { validQuestionAnswers } from '../../shared/question-answers';
+import { permissionTiersFor } from '../../shared/session-permissions';
 
 const nonempty = z.string().min(1);
 const argument = z.string().max(8192).refine((value) => !value.includes('\0'), 'NUL is not allowed');
@@ -168,7 +169,8 @@ function runPlugin(manifest: Manifest, executable: string, context: TurnContext,
       if (context.attachments?.some(attachment => attachment.kind === 'image') && !capabilities.images) throw new Error('Plugin did not negotiate images');
       if (context.attachments?.some(attachment => attachment.kind === 'text') && !capabilities.textAttachments) throw new Error('Plugin did not negotiate text attachments');
       if (context.session.settings?.effort && !capabilities.effort) throw new Error('Plugin did not negotiate effort settings');
-      if (context.session.settings?.permission && !capabilities.permissions) throw new Error('Plugin did not negotiate permission settings');
+      const permission = context.session.settings?.permission;
+      if (permission && !permissionTiersFor(capabilities).includes(permission)) throw new Error('Plugin did not negotiate permission settings for the requested tier');
       write({ type: 'turn', sessionId: context.session.id,
         ...(context.session.externalId ? { externalId: context.session.externalId } : {}), cwd: context.session.cwd, prompt: context.prompt,
         ...(manifest.apiVersion === 2 ? { apiVersion: 2, clientUserMessageId: context.userMessageId,
@@ -185,7 +187,12 @@ function runPlugin(manifest: Manifest, executable: string, context: TurnContext,
       if (frame.type === 'ready') {
         if (ready) throw new Error('Plugin emitted a duplicate ready frame');
         for (const [key, value] of Object.entries(frame.capabilities)) {
-          if (value && !declaredCapabilities[key as keyof ProviderCapabilities]) throw new Error(`Plugin negotiated undeclared capability ${key}`);
+          if (key !== 'permissionTiers' && key !== 'permissions' && value && !declaredCapabilities[key as keyof ProviderCapabilities]) {
+            throw new Error(`Plugin negotiated undeclared capability ${key}`);
+          }
+        }
+        if (permissionTiersFor(frame.capabilities).some(tier => !permissionTiersFor(declaredCapabilities).includes(tier))) {
+          throw new Error('Plugin negotiated an undeclared permission tier');
         }
         capabilities = frame.capabilities;
         ready = true; clearTimeout(handshakeTimer); negotiated(capabilities); sendTurn(); return;

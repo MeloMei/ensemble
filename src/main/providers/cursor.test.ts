@@ -5,6 +5,7 @@ import { access, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
+import { SESSION_PERMISSION_TIERS, type SessionPermission } from '../../shared/session-permissions';
 import type { ApprovalInput } from '../../shared/types';
 import { CollaborationServer } from '../collaboration-server';
 import { createCursorDescriptor, cursorPermissionDecision, resolveCursorBinary } from './cursor';
@@ -12,7 +13,7 @@ import { answerCursorQuestions, approveCursorPlan, cursorInteractions } from './
 import { createCursorGuard, cursorHookTool } from './cursor-guard';
 import type { ProviderEvent, TurnContext } from './types';
 
-function turn(permission: 'review' | 'read-only' = 'review') {
+function turn(permission: SessionPermission = 'review') {
   const events: ProviderEvent[] = [];
   const context: TurnContext = {
     session: { id: 'cursor-session', title: 'Cursor', providerId: 'cursor', cwd: '/project', status: 'running', messages: [], approvals: [],
@@ -34,7 +35,8 @@ test('Cursor descriptor preserves session MCP injection and rejects unsupported 
     assert.equal(descriptor.models, undefined); assert.equal(descriptor.defaultModelId, undefined);
     assert.equal(descriptor.tracksDelivery, true);
     assert.equal(descriptor.reportsUsage, false);
-    assert.deepEqual(descriptor.sessionModes, { review: 'agent', 'read-only': 'ask' });
+    assert.deepEqual(descriptor.permissionTiers, SESSION_PERMISSION_TIERS);
+    assert.deepEqual(descriptor.sessionModes, { review: 'agent', 'read-only': 'ask', 'full-access': 'agent' });
     const servers = [{ name: 'project', type: 'http' as const, url: 'http://127.0.0.1/mcp', headers: { Literal: '$value' } }];
     const { context } = turn();
     await assert.rejects(descriptor.launch(context.session, servers), /审批通道/);
@@ -43,8 +45,10 @@ test('Cursor descriptor preserves session MCP injection and rejects unsupported 
     assert.deepEqual([launch.args[0], launch.args[1], launch.args[3]], ['--disable-project-configs', '--plugin-dir', 'acp']);
     assert.notEqual(launch.env.CURSOR_CONFIG_DIR, process.env.CURSOR_CONFIG_DIR);
     assert.equal(launch.mcpServers, servers);
-    await launch.waitUntilReady?.(context.signal);
+    await launch.waitUntilReady?.(context.signal, 'cursor-native-session');
     assert.equal(descriptor.permissionDecision?.({ toolCallId: 'current-permission', kind: 'edit' }, { ...context.session }, servers), 'ask');
+    await launch.cleanup?.(); cleanup = undefined;
+    assert.equal(descriptor.permissionDecision?.({ toolCallId: 'missing-guard', kind: 'edit' }, turn('full-access').context.session, servers), 'deny');
     assert.equal(descriptor.selectModel([{ value: 'native/model', name: 'Native model' }], 'native/model').name, 'Native model');
     assert.throws(() => descriptor.selectModel([{ value: 'native/model', name: 'Native model' }], 'other'), /未提供/);
     await version('2026.09.08-old');
@@ -83,6 +87,11 @@ test('Cursor plan approval returns explicit accept, reject or cancellation and d
   assert.deepEqual(await approveCursorPlan(input, context, context.signal), { outcome: { outcome: 'accepted' } });
   assert.match(approval!.detail, /^先读取项目\n\n1\. 读取\n2\. 修改/);
   assert.match(approval!.detail, /~\/.cursor\/plans\//);
+  assert.match(approval!.detail, /文件修改仍需单独批准/);
+  context.session.settings = { permission: 'full-access' };
+  assert.deepEqual(await approveCursorPlan(input, context, context.signal), { outcome: { outcome: 'accepted' } });
+  assert.doesNotMatch(approval!.detail, /文件修改仍需单独批准/);
+  context.session.settings = { permission: 'review' };
   context.approve = async () => 'reject';
   assert.deepEqual(await approveCursorPlan(input, context, context.signal), { outcome: { outcome: 'rejected', reason: '用户拒绝该计划。' } });
   context.approve = async () => 'always';
@@ -242,4 +251,27 @@ test('Cursor read-only hooks deny writes, shell and unknown MCP, allow native qu
     await requested; request.abort(); await assert.rejects(result); await revoked;
     assert.equal(channel.permissionDecision(cursorHookTool(input)), 'ask');
   } finally { await channel.cleanup(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('Cursor full-access hooks allow valid tools while enforcing the request shape and turn lifetime', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'ensemble-cursor-full-'));
+  const { context } = turn('full-access');
+  const controller = new AbortController();
+  context.signal = controller.signal;
+  context.session.externalId = 'resumed-native-session';
+  const guard = await createCursorGuard(directory, context.session, [], context, cursorPermissionDecision);
+  try {
+    const request = { tool_name: 'FutureTool', tool_use_id: 'new-tool', conversation_id: 'resumed-native-session', tool_input: {} };
+    for (const name of ['Write', 'Shell', 'FutureTool', 'AskQuestion']) {
+      assert.equal((await runHook(guard, 'preToolUse', { ...request, tool_name: name })).permission, 'allow');
+    }
+    assert.equal((await runHook(guard, 'beforeMCPExecution', { ...request, mcp_server_name: 'user-mcp' })).permission, 'allow');
+    assert.equal((await runHook(guard, 'beforeMCPExecution', request)).permission, 'deny');
+    assert.equal((await runHook(guard, 'preToolUse', { ...request, conversation_id: 'foreign' })).permission, 'deny');
+    assert.equal((await runHook(guard, 'preToolUse', { ...request, tool_input: '[]' })).permission, 'deny');
+    assert.equal(guard.permissionDecision(cursorHookTool(request)), 'allow');
+    controller.abort();
+    assert.equal((await runHook(guard, 'preToolUse', request)).permission, 'deny');
+    assert.equal(guard.permissionDecision(cursorHookTool(request)), 'deny');
+  } finally { await guard.cleanup(); await rm(directory, { recursive: true, force: true }); }
 });

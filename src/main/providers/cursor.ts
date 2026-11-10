@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import type { ToolCallUpdate } from '@agentclientprotocol/sdk';
+import { SESSION_PERMISSION_TIERS } from '../../shared/session-permissions';
 import type { McpServerConfig, Session } from '../../shared/types';
 import { isIssuedWorkbenchMcpServer, waitForWorkbenchMcpReady } from '../collaboration-server';
 import type { AcpRuntimeDescriptor } from './acp-types';
@@ -41,6 +42,7 @@ export async function resolveCursorBinary(binaryOverride = process.env.CURSOR_BI
 }
 
 export function cursorPermissionDecision(tool: ToolCallUpdate, session: Session, servers: McpServerConfig[]): 'allow' | 'deny' | 'ask' {
+  if (session.settings?.permission === 'full-access') return 'allow';
   const input = tool.rawInput && typeof tool.rawInput === 'object' && !Array.isArray(tool.rawInput) ? tool.rawInput as Record<string, unknown> : {};
   const provider = input.providerIdentifier ?? input.server ?? input.serverName;
   const isMcp = typeof provider === 'string' || typeof tool.name === 'string' && (tool.name.startsWith('mcp__') || tool.name.startsWith('MCP:'));
@@ -63,7 +65,8 @@ export async function createCursorDescriptor(options: { dataPath: string; binary
     id: 'cursor', name: 'Cursor Agent', version: binary.version,
     detail: `Cursor Agent ${binary.version} · ${binary.command}`,
     tracksDelivery: true, reportsUsage: false,
-    sessionModes: { review: 'agent', 'read-only': 'ask' },
+    permissionTiers: SESSION_PERMISSION_TIERS,
+    sessionModes: { review: 'agent', 'read-only': 'ask', 'full-access': 'agent' },
     async launch(session, servers = [], context) {
       if (!context) throw new Error('Cursor 工具审批通道未提供，任务未启动。');
       if (session.id !== context.session.id) throw new Error('Cursor 工具审批通道不属于当前会话。');
@@ -79,7 +82,7 @@ export async function createCursorDescriptor(options: { dataPath: string; binary
       if (!selected) throw new Error('Cursor 原生目录未提供所选模型。');
       return selected;
     },
-    permissionDecision: (tool, session, servers) => guards.get(session.id)?.permissionDecision(tool) ?? cursorPermissionDecision(tool, session, servers),
+    permissionDecision: (tool, session) => guards.get(session.id)?.permissionDecision(tool) ?? 'deny',
     ...cursorInteractions(),
   };
 }

@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { ProviderModel } from '../../shared/types';
+import { SESSION_PERMISSION_TIERS } from '../../shared/session-permissions';
 import { discoveryHealth } from '../provider-health';
 import { abortError } from './json-rpc';
 import { createPiExtension } from './pi-extension';
@@ -91,7 +92,7 @@ export async function createPiProvider(options: { dataPath: string; binary?: str
   return {
     tracksDelivery: true,
     info: { id: 'pi', name: 'Pi', source: 'builtin', available: Boolean(binary && sdkEntry), detail,
-      capabilities: { resume: true, approvals: true, images: true, textAttachments: true, permissions: true, effort: true, structured: true, usage: true, rewind: false, steer: false },
+      capabilities: { resume: true, approvals: true, images: true, textAttachments: true, permissions: true, permissionTiers: SESSION_PERMISSION_TIERS, effort: true, structured: true, usage: true, rewind: false, steer: false },
       models, defaultModelId, efforts: models?.find(model => model.id === defaultModelId)?.efforts,
       health: discoveryHealth({ binary: Boolean(binary), protocol: binary ? protocol : undefined, catalog: models?.length ? true : undefined, source: 'pi-native-rpc' }) },
     async run(context) {

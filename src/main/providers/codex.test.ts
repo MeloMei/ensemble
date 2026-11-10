@@ -63,7 +63,7 @@ createInterface({ input: process.stdin }).on('line', line => {
   }
   if (message.method === 'thread/start' || message.method === 'thread/resume') {
     if (message.params.approvalPolicy && typeof message.params.approvalPolicy==='string' && !['on-request', 'never'].includes(message.params.approvalPolicy)) process.exit(9);
-    if (message.params.sandbox && !['workspace-write', 'read-only'].includes(message.params.sandbox)) process.exit(9);
+    if (message.params.sandbox && !['workspace-write', 'read-only', 'danger-full-access'].includes(message.params.sandbox)) process.exit(9);
     threadId = message.params.threadId || threadId;
     response(message.id, { thread: { id: threadId } }); return;
   }
@@ -252,6 +252,38 @@ test('Codex provider uses the app-server protocol and cleans up owned processes'
     await t.test('does not treat structured questions as permissions', async () => {
       process.env.CODEX_ADAPTER_FIXTURE_MODE = 'question';
       await assert.rejects((await createProvider()).run(context()), /结构化问答/);
+    });
+    await t.test('starts full access and restores restricted policies on the same native thread', async () => {
+      process.env.CODEX_ADAPTER_FIXTURE_MODE = 'questions';
+      const provider = await createProvider();
+      const records = async () => (await readFile(trace, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+      const before = (await records()).length;
+      const full = context({
+        session: { ...session, settings: { permission: 'full-access' } },
+        approve: async input => {
+          assert.equal(input.questions?.[0].id, 'format');
+          return JSON.stringify({ format: ['short'] });
+        },
+      });
+      await provider.run(full);
+      const native = full.events.find(event => event.type === 'external-id');
+      assert.equal(native?.type, 'external-id');
+      const resumed = { ...session, externalId: native.id };
+      process.env.CODEX_ADAPTER_FIXTURE_MODE = 'stream';
+      await provider.run(context({ session: { ...resumed, settings: { permission: 'read-only' } } }));
+      await provider.run(context({ session: { ...resumed, settings: { permission: 'review' } } }));
+      const requests = (await records()).slice(before);
+      const threads = requests.filter(record => ['thread/start', 'thread/resume'].includes(record.method));
+      const turns = requests.filter(record => record.method === 'turn/start');
+      assert.deepEqual(threads.map(record => [record.method, record.params.threadId, record.params.sandbox]), [
+        ['thread/start', undefined, 'danger-full-access'],
+        ['thread/resume', native.id, 'read-only'],
+        ['thread/resume', native.id, 'workspace-write'],
+      ]);
+      assert.equal(new Set(threads.map(record => record.fixturePid)).size, 3);
+      assert.deepEqual(turns.map(record => record.params.sandboxPolicy), [{ type: 'dangerFullAccess' }, { type: 'readOnly', networkAccess: true }, undefined]);
+      const granular = { granular: { sandbox_approval: false, rules: false, mcp_elicitations: true, request_permissions: false, skill_approval: false } };
+      for (const requests of [threads, turns]) assert.deepEqual(requests.map(record => record.params.approvalPolicy), [granular, granular, 'on-request']);
     });
     await t.test('failed completion and process exit cannot report success', async () => {
       process.env.CODEX_ADAPTER_FIXTURE_MODE = 'failed';

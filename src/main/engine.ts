@@ -20,6 +20,7 @@ import { previousSessionCommand, runSessionCommand, sessionCommandReceipt } from
 import { recordSessionAttention } from './attention';
 import { addDraftEvidence, draftPromptText, hasPromptInput, samePromptDraft } from '../shared/draft-evidence';
 import { attachmentLimitIssue, supportsPromptAttachment } from '../shared/prompt-attachments';
+import { permissionTiersFor } from '../shared/session-permissions';
 
 export class WorkspaceUnavailableError extends Error {
   constructor() { super('项目执行目录尚未就绪，请检查目录是否仍然存在且可访问。'); }
@@ -161,6 +162,7 @@ export class WorkbenchEngine {
   publishState(): void { this.changed(); }
   getSession(id: string): Session { return structuredClone(this.session(id)); }
   assertActiveCaller(caller: CollaborationCaller): void { this.activeCaller(caller); }
+  activeCallerPermission(caller: CollaborationCaller): SessionSettings['permission'] { return this.activeCaller(caller).settings?.permission; }
   async waitSession(id: string): Promise<void> {
     let task: LogicalTask | undefined;
     while ((task = this.active.get(id))) await task.done;
@@ -468,9 +470,9 @@ export class WorkbenchEngine {
       const modelId = selectProviderModel(provider, sourceModel?.id);
       const efforts = provider.models?.find(model => model.id === modelId)?.efforts ?? provider.efforts ?? [];
       const { permission, effort } = source.settings ?? {};
-      if (permission === 'read-only' && !provider.capabilities.permissions) throw new Error('这个 Agent 无法保留原会话的只读权限。');
+      if (permission && !permissionTiersFor(provider.capabilities).includes(permission)) throw new Error('这个 Agent 无法保留原会话的权限档位。');
       const settings: SessionSettings = {};
-      if (permission && provider.capabilities.permissions) settings.permission = permission;
+      if (permission) settings.permission = permission;
       if (effort && provider.capabilities.effort && efforts.includes(effort)) settings.effort = effort;
       const inSplit = workspace.activeTabId === sourceTab.id && !workspace.secondaryTabId;
       const sessionId = this.createSessionRecord({
@@ -540,7 +542,8 @@ export class WorkbenchEngine {
       if (!provider?.capabilities.effort) throw new Error('这个运行时未提供思考档设置。');
       if (efforts && !efforts.includes(input.settings.effort)) throw new Error('所选模型不支持这个思考档。');
     }
-    if (typeof input.settings?.permission === 'string' && !provider?.capabilities.permissions) throw new Error('这个运行时未提供权限设置。');
+    const permission = input.settings?.permission;
+    if (permission && !permissionTiersFor(provider?.capabilities).includes(permission)) throw new Error('这个运行时不支持所选权限档位。');
     const settings = { ...session.settings };
     for (const key of ['effort', 'permission', 'skillIds'] as const) {
       const value = input.settings?.[key];
@@ -556,6 +559,13 @@ export class WorkbenchEngine {
     }
     const modelChanged = modelId !== session.modelId;
     if (modelChanged && input.settings?.effort === undefined && settings.effort && efforts && !efforts.includes(settings.effort)) delete settings.effort;
+    if (permission !== undefined && settings.permission !== 'full-access') {
+      for (const item of session.queue ?? []) {
+        if (item.settings?.permission !== 'full-access') continue;
+        if (settings.permission) item.settings.permission = settings.permission;
+        else delete item.settings.permission;
+      }
+    }
     const updatedAt = new Date(Math.max(Date.now(), Date.parse(session.updatedAt) + 1)).toISOString();
     if (input.archived === true && session.waitingForProject) {
       this.holdSessionQueue(session, archivedSideQuestionNotice);
@@ -1050,6 +1060,8 @@ export class WorkbenchEngine {
       this.assertDeliveryResolved(session);
       const adapter = this.adapters.get(session.providerId);
       if (!adapter?.info.available) throw new Error('这个 Agent 目前不可用。');
+      const permission = task.settings?.permission;
+      if (permission && !permissionTiersFor(adapter.info.capabilities).includes(permission)) throw new Error('这个运行时不支持所选权限档位，任务未发送。');
       this.observe({ type: 'input', sessionId: session.id, attemptId: task.attempt.id, turnId: turnKey, userMessageId: job.userMessageId,
         providerIdentity: { id: adapter.info.id, detail: adapter.info.detail },
         prompt: enrichment?.prompt ?? job.input.text, attachments: (enrichment?.attachments ?? []).map(({ data: _data, text: _text, ...attachment }) => attachment) });
@@ -1214,14 +1226,15 @@ export class WorkbenchEngine {
       if (task.workersCreated >= MAX_WORKERS) throw new Error('本次任务最多创建 4 个子 Agent。');
       const provider = this.adapters.get(args.providerId)?.info;
       if (!provider?.available) throw new Error('这个 Agent 目前不可用。');
-      if (parent.settings?.permission === 'read-only' && !provider.capabilities.permissions) throw new Error('目标运行时未声明只读权限，不能从只读父 Agent 派工。');
+      const readOnly = task.settings?.permission === 'read-only';
+      if (readOnly && !permissionTiersFor(provider.capabilities).includes('read-only')) throw new Error('目标运行时未声明只读权限，不能从只读父 Agent 派工。');
       const modelId = selectProviderModel(provider, args.modelId);
       const cwd = await validateWorkspace(args.cwd ?? parent.cwd);
       await this.prepareExecutionKey(cwd); this.activeCaller(caller);
       this.assertProjectAvailable(cwd, task.owner);
       const id = this.createSessionRecord({ title: args.title, providerId: args.providerId, modelId, cwd });
       const worker = this.session(id); worker.parentSessionId = parent.id; worker.parentAttemptId = task.attempt.id;
-      if (parent.settings?.permission === 'read-only') worker.settings = { permission: 'read-only' };
+      if (readOnly) worker.settings = { permission: 'read-only' };
       task.workersCreated++; task.children.add(id);
       try { void this.startTask(id, { text: args.prompt }, task.owner); }
       catch (error) { task.children.delete(id); throw error; }
@@ -1235,7 +1248,9 @@ export class WorkbenchEngine {
       const targetId = 'toSessionId' in args && typeof args.toSessionId === 'string' ? args.toSessionId : source.parentSessionId;
       if (!targetId) throw new Error('这个 Agent 没有派工父会话。');
       const target = this.assertRelated(caller, targetId);
-      if (source.settings?.permission === 'read-only' && target.parentSessionId === source.id && target.settings?.permission !== 'read-only') throw new Error('只读父 Agent 只能给同为只读的子 Agent 发送任务。');
+      const targetTask = this.active.get(target.id);
+      const targetPermission = (targetTask ? targetTask.settings : target.settings)?.permission;
+      if (task.settings?.permission === 'read-only' && target.parentSessionId === source.id && targetPermission !== 'read-only') throw new Error('只读父 Agent 只能给同为只读的子 Agent 发送任务。');
       const mail: AgentMail = { id: randomUUID(), fromSessionId: source.id, toSessionId: target.id, attemptId: task.attempt.id,
         kind: tool === 'ask_parent' ? 'question' : 'message', text: args.text, createdAt: now() };
       if (!this.active.has(target.id)) {

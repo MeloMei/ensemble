@@ -3,12 +3,13 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { SESSION_PERMISSION_TIERS, type SessionPermission } from '../../shared/session-permissions';
 import type { Session } from '../../shared/types';
 import { CollaborationServer } from '../collaboration-server';
 import { createQoderDescriptor, qoderPermissionDecision } from './qoder';
 
-const session = (cwd: string, readOnly = false): Session => ({ id: 'fixture', title: 'Fixture', providerId: 'qoder', cwd,
-  status: 'running', settings: { permission: readOnly ? 'read-only' : 'review' }, messages: [], approvals: [], createdAt: '', updatedAt: '' });
+const session = (cwd: string, permission: SessionPermission = 'review'): Session => ({ id: 'fixture', title: 'Fixture', providerId: 'qoder', cwd,
+  status: 'running', settings: { permission }, messages: [], approvals: [], createdAt: '', updatedAt: '' });
 const tool = (name: string) => ({ toolCallId: 'fixture', _meta: { qoder: { toolName: name } } });
 
 async function withCli(run: (directory: string, binary: string) => Promise<void>) {
@@ -47,27 +48,36 @@ test('Qoder uses private native permission rules and current-turn MCP without ch
   assert(issued.config.type === 'stdio');
   const launches = [];
   try {
-    for (const readOnly of [false, true]) {
-      const launch = await descriptor.launch(session(directory, readOnly), [issued.config]); launches.push(launch);
+    assert.deepEqual(descriptor.permissionTiers, SESSION_PERMISSION_TIERS);
+    for (const permission of SESSION_PERMISSION_TIERS) {
+      const launch = await descriptor.launch(session(directory, permission), [issued.config]); launches.push(launch);
       const settingsPath = launch.args[launch.args.indexOf('--settings') + 1];
       const mcpPath = launch.args[launch.args.indexOf('--mcp-config') + 1];
       assert.equal((await stat(settingsPath)).mode & 0o777, 0o600);
       assert.equal((await stat(mcpPath)).mode & 0o777, 0o600);
       const settings = JSON.parse(await readFile(settingsPath, 'utf8'));
-      assert.deepEqual(settings.permissions.ask, ['*']);
       assert.equal(settings.disableAllHooks, true);
       assert.equal(settings.security.disableYoloMode, true);
       assert.equal(settings.mcp.lazyLoad, false);
       assert(launch.args.includes('--setting-sources=user'));
       assert(launch.args.includes('--strict-mcp-config'));
+      assert.equal(launch.args[launch.args.indexOf('--permission-mode') + 1], 'default');
+      assert.equal(descriptor.sessionModes?.[permission], 'default');
       assert.equal(launch.args[launch.args.indexOf('--allowed-mcp-server-names') + 1], 'workbench');
       assert(!launch.args.includes('--config-dir'));
-      const tools = launch.args[launch.args.indexOf('--tools') + 1].split(',');
-      assert(tools.includes('Read'));
-      assert.equal(tools.includes('Write'), !readOnly);
-      assert.equal(tools.includes('Bash'), !readOnly);
-      assert(!tools.includes('Agent'));
-      assert(!tools.includes('Skill'));
+      if (permission === 'full-access') {
+        assert(!launch.args.includes('--tools'));
+        assert.equal(settings.skills, undefined);
+        assert.equal(settings.permissions, undefined);
+      } else {
+        assert.deepEqual(settings.permissions.ask, ['*']);
+        const tools = launch.args[launch.args.indexOf('--tools') + 1].split(',');
+        assert(tools.includes('Read'));
+        assert.equal(tools.includes('Write'), permission === 'review');
+        assert.equal(tools.includes('Bash'), permission === 'review');
+        assert(!tools.includes('Agent'));
+        assert(!tools.includes('Skill'));
+      }
       const mcp = JSON.parse(await readFile(mcpPath, 'utf8'));
       assert.equal(mcp.mcpServers.workbench.env.WORKBENCH_TOOL_CAPABILITY, issued.config.env?.WORKBENCH_TOOL_CAPABILITY);
       assert.equal(launch.mcpServers?.[0], issued.config);
@@ -89,12 +99,14 @@ test('Qoder permissions use native tool identity and keep collaboration authoriz
   await server.start();
   const issued = server.issue({ sessionId: 'fixture', attemptId: 'attempt' });
   try {
-    const readonly = session('/project', true), review = session('/project');
+    const readonly = session('/project', 'read-only'), review = session('/project'), full = session('/project', 'full-access');
     assert.equal(qoderPermissionDecision(tool('Read'), readonly, []), 'allow');
     assert.equal(qoderPermissionDecision(tool('Write'), readonly, []), 'deny');
     assert.equal(qoderPermissionDecision(tool('Bash'), readonly, []), 'deny');
     assert.equal(qoderPermissionDecision(tool('Write'), review, []), 'ask');
     assert.equal(qoderPermissionDecision(tool('Agent'), review, []), 'deny');
+    assert.equal(qoderPermissionDecision(tool('Agent'), full, []), 'allow');
+    assert.equal(qoderPermissionDecision({ toolCallId: 'valid-acp-tool-without-extension', kind: 'other' }, full, []), 'allow');
     assert.equal(qoderPermissionDecision(tool('mcp__workbench__get_context'), readonly, [issued.config]), 'allow');
     assert.equal(qoderPermissionDecision(tool('mcp__workbench__get_context'), readonly, [{ ...issued.config }]), 'deny');
     assert.equal(qoderPermissionDecision(tool('mcp__other__read_file'), readonly, [issued.config]), 'deny');

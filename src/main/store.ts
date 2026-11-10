@@ -2,6 +2,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { z } from 'zod';
+import { sessionPermissionSchema } from '../shared/session-permissions';
 import { randomUUID } from 'node:crypto';
 import { DATA_SCHEMA_VERSION } from '../shared/data-schema';
 import type { AgentMail, MutationReceipt, Session, Workflow, Workspace, WorktreeOperation } from '../shared/types';
@@ -47,7 +48,7 @@ const sessionStatus = z.enum(['idle', 'queued', 'running', 'waiting_approval', '
 const stepStatus = z.enum(['pending', 'running', 'completed', 'failed', 'blocked', 'cancelled']);
 const attachmentSchema = record({ id: z.string(), name: z.string(), kind: z.enum(['image', 'text']), mimeType: z.string(), size: z.number(), sha256: z.string(), ownedPath: z.string() });
 const promptInputSchema = record({ text: z.string(), attachments: z.array(attachmentSchema).optional(), evidence: draftEvidenceListSchema.optional() });
-const sessionSettingsSchema = record({ effort: z.string().optional(), permission: z.enum(['review', 'read-only']).optional(), skillIds: z.array(z.string()).optional() });
+const sessionSettingsSchema = record({ effort: z.string().optional(), permission: sessionPermissionSchema.optional(), skillIds: z.array(z.string()).optional() });
 const eventSchema = record({
   id: z.string(), kind: z.enum(['tool', 'plan', 'task', 'subagent', 'diff']), title: z.string(),
   status: z.enum(['pending', 'running', 'completed', 'failed']), nativeId: z.string().optional(),
@@ -78,7 +79,7 @@ const savedSchema = record({
       revision: z.number().int().nonnegative().optional(),
       edit: z.object({ id: z.string(), draft: promptInputSchema.optional(), draftRevision: z.number().int().positive().optional(),
         lease: z.object({ ownerId: z.string(), expiresAt: z.number().int().nonnegative() }).strict().optional() }).strict().optional(),
-      settings: z.object({ effort: z.string().optional(), permission: z.enum(['review', 'read-only']).optional(), skillIds: z.array(z.string()).optional() }).strict().optional(), createdAt: z.string(), updatedAt: z.string() }).strict()).optional(),
+      settings: z.object({ effort: z.string().optional(), permission: sessionPermissionSchema.optional(), skillIds: z.array(z.string()).optional() }).strict().optional(), createdAt: z.string(), updatedAt: z.string() }).strict()).optional(),
     queuePaused: z.boolean().optional(), queueHoldReason: z.string().optional(), waitingForProject: z.literal(true).optional(),
     attention: z.object({ revision: z.number().int().positive(), seenRevision: z.number().int().nonnegative(),
       reason: z.enum(['approval', 'result', 'failure']), updatedAt: z.string(), sourceId: z.string().optional(), messageId: z.string().optional() }).strict().optional(),

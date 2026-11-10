@@ -5,13 +5,14 @@ import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { CollaborationServer } from '../collaboration-server';
+import type { SessionPermission } from '../../shared/session-permissions';
 import { WORKBENCH_MCP_TOOLS } from './mcp-configuration';
 import { createPiExtension } from './pi-extension';
 import type { TurnContext } from './types';
 
-const context = (readOnly = false): TurnContext => ({
+const context = (permission: SessionPermission = 'review'): TurnContext => ({
   session: { id: 'session', providerId: 'pi', title: 'Pi', cwd: '/project', status: 'running', messages: [], approvals: [],
-    createdAt: '', updatedAt: '', settings: { permission: readOnly ? 'read-only' : 'review' } },
+    createdAt: '', updatedAt: '', settings: { permission } },
   prompt: 'Inspect the project', signal: new AbortController().signal, emit() {}, async approve() { return 'deny'; },
 });
 
@@ -60,7 +61,7 @@ async function extensionHarness(input: TurnContext) {
 }
 
 test('Pi guards input until readiness and blocks writes and unknown tools in read-only mode', async () => {
-  const h = await extensionHarness(context(true));
+  const h = await extensionHarness(context('read-only'));
   try {
     assert.deepEqual(h.pi.mcpOptions!.loadConfig(), { servers: [], errors: [], autoEnableCodemode: false });
     assert.equal(h.input().action, 'handled');
@@ -90,11 +91,21 @@ test('Pi review permissions require single-call approval and fail closed when ap
   } finally { await h.close(); }
 });
 
+test('Pi full access permits runtime tools only after its guard is ready', async () => {
+  const h = await extensionHarness(context('full-access'));
+  try {
+    assert.equal((await h.tool('bash')).block, true);
+    await h.ready();
+    for (const tool of ['bash', 'write', 'edit', 'mcp__user__action']) assert.equal(await h.tool(tool), undefined);
+    assert.equal(h.decisions.length, 0);
+  } finally { await h.close(); }
+});
+
 test('Pi only preapproves issued collaboration tools and keeps private configuration temporary', async () => {
   const server = new CollaborationServer(async () => ({}), process.execPath, '/owned/mcp-stdio.cjs');
   await server.start();
   const issued = server.issue({ sessionId: 'session', attemptId: 'attempt' });
-  const input = context(true); input.mcpServers = [issued.config];
+  const input = context('read-only'); input.mcpServers = [issued.config];
   const h = await extensionHarness(input);
   try {
     const expected = WORKBENCH_MCP_TOOLS.map(name => `mcp__workbench__${name}`);
@@ -114,7 +125,7 @@ test('Pi only preapproves issued collaboration tools and keeps private configura
     await assert.rejects(stat(dirname(h.extension.path)), { code: 'ENOENT' });
   } finally { await h.close(); await issued.cleanup(); await server.close(); }
 
-  const clone = context(true); clone.mcpServers = [{ ...issued.config }];
+  const clone = context('read-only'); clone.mcpServers = [{ ...issued.config }];
   const untrusted = await extensionHarness(clone);
   try {
     await untrusted.ready();
