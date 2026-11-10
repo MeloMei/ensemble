@@ -46,8 +46,8 @@ export const LEGACY_MCP_TOOLS: McpToolDefinition[] = [
 ];
 export const SESSION_MESSAGE_MCP_TOOLS = [
   { name: 'list_session_targets', description: 'List existing Ensemble chats the user has allowed this chat to contact, including runtime and availability. No access to other chat history.', schema: {} },
-  { name: 'send_session_message', description: 'Queue a message in an existing Ensemble chat authorized by the user. The recipient replies in its own chat. Save requestId to check the exact reply later. If turnMustFinish is true, finish this turn before checking; the chats share an execution directory.', schema: {
-    requestId, toSessionId: id, text: z.string().max(200_000).refine(value => Boolean(value.trim()), 'Message cannot be blank.'),
+  { name: 'send_session_message', description: 'Queue a message in an existing Ensemble chat authorized by the user. To continue here after its reply, set continueOnReply=true on one message this turn, then end your turn. Ensemble uses a new turn in the same native chat if it is still current and the reply fits. Otherwise save requestId to check status later. If turnMustFinish is true, end your turn before checking.', schema: {
+    requestId, toSessionId: id, text: z.string().max(200_000).refine(value => Boolean(value.trim()), 'Message cannot be blank.'), continueOnReply: z.boolean().optional(),
   } },
   { name: 'get_session_message', description: 'Read the status and, once completed, the exact reply to a message sent from this chat. Does not wait or read unrelated turns. If turnMustFinish is true, finish this turn and check on a later turn.', schema: { requestId } },
 ] as const satisfies readonly McpToolDefinition[];

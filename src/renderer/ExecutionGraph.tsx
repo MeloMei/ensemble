@@ -99,9 +99,9 @@ function FitCompletedLayout({ layout, onComplete }: { layout?: CompletedLayout; 
   return null;
 }
 
-export function ExecutionGraph({ graph, view, storageKey, selection, connectable = view === 'relationships', onSelect, onConnect, onPaneClick, children }: {
+export function ExecutionGraph({ graph, view, ariaLabel, storageKey, selection, connectable = view === 'relationships', onSelect, onConnect, onPaneClick, children }: {
   graph: { nodes: CollaborationNode[]; edges: CollaborationEdge[] };
-  view: string; storageKey?: string; selection?: GraphSelection; connectable?: boolean;
+  view: string; ariaLabel?: string; storageKey?: string; selection?: GraphSelection; connectable?: boolean;
   onSelect: (selection: GraphSelection) => void; onConnect?: (connection: Connection) => void;
   onPaneClick?: () => void; children?: ReactNode;
 }) {
@@ -199,7 +199,7 @@ export function ExecutionGraph({ graph, view, storageKey, selection, connectable
         'controls.interactive.ariaLabel': t('graph.interactive'),
         'minimap.ariaLabel': t('graph.minimap'),
         'handle.ariaLabel': t('graph.handle'),
-      }} aria-label={view === 'relationships' ? t('graph.relationshipsLabel') : t('graph.dataLabel')}>
+      }} aria-label={ariaLabel ?? (view === 'relationships' ? t('graph.relationshipsLabel') : t('graph.dataLabel'))}>
       <FitCompletedLayout layout={canvas.layout?.key === layoutKey ? canvas.layout : undefined} onComplete={finishLayout} />
       <RevealSelectedNode initialSelection={initialSelection.current} positions={!canvas.layout && graph.nodes.every(node => canvas.nodes.get(node.id)?.position !== undefined) ? canvas.nodes : undefined} />
       <Background color="var(--border-strong)" gap={24} size={1} /><CanvasControls />

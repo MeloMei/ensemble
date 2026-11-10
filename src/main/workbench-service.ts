@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { sessionPermissionSchema } from '../shared/session-permissions';
 import { WorkbenchEngine } from './engine';
+import { projectSessionCollaborations } from './session-collaboration';
 import { StateStore } from './store';
 import { createCodexProvider } from './providers/codex';
 import { createClaudeProvider } from './providers/claude';
@@ -97,17 +98,23 @@ export async function createWorkbenchService(options: {
     let managedWorktrees: ManagedWorktrees | undefined;
     const pluginPath = join(options.dataPath, 'plugins');
     await mkdir(pluginPath, { recursive: true });
-    const publicSnapshot = (snapshot: Snapshot): Snapshot => ({ version: 1, sessions: snapshot.sessions, workflows: snapshot.workflows,
-      providers: snapshot.providers.map(provider => health.describe(provider)), dataPath: snapshot.dataPath,
-      pluginPath: snapshot.pluginPath, pluginErrors: snapshot.pluginErrors, terminals: snapshot.terminals, mails: snapshot.mails,
-      workspaces: snapshot.workspaces.map(workspace => {
-        const worktree = managedWorktrees?.metadata(workspace.id);
-        return { ...workspace, ...(worktree ? { worktree } : managedWorktrees?.isManaged(workspace.id) ? { managedWorktreeAlias: true as const } : {}) };
-      }),
-      collaborationEventSeq: store.latestEventSeq(), collaboration: {
-      ...store.state.collaboration,
-      identities: store.state.collaboration.identities.map(({ tokenHash: _, ...identity }) => identity),
-    } });
+    const publicSnapshot = (snapshot: Snapshot): Snapshot => {
+      const { sessionHandoffs, identities, ...collaboration } = store.state.collaboration;
+      return {
+        version: 1, sessions: snapshot.sessions, workflows: snapshot.workflows,
+        providers: snapshot.providers.map(provider => health.describe(provider)), dataPath: snapshot.dataPath,
+        pluginPath: snapshot.pluginPath, pluginErrors: snapshot.pluginErrors, terminals: snapshot.terminals, mails: snapshot.mails,
+        workspaces: snapshot.workspaces.map(workspace => {
+          const worktree = managedWorktrees?.metadata(workspace.id);
+          return { ...workspace, ...(worktree ? { worktree } : managedWorktrees?.isManaged(workspace.id) ? { managedWorktreeAlias: true as const } : {}) };
+        }),
+        collaborationEventSeq: store.latestEventSeq(), collaboration: {
+          ...collaboration,
+          identities: identities.map(({ tokenHash: _, ...identity }) => identity),
+          sessionLinks: projectSessionCollaborations(snapshot.sessions, sessionHandoffs ?? []),
+        },
+      };
+    };
     const publish = (snapshot: Snapshot) => options.publish(publicSnapshot(snapshot));
     const engine = new WorkbenchEngine(store, pluginPath, publish);
     const updateGuard = new ApplicationUpdateGuard(() => publicSnapshot(engine.liveSnapshot()));

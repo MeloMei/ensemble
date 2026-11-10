@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { sessionPermissionSchema } from './session-permissions';
+import type { MessageDelivery, SessionStatus } from './types';
 
 const record = <T extends z.ZodRawShape>(shape: T) => z.object(shape).passthrough();
 const timestamp = z.string();
@@ -109,6 +110,31 @@ export const collaborationGrantSchema = record({
 });
 export type CollaborationGrant = z.infer<typeof collaborationGrantSchema>;
 
+export const sessionHandoffSchema = z.object({
+  id: identifier, fromSessionId: identifier, toSessionId: identifier, sourceAttemptId: identifier, targetQueueItemId: identifier,
+  text: z.string(), createdAt: timestamp,
+  returnTo: z.object({ providerId: identifier, nativeId: identifier.optional(), permission: sessionPermissionSchema.optional(), queueItemId: identifier.optional(), skipped: z.literal(true).optional() }).strict().optional(),
+}).strict();
+export type SessionHandoff = z.infer<typeof sessionHandoffSchema>;
+
+export interface SessionCollaborationParticipant { sessionId: string; title: string; providerId: string; cwd: string }
+export type SessionCollaborationMessageStatus = Exclude<SessionStatus, 'idle'> | 'paused' | 'removed';
+export interface SessionCollaborationMessage {
+  id: string; fromSessionId: string; toSessionId: string; text: string; createdAt: string;
+  status: SessionCollaborationMessageStatus; attemptId?: string; userMessageId?: string;
+  reply?: string; error?: string; delivery?: MessageDelivery['status'];
+  continuation?: SessionCollaborationMessageStatus | 'waiting' | 'skipped';
+}
+export interface SessionCollaboration {
+  id: string; participants: [SessionCollaborationParticipant, SessionCollaborationParticipant];
+  grants: { fromSessionId: string; toSessionId: string }[];
+  messages: SessionCollaborationMessage[]; updatedAt: string;
+}
+
+export function sessionCollaborationId(first: string, second: string): string {
+  return JSON.stringify([first, second].sort());
+}
+
 export const collaborationEventInputSchema = record({
   id: identifier, runId: identifier, type: z.string(), source: z.enum(['platform', 'managed', 'external']),
   cause: identifier.optional(), participantId: identifier.optional(), targetParticipantId: identifier.optional(),
@@ -128,6 +154,7 @@ export const collaborationStateSchema = record({
   definitions: z.array(collaborationDefinitionSchema), runs: z.array(collaborationRunSchema),
   tasks: z.array(collaborationTaskSchema), messages: z.array(collaborationMessageSchema),
   artifacts: z.array(collaborationArtifactVersionSchema), identities: z.array(collaborationIdentitySchema), grants: z.array(collaborationGrantSchema),
+  sessionHandoffs: z.array(sessionHandoffSchema).optional(),
 });
 export type CollaborationState = z.infer<typeof collaborationStateSchema>;
 

@@ -277,11 +277,12 @@ function SessionSkillAssignments({ session, workspaceId, visible, perform }: {
   </section>;
 }
 
-function SessionMessageTargets({ session, sessions, providers, perform }: {
+function SessionMessageTargets({ session, sessions, providers, perform, openSessionLink }: {
   session: Session;
   sessions: Session[];
   providers: ProviderInfo[];
   perform: Perform;
+  openSessionLink?: (sourceId: string, targetId: string) => void;
 }) {
   const { t } = useTranslation('workspace');
   const id = useId();
@@ -339,9 +340,14 @@ function SessionMessageTargets({ session, sessions, providers, perform }: {
           <span aria-hidden="true"><AgentIcon providerId={target?.providerId ?? ''} /></span>
           <strong>{title}</strong>
         </span>
-        <button type="button" className="button small" disabled={saving}
-          aria-label={t('chat.revokeNamedMessageTarget', { title })}
-          onClick={() => change(targetId, false)}>{t('chat.revokeMessageTarget')}</button>
+        <div className="session-message-target-actions">
+          {target && openSessionLink && <button type="button" className="button small"
+            aria-label={t('chat.openNamedSessionLink', { title })}
+            onClick={() => openSessionLink(session.id, targetId)}>{t('chat.openSessionLink')}</button>}
+          <button type="button" className="button small" disabled={saving}
+            aria-label={t('chat.revokeNamedMessageTarget', { title })}
+            onClick={() => change(targetId, false)}>{t('chat.revokeMessageTarget')}</button>
+        </div>
       </li>;
     })}</ul>}
     <button ref={trigger} type="button" className="button small" aria-expanded={expanded}
@@ -364,12 +370,13 @@ function SessionMessageTargets({ session, sessions, providers, perform }: {
   </section>;
 }
 
-export function SessionSettingsPanel({ session, workspaceId, visible, perform, openSession, sessions = [], providers = [] }: {
+export function SessionSettingsPanel({ session, workspaceId, visible, perform, openSession, openSessionLink, sessions = [], providers = [] }: {
   session: Session;
   workspaceId: string;
   visible: boolean;
   perform: Perform;
   openSession: (id: string) => void;
+  openSessionLink?: (sourceId: string, targetId: string) => void;
   sessions?: Session[];
   providers?: ProviderInfo[];
 }) {
@@ -377,7 +384,8 @@ export function SessionSettingsPanel({ session, workspaceId, visible, perform, o
   const active = activeStatuses.has(session.status);
   return <div className="session-settings">
     <SessionSkillAssignments key={`${workspaceId}:${session.id}`} session={session} workspaceId={workspaceId} visible={visible} perform={perform} />
-    {!session.archived && !session.parentSessionId && <SessionMessageTargets key={session.id} session={session} sessions={sessions} providers={providers} perform={perform} />}
+    {!session.archived && !session.parentSessionId && <SessionMessageTargets key={session.id} session={session}
+      sessions={sessions} providers={providers} perform={perform} openSessionLink={openSessionLink} />}
     <div className="session-settings-footer">
       {active && <span>{t('chat.sessionActionsAfterTask')}</span>}
       <button disabled={active} onClick={() => void perform('archive-session',

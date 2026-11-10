@@ -10,13 +10,14 @@ import type { Connection } from '@xyflow/react';
 import { copyGraphView } from './graph-view-state';
 import { validateWorkflowDependency } from './workflow-graph';
 import { ExecutionGraph, edgeFor, graphNode, type CollaborationNode, type CollaborationEdge, type GraphSelection } from './ExecutionGraph';
-import type { CollaborationArtifactVersion, CollaborationDefinition, CollaborationEvent, CollaborationMessage, CollaborationParticipant, CollaborationRun, CollaborationTask, CollaborationTaskTemplate } from '../shared/collaboration';
+import type { CollaborationArtifactVersion, CollaborationDefinition, CollaborationEvent, CollaborationMessage, CollaborationParticipant, CollaborationRun, CollaborationTask, CollaborationTaskTemplate, SessionCollaboration } from '../shared/collaboration';
 import type { DraftEvidence, McpServerConfig, ProviderInfo, PublicCollaborationState, Session, Snapshot } from '../shared/types';
 import { EVIDENCE_EXCERPT_LIMIT } from '../shared/draft-evidence';
 import { permissionTiersFor } from '../shared/session-permissions';
 import { DirectoryField, EmptyState, IconButton, Modal, ModelField, ProviderSelect, Status, defaultModelId, modelName, pathName, relativeTime, validModelSelection, type Perform } from './ui';
 import { createImplementationReviewDraft, participantPermissionIssue, withCollaborationGoal } from './collaboration-template';
 import { projectResourceDelivery, type ResourceDeliveryCount } from './collaboration-resource-delivery';
+import { SessionCollaborationView, sessionCollaborationTitle } from './SessionCollaborationView';
 import '@xyflow/react/dist/style.css';
 import './CollaborationViews.css';
 
@@ -74,29 +75,71 @@ function implementationReviewDefaults(providers: ProviderInfo[], cwd: string) {
 }
 
 interface ArtifactEvidenceProps { onChooseEvidence?: (reference: DraftEvidence) => void; artifactJump?: { runId: string; artifactId: string } }
+type CollaborationEntry = { kind: 'run'; value: CollaborationRun } | { kind: 'session'; value: SessionCollaboration };
+type CollaborationEntryKey = { kind: CollaborationEntry['kind']; id: string };
 
-export function CollaborationViews({ snapshot, perform, pending, openSession, initialCwd = '', openProviderSettings, onChooseEvidence, artifactJump }: {
-  snapshot: Snapshot; perform: Perform; pending: Set<string>; openSession: (id: string) => void; initialCwd?: string; openProviderSettings?: () => void;
+export function CollaborationViews({ snapshot, perform, pending, openSession, initialCwd = '', openProviderSettings, onChooseEvidence, artifactJump, sessionLinkJump }: {
+  snapshot: Snapshot; perform: Perform; pending: Set<string>; openSession: (id: string) => void; initialCwd?: string; openProviderSettings?: () => void; sessionLinkJump?: { id: string };
 } & ArtifactEvidenceProps) {
   const { t } = useTranslation('collaboration');
   const state = snapshot.collaboration;
-  const [selectedId, setSelectedId] = useState<string>();
+  const entries = useMemo(() => [
+    ...(state?.runs ?? []).map(value => ({ kind: 'run', value } as const)),
+    ...(state?.sessionLinks ?? []).map(value => ({ kind: 'session', value } as const)),
+  ].sort((a, b) => b.value.updatedAt.localeCompare(a.value.updatedAt)), [state?.runs, state?.sessionLinks]);
+  const [selection, setSelection] = useState<CollaborationEntryKey>();
   const [editing, setEditing] = useState<string>();
   const [connections, setConnections] = useState(false);
-  const runs = [...(state?.runs ?? [])].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  const run = runs.find(item => item.id === selectedId) ?? runs[0];
-  useEffect(() => { if (run && run.id !== selectedId) setSelectedId(run.id); }, [run?.id, selectedId]);
+  const handledSessionJump = useRef<typeof sessionLinkJump>(undefined);
+  const sessionJumpReady = Boolean(sessionLinkJump && state?.sessionLinks?.some(link => link.id === sessionLinkJump.id));
+  const entry = entries.find(item => item.kind === selection?.kind && item.value.id === selection.id) ?? entries[0];
+  const entryKind = entry?.kind;
+  const entryId = entry?.value.id;
+  const ready = Boolean(state);
   useEffect(() => {
-    if (artifactJump) { setEditing(undefined); setSelectedId(artifactJump.runId); }
+    if (!ready) return;
+    if (entryKind && entryId) {
+      if (entryKind !== selection?.kind || entryId !== selection.id) setSelection({ kind: entryKind, id: entryId });
+    } else {
+      if (selection) setSelection(undefined);
+      setEditing(current => current ?? 'new');
+    }
+  }, [ready, entryKind, entryId, selection]);
+  useEffect(() => {
+    if (artifactJump) { setEditing(undefined); setSelection({ kind: 'run', id: artifactJump.runId }); }
   }, [artifactJump]);
-  const editorRun = editing ? runs.find(item => item.id === editing) : undefined;
+  useEffect(() => {
+    if (!sessionLinkJump || !sessionJumpReady || handledSessionJump.current === sessionLinkJump) return;
+    handledSessionJump.current = sessionLinkJump;
+    setEditing(undefined);
+    setSelection({ kind: 'session', id: sessionLinkJump.id });
+  }, [sessionLinkJump, sessionJumpReady]);
+  const editorRun = editing ? state?.runs.find(item => item.id === editing) : undefined;
+  const openRun = (id: string) => { setSelection({ kind: 'run', id }); setEditing(undefined); };
+  const connectionCwd = entry?.kind === 'run' ? entry.value.definitionSnapshot.cwd : initialCwd;
   return <div className="collaboration-page">
     <aside className="collaboration-list"><div className="sidebar-heading"><h2>{t('page.title')}</h2><IconButton label={t('action.create')} onClick={() => setEditing('new')}><Plus size={17} /></IconButton></div><p>{t('page.description')}</p>
-      <div className="collaboration-run-list">{runs.map(item => <button className={`collaboration-run-item ${run?.id === item.id && !editing ? 'selected' : ''}`} key={item.id} aria-current={run?.id === item.id && !editing ? 'page' : undefined} onClick={() => { setSelectedId(item.id); setEditing(undefined); }}><strong>{item.definitionSnapshot.name}</strong><small>{pathName(item.definitionSnapshot.cwd)} · v{item.definitionVersion}</small><span><Status value={item.status} /><time>{relativeTime(item.updatedAt)}</time></span></button>)}{!runs.length && <p className="collaboration-list-empty">{t('page.emptyRuns')}</p>}</div>
+      <div className="collaboration-run-list">{entries.map(item => {
+        const { kind, value } = item;
+        const active = entry === item && !editing;
+        const title = kind === 'run' ? value.definitionSnapshot.name : sessionCollaborationTitle(value);
+        const status = kind === 'run' ? value.status : value.messages[0]?.status;
+        return <button className={`collaboration-run-item ${active ? 'selected' : ''}`} key={`${kind}:${value.id}`} aria-current={active ? 'page' : undefined} onClick={() => { setSelection({ kind, id: value.id }); setEditing(undefined); }}>
+          <strong title={title}>{title}</strong><small>{kind === 'run' ? `${pathName(value.definitionSnapshot.cwd)} · v${value.definitionVersion}` : t('session.title')}</small>
+          <span>{status ? <Status value={status} /> : kind === 'session' && <small>{t(value.grants.length ? 'session.linked' : 'session.revoked')}</small>}<time dateTime={value.updatedAt}>{relativeTime(value.updatedAt)}</time></span>
+        </button>;
+      })}{!entries.length && <p className="collaboration-list-empty">{t('page.emptyRuns')}</p>}</div>
       <button className="button primary" onClick={() => setEditing('new')}><Plus size={14} />{t('action.create')}</button><button className="button subtle" onClick={() => setConnections(true)}><KeyRound size={14} />{t('connection.title')}</button>
     </aside>
-    {!state ? <EmptyState icon={<Network size={28} />} title={t('page.unavailable')}>{t('page.reconnect')}</EmptyState> : editing ? <CollaborationEditor key={editing} providers={snapshot.providers} identities={state.identities} initialCwd={initialCwd} run={editorRun} runTasks={state.tasks.filter(task => task.runId === editorRun?.id)} pending={pending} perform={perform} openProviderSettings={openProviderSettings} onClose={() => setEditing(undefined)} onSaved={id => { setSelectedId(id); setEditing(undefined); }} /> : run ? <CollaborationRunView key={run.id} run={run} state={state} stateVersion={snapshot.collaborationEventSeq} providers={snapshot.providers} sessions={snapshot.sessions} perform={perform} pending={pending} openSession={openSession} onChooseEvidence={onChooseEvidence} artifactJump={artifactJump} onEdit={() => setEditing(run.id)} /> : <CollaborationEditor key="first-draft" providers={snapshot.providers} identities={state.identities} initialCwd={initialCwd} pending={pending} perform={perform} openProviderSettings={openProviderSettings} onClose={() => setEditing(undefined)} onSaved={id => { setSelectedId(id); setEditing(undefined); }} />}
-    {connections && <ConnectionDialog providers={snapshot.providers} state={state} initialCwd={run?.definitionSnapshot.cwd ?? initialCwd} perform={perform} pending={pending} onClose={() => setConnections(false)} />}
+    {!state ? <EmptyState icon={<Network size={28} />} title={t('page.unavailable')}>{t('page.reconnect')}</EmptyState>
+      : editing || !entry ? <CollaborationEditor key={editing ?? 'new'} providers={snapshot.providers} identities={state.identities} initialCwd={initialCwd}
+        run={editorRun} runTasks={state.tasks.filter(task => task.runId === editorRun?.id)} pending={pending} perform={perform}
+        openProviderSettings={openProviderSettings} onClose={() => setEditing(undefined)} onSaved={openRun} />
+      : entry.kind === 'run' ? <CollaborationRunView key={entry.value.id} run={entry.value} state={state} stateVersion={snapshot.collaborationEventSeq}
+        providers={snapshot.providers} sessions={snapshot.sessions} perform={perform} pending={pending} openSession={openSession}
+        onChooseEvidence={onChooseEvidence} artifactJump={artifactJump} onEdit={() => setEditing(entry.value.id)} />
+      : <SessionCollaborationView key={entry.value.id} link={entry.value} providers={snapshot.providers} sessions={snapshot.sessions} openSession={openSession} />}
+    {connections && <ConnectionDialog providers={snapshot.providers} state={state} initialCwd={connectionCwd} perform={perform} pending={pending} onClose={() => setConnections(false)} />}
   </div>;
 }
 

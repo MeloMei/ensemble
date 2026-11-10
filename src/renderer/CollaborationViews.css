@@ -20,6 +20,7 @@
 .collaboration-run-item > span { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .collaboration-run-item time { color: var(--dim); font-size: 11px; white-space: nowrap; }
 .collaboration-run-item .status { font-size: 11px; }
+.collaboration-run-item > span > small { color: var(--muted); font-size: 11px; }
 .collaboration-list-empty { margin: 20px 8px; color: var(--dim); font-size: 12px; line-height: 1.7; }
 
 .collaboration-setup-steps { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 24px; margin: 0 0 26px; padding: 0; list-style: none; }
@@ -149,6 +150,17 @@
 .collaboration-timeline-events strong { min-width: 82px; color: var(--text); font-weight: 500; }
 .collaboration-timeline-events small { margin-left: auto; color: var(--dim); font-size: 11px; white-space: nowrap; }
 .collaboration-timeline-events > p { padding: 9px 12px; color: var(--dim); font-size: 12px; }
+
+.session-collaboration-routes > strong { font-weight: 550; }
+.session-collaboration-routes > span { max-width: 100%; overflow-wrap: anywhere; }
+.session-collaboration-details { margin: 0; }
+.session-collaboration-details dt { color: var(--dim); font-size: 11px; }
+.session-collaboration-details dd { margin: 0; white-space: pre-wrap; }
+.session-collaboration-view .collaboration-detail-link:disabled { color: var(--dim); }
+.session-collaboration-view .collaboration-detail-link > svg { flex-shrink: 0; }
+.session-collaboration-messages .event-participants { min-width: 0; max-width: 35%; }
+.session-collaboration-messages .session-message-preview { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-collaboration-messages :is(.status, time) { flex-shrink: 0; white-space: nowrap; }
 
 .collaboration-editor > .detail-heading p { margin-top: 9px; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .collaboration-editor-body { flex: 1; width: 100%; max-width: 1000px; min-height: 0; margin: 0 auto; overflow: auto; padding: 24px; }

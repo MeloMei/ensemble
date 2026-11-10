@@ -12,6 +12,7 @@ import {
 } from '../shared/collaboration';
 import { StateStore, type StoreTransaction } from './store';
 import { WorkbenchEngine, validateWorkspace, type ExecutionObservation } from './engine';
+import { sessionCollaborationMessage } from './session-collaboration';
 import { AttachmentService } from './attachment-service';
 import { collaborationOperationSchemas, definitionInputSchema, SESSION_MESSAGE_MCP_TOOLS } from './mcp-tool-catalog';
 
@@ -82,6 +83,13 @@ export class CollaborationCore {
   async call(principal: CollaborationPrincipal, operation: string, input: unknown): Promise<unknown> {
     if (this.closing) throw new Error('协作后台正在停止。');
     this.assertPrincipal(principal);
+    if (operation === 'get_session_handoff') {
+      if (principal.kind !== 'user') throw new Error('只有工作台用户可以查看会话协作记录。');
+      const { id } = z.object({ id: z.string().min(1).max(200) }).strict().parse(input);
+      const handoff = this.store.state.collaboration.sessionHandoffs?.find(item => item.id === id);
+      if (!handoff) throw new Error('这条会话协作消息不存在。');
+      return sessionCollaborationMessage(this.store.state.sessions, handoff);
+    }
     if (operation === listSessionTargets.name || operation === sendSessionMessage.name || operation === getSessionMessage.name) {
       if (principal.kind !== 'session') throw new Error('只有普通会话的 Agent 能联系其他会话。');
       if (operation === listSessionTargets.name) {

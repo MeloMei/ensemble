@@ -1,6 +1,6 @@
 import { CollaborationViews } from './CollaborationViews';
 import { readGraphView, writeGraphView } from './graph-view-state';
-import type { CollaborationRun, CollaborationEvent, CollaborationParticipant, CollaborationTask } from '../shared/collaboration';
+import type { CollaborationRun, CollaborationEvent, CollaborationParticipant, CollaborationTask, SessionCollaboration, SessionCollaborationMessage } from '../shared/collaboration';
 import React, { act, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { I18nextProvider } from 'react-i18next';
@@ -700,6 +700,7 @@ const cases: Record<string, () => Promise<void>> = {
     const writes: { sourceId: string; sessionId: string; enabled: boolean }[] = [];
     const grant = deferred<void>();
     let opened: string | undefined;
+    let openedLink: [string, string] | undefined;
     let removed: string | undefined;
     window.workbench = {
       listSkills: async () => [],
@@ -711,7 +712,7 @@ const cases: Record<string, () => Promise<void>> = {
     } as unknown as Window['workbench'];
     const show = (current: Session) => render(<SettingsDialog snapshot={null} workspace={workspace} session={current}
       sessions={[current, target, archived]} perform={perform} pending={new Set()} updates={idleUpdates}
-      initialSection="session" openSession={() => {}} onClose={() => {}} />);
+      initialSection="session" openSession={() => {}} openSessionLink={(from, to) => { openedLink = [from, to]; }} onClose={() => {}} />);
     await show(source);
     await click('workspace:chat.addMessageTarget');
     const search = input('.session-message-target-picker [role=combobox]');
@@ -733,6 +734,9 @@ const cases: Record<string, () => Promise<void>> = {
     await show({ ...source, messageTargetIds: [target.id] });
     const granted = document.querySelector('.session-message-target-list li');
     assert(granted?.querySelector('.agent-icon') && granted.textContent?.includes(target.title), 'The confirmed grant did not show the target title and Agent');
+    const viewLink = granted?.querySelector<HTMLButtonElement>(`[aria-label="${translate('workspace:chat.openNamedSessionLink', { title: target.title })}"]`);
+    await act(async () => { viewLink?.click(); await tick(); });
+    assert(openedLink?.[0] === source.id && openedLink?.[1] === target.id, 'View collaboration did not open the authorized pair');
     await click(translate('workspace:chat.revokeNamedMessageTarget', { title: target.title }));
     await settle();
     assert(writes[1]?.sourceId === source.id && writes[1].sessionId === target.id && !writes[1].enabled, 'Revocation did not target the granted session');
@@ -4020,6 +4024,76 @@ const cases: Record<string, () => Promise<void>> = {
     await click('runtime:worktree.reviewRemoval'); await click('runtime:worktree.confirmRemove');
     await waitFor(() => closed === 1, 'Confirmed successful removal did not close the workspace tools');
     assert(Number(removals.length) === 2 && removals.every(id => id === workspace.id), 'Removal was duplicated or used the wrong workspace');
+  },
+  'SESSION-COLLABORATION: a live grant opens a stable canvas and message details follow the receipt': async () => {
+    const source = { ...session, id: 'live-source', title: 'Implementation' };
+    const target = { ...session, id: 'live-target', title: 'Review' };
+    const run = collaborationRun('Saved run', '2026-11-10T08:00:00Z');
+    const grant = { fromSessionId: source.id, toSessionId: target.id };
+    const participant = ({ id, title, providerId, cwd }: Session) => ({ sessionId: id, title, providerId, cwd });
+    let link: SessionCollaboration = { id: 'live-source-target', grants: [grant], messages: [], updatedAt: '2026-11-10T08:01:00Z',
+      participants: [participant(source), participant(target)] };
+    let detail: SessionCollaborationMessage;
+    let sessionLinkJump: { id: string } | undefined;
+    const requests: string[] = [];
+    const opened: string[] = [];
+    window.workbench = { queryCollaborationEvents: async () => [], collaborationCall: async (operation: string, input: { id: string }) => {
+      assert(operation === 'get_session_handoff', 'An observed relationship attempted a management call');
+      requests.push(input.id);
+      return detail;
+    } } as unknown as Window['workbench'];
+    const show = (links: SessionCollaboration[], runs: CollaborationRun[] = [run]) => {
+      const snapshot = collaborationSnapshot(runs);
+      snapshot.collaboration!.sessionLinks = links;
+      return render(<CollaborationViews snapshot={{ ...snapshot, sessions: [source, target], providers: [provider] }} initialCwd={workspace.cwd} perform={perform} pending={new Set()} openSession={id => opened.push(id)} sessionLinkJump={sessionLinkJump} />);
+    };
+    const press = async (element: Element) => act(async () => { (element as HTMLElement).click(); await tick(); });
+    const rows = () => [...document.querySelectorAll<HTMLButtonElement>('.collaboration-run-item')];
+    const edge = () => document.querySelector('.react-flow__edge-path');
+    const edgeLabel = () => document.querySelector<HTMLButtonElement>('.execution-edge-label')!;
+    const positions = () => [...document.querySelectorAll<HTMLElement>('.react-flow__node, .react-flow__viewport')].map(node => node.style.transform).join('|');
+
+    await show([], []);
+    const draft = labeledInput('collaboration:setup.goal');
+    await change(draft, 'Unfinished draft');
+    await show([link]);
+    assert(rows().length === 2 && rows()[0].textContent?.includes('Implementation · Review'), 'The live grant did not appear immediately alongside the saved run');
+    assert(labeledInput('collaboration:setup.goal') === draft && draft.value === 'Unfinished draft', 'A background grant discarded the current draft');
+
+    await press(rows()[0]); await graphReady(2); await frames(12);
+    assert(document.querySelector('.session-collaboration-view h1')?.textContent === 'Implementation · Review', 'Selecting the live grant did not open its canvas');
+    assert(document.querySelector('.collaboration-timeline')?.textContent?.includes(translate('collaboration:session.waitingForMessage')), 'A grant without a handoff did not explain the empty history');
+    assert(edge()?.hasAttribute('marker-end') && !edge()?.hasAttribute('marker-start'), 'The canvas did not show the granted direction');
+    await graphClick('node', target.id);
+    const openTarget = translate('collaboration:session.openNamed', { title: target.title });
+    await press([...document.querySelectorAll('button')].find(item => item.textContent?.trim() === openTarget)!);
+    assert(opened.join() === target.id, 'The session node did not link to the actual session');
+
+    detail = { ...grant, id: 'handoff', createdAt: link.updatedAt, text: 'Read the full implementation notes.\nCheck the direct impact.', status: 'queued' };
+    const preview = { ...detail, text: 'Read the full implementation notes…' };
+    link = { ...link, messages: [preview] };
+    await show([link]);
+    assert(edgeLabel().textContent === translate('collaboration:session.latestMessage', { status: translate('shell:status.queued') }), 'The route did not update when a message was queued');
+    await press(edgeLabel()); await frames(12);
+    const panel = document.querySelector('.collaboration-selection-scroll')!;
+    assert(panel.querySelector('pre')?.textContent === detail.text && requests.join() === detail.id, 'The selected message did not load its complete text');
+    const canvas = positions();
+
+    detail = { ...detail, status: 'completed', delivery: 'accepted', reply: 'Verified the direct impact.\nOne issue remains.', continuation: 'waiting' };
+    link = { ...link, messages: [{ ...detail, text: preview.text, reply: 'Verified the direct impact…' }], updatedAt: '2026-11-10T08:02:00Z' };
+    await show([link], [{ ...run, updatedAt: '2026-11-10T08:03:00Z' }]); await frames(4);
+    assert(rows()[1].getAttribute('aria-current') === 'page' && positions() === canvas, 'A receipt update or sidebar reorder moved the current canvas');
+    assert(document.querySelector('.collaboration-selection-scroll') === panel && panel.querySelector('.status-completed') && panel.querySelectorAll('pre')[1]?.textContent === detail.reply, 'Completion did not refresh the open message and its full reply');
+    assert(requests.length === 2 && requests[1] === detail.id, 'The open message was not refreshed on its receipt transition');
+
+    await show([{ ...link, grants: [] }]);
+    assert(!edge()?.hasAttribute('marker-end') && document.querySelector('.session-collaboration-routes')?.textContent?.includes(translate('collaboration:session.revoked')) && document.querySelector('.session-collaboration-messages .status-completed'), 'Revoking the grant did not preserve message history without a permission arrow');
+
+    sessionLinkJump = { id: link.id };
+    await show([]);
+    assert(document.querySelector('.collaboration-run-view h1')?.textContent === run.definitionSnapshot.name, 'An unresolved session jump replaced the current collaboration');
+    await show([link]);
+    assert(document.querySelector('.session-collaboration-view h1'), 'The pending jump did not open the relationship when it arrived');
   },
   'UX-C2: background collaboration updates preserve the run the user is viewing': async () => {
     window.workbench = { queryCollaborationEvents: async () => [] } as unknown as Window['workbench'];

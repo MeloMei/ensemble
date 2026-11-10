@@ -48,7 +48,7 @@ const sessionStatus = z.enum(['idle', 'queued', 'running', 'waiting_approval', '
 const stepStatus = z.enum(['pending', 'running', 'completed', 'failed', 'blocked', 'cancelled']);
 const attachmentSchema = record({ id: z.string(), name: z.string(), kind: z.enum(['image', 'text']), mimeType: z.string(), size: z.number(), sha256: z.string(), ownedPath: z.string() });
 const promptInputSchema = record({ text: z.string(), attachments: z.array(attachmentSchema).optional(), evidence: draftEvidenceListSchema.optional() });
-const agentSourceSchema = z.object({ sessionId: z.string(), title: z.string(), providerId: z.string() }).strict();
+const agentSourceSchema = z.object({ sessionId: z.string(), title: z.string(), providerId: z.string(), reply: z.literal(true).optional() }).strict();
 const sessionSettingsSchema = record({ effort: z.string().optional(), permission: sessionPermissionSchema.optional(), skillIds: z.array(z.string()).optional() });
 const usageSchema = record({
   id: z.string(), source: z.string(), scope: z.enum(['turn', 'cumulative', 'context']),

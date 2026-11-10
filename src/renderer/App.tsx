@@ -37,6 +37,7 @@ import { DraftTargetDialog, EvidenceTargetDialog } from './DraftEvidence';
 import { PreviewPane } from './PreviewPane';
 import { supportsPromptAttachment } from '../shared/prompt-attachments';
 import { supportsWindowCapture, WindowCapturePreview } from './WindowCapture';
+import { sessionCollaborationId } from '../shared/collaboration';
 import { TerminalPane } from './TerminalPane';
 import { WorkflowEditor, WorkflowView } from './WorkflowViews';
 import { BusyIcon, DirectoryField, EmptyState, ErrorToast, IconButton, Modal, Status, statusLabel, pathName, relativeTime, type Perform } from './ui';
@@ -130,7 +131,18 @@ export function App() {
   const windowCapture = windowCaptures[0];
   const stageWindowCapture = useCallback((attachment: PromptAttachment) => setWindowCaptures(items => [...items, attachment]), []);
   useEffect(() => window.workbench.onWindowCaptured?.(stageWindowCapture), [stageWindowCapture]);
-  const [artifactJump, setArtifactJump] = useState<{ runId: string; artifactId: string }>();
+  const [collaborationJump, setCollaborationJump] = useState<
+    { kind: 'artifact'; runId: string; artifactId: string } | { kind: 'session'; id: string }
+  >();
+  const openCollaboration = () => {
+    setCollaborationJump(undefined);
+    setPage('collaboration');
+  };
+  const openSessionLink = (sourceId: string, targetId: string) => {
+    setCollaborationJump({ kind: 'session', id: sessionCollaborationId(sourceId, targetId) });
+    setDialog(null);
+    setPage('collaboration');
+  };
   const [annotationJump, setAnnotationJump] = useState<{
     tabId: string; id: string; annotation: Extract<DraftEvidence['source'], { kind: 'preview' }>;
   }>();
@@ -307,7 +319,7 @@ export function App() {
         });
       } else openSession(source.sessionId, false, false, source.messageId);
     } else if (source.kind === 'artifact') {
-      setArtifactJump({ runId: source.runId, artifactId: source.artifactId });
+      setCollaborationJump({ kind: 'artifact', runId: source.runId, artifactId: source.artifactId });
       setPage('collaboration');
     } else {
       void perform('open-evidence-preview', async () => {
@@ -598,7 +610,7 @@ export function App() {
       <nav className="sidebar-navigation" aria-label={t('app.navigation')}><button className="new-workspace-button" onClick={() => setDialog('workspace')}><Plus size={17} /><span>{t('app.newWorkspace')}</span></button><button className={page === 'workspace' ? 'selected' : ''} aria-current={page === 'workspace' ? 'page' : undefined} onClick={() => setPage('workspace')}><LayoutGrid size={17} /><span>{t('app.workspace')}</span><small>{workspaces.length || ''}</small></button>
         <button className={page === 'attention' ? 'selected' : ''} aria-current={page === 'attention' ? 'page' : undefined}
           onClick={() => { setAttentionOpen(undefined); setPage('attention'); }}><Inbox size={17} />{t('attention.inboxTitle')}</button>
-        <button className={page === 'history' ? 'selected' : ''} aria-current={page === 'history' ? 'page' : undefined} onClick={() => setPage('history')}><History size={17} />{t('app.history')}</button><button className={page === 'collaboration' ? 'selected' : ''} aria-current={page === 'collaboration' ? 'page' : undefined} onClick={() => setPage('collaboration')}><Network size={17} />{t('app.collaboration')}</button><button className={page === 'workflows' ? 'selected' : ''} aria-current={page === 'workflows' ? 'page' : undefined} onClick={() => setPage('workflows')}><GitBranch size={17} />{t('app.workflows')}</button></nav>
+        <button className={page === 'history' ? 'selected' : ''} aria-current={page === 'history' ? 'page' : undefined} onClick={() => setPage('history')}><History size={17} />{t('app.history')}</button><button className={page === 'collaboration' ? 'selected' : ''} aria-current={page === 'collaboration' ? 'page' : undefined} onClick={openCollaboration}><Network size={17} />{t('app.collaboration')}</button><button className={page === 'workflows' ? 'selected' : ''} aria-current={page === 'workflows' ? 'page' : undefined} onClick={() => setPage('workflows')}><GitBranch size={17} />{t('app.workflows')}</button></nav>
       <motion.div className="workspace-sidebar-scroll" layoutScroll>{sidebarItems}</motion.div>
       <div className={`sidebar-connection connection-${connected ? 'connected' : connection.status}`}><i /><span>{connected ? t('app.connected') : t(`connection.${connection.status}`)}</span><small>{t('app.thisMachine')}</small></div><footer className="sidebar-footer"><button onClick={() => setDialog('workspace')}><Plus size={15} />{t('app.addProject')}</button><IconButton label={t('preferences.open')} onClick={() => openSettings()}><Settings2 size={16} /></IconButton></footer>
     </aside>
@@ -617,7 +629,7 @@ export function App() {
         </div>
         {page === 'workspace' && workspace ? <><FolderOpen size={16} /><h1 tabIndex={-1} title={workspace.name}>{workspace.name}</h1><span title={workspace.cwd}>{pathName(workspace.cwd)}</span><IconButton label={workspace.pinned ? t('app.unpin') : t('app.pin')} aria-pressed={workspace.pinned} onClick={() => void perform('pin-workspace', () => window.workbench.updateWorkspace(workspace.id, { pinned: !workspace.pinned }))}><Pin size={13} fill={workspace.pinned ? 'currentColor' : 'none'} /></IconButton></> : <h1 tabIndex={-1}>{{ workspace: PRODUCT_NAME, attention: t('attention.inboxTitle'), history: t('app.history'), workflows: t('app.workflows'), collaboration: t('app.agentCollaboration') }[page]}</h1>}
       </div>
-      <div className="workspace-header-actions">{page === 'workspace' && workspace && <><Tooltip label={t('app.collaboration')}><button className="header-button" aria-label={t('app.collaboration')} title={t('app.collaboration')} onClick={() => setPage('collaboration')}><Network size={14} /><span>{t('app.collaboration')}</span></button></Tooltip><button className="header-button" disabled={workspace.tabs.length < 2} onClick={() => void perform('split', () => window.workbench.splitWorkspace(workspace.id, secondaryTab ? {} : { tabId: workspace.tabs.find(tab => tab.id !== activeTab?.id)?.id, direction: 'horizontal' }))}>{secondaryTab ? t('app.mergePanes') : t('app.splitPanes')}</button>{secondaryTab && <button className="header-button" onClick={() => void perform('split-direction', () => window.workbench.splitWorkspace(workspace.id, { tabId: secondaryTab.id, direction: workspace.splitDirection === 'vertical' ? 'horizontal' : 'vertical' }))}>{t('app.changeDirection')}</button>}</>}<span className="local-indicator"><i />{t('app.local')}</span>{page === 'workspace' && <Tooltip label={t('app.openCodex')}><button className="header-button" onClick={() => setDialog('codex')} aria-label={t('app.openCodex')} title={t('app.openCodexHint')}><ArrowUpRight size={13} /><span>Codex App</span></button></Tooltip>}{page === 'workspace' && workspace && <>
+      <div className="workspace-header-actions">{page === 'workspace' && workspace && <><Tooltip label={t('app.collaboration')}><button className="header-button" aria-label={t('app.collaboration')} title={t('app.collaboration')} onClick={openCollaboration}><Network size={14} /><span>{t('app.collaboration')}</span></button></Tooltip><button className="header-button" disabled={workspace.tabs.length < 2} onClick={() => void perform('split', () => window.workbench.splitWorkspace(workspace.id, secondaryTab ? {} : { tabId: workspace.tabs.find(tab => tab.id !== activeTab?.id)?.id, direction: 'horizontal' }))}>{secondaryTab ? t('app.mergePanes') : t('app.splitPanes')}</button>{secondaryTab && <button className="header-button" onClick={() => void perform('split-direction', () => window.workbench.splitWorkspace(workspace.id, { tabId: secondaryTab.id, direction: workspace.splitDirection === 'vertical' ? 'horizontal' : 'vertical' }))}>{t('app.changeDirection')}</button>}</>}<span className="local-indicator"><i />{t('app.local')}</span>{page === 'workspace' && <Tooltip label={t('app.openCodex')}><button className="header-button" onClick={() => setDialog('codex')} aria-label={t('app.openCodex')} title={t('app.openCodexHint')}><ArrowUpRight size={13} /><span>Codex App</span></button></Tooltip>}{page === 'workspace' && workspace && <>
         {filePane.requested && filePane.tooNarrow && <span className="file-pane-space-note" id={`${filePane.id}-space`} role="status">{t('app.filesNeedSpace')}</span>}
         <IconButton id={`${filePane.id}-toggle`} label={filePane.requested ? t('app.hideFiles') : t('app.showFiles')}
           title={filePane.tooNarrow ? t('app.filesNeedSpace') : undefined} aria-pressed={filePane.requested} aria-controls={filePane.id}
@@ -680,7 +692,11 @@ export function App() {
             onAttentionOpened={onAttentionOpened} messageOpen={messageOpen?.sessionId === readingSession.id ? messageOpen : undefined}
             onMessageOpened={onMessageOpened} onOpenForkSource={openForkSource} />
         </section> : <HistoryView sessions={sessions} providers={providers} openSession={openSession} perform={perform} />)}
-        {page === 'collaboration' && <Suspense fallback={<div className="loading-view"><LoaderCircle className="spin" size={23} /><p>{t('app.loadingCollaboration')}</p></div>}><CollaborationViews snapshot={snapshot} perform={perform} pending={pending} openSession={openSession} initialCwd={workspace?.cwd} onChooseEvidence={connected ? setEvidenceTarget : undefined} artifactJump={artifactJump} openProviderSettings={() => openSettings('providers')} /></Suspense>}
+        {page === 'collaboration' && <Suspense fallback={<div className="loading-view"><LoaderCircle className="spin" size={23} /><p>{t('app.loadingCollaboration')}</p></div>}>
+          <CollaborationViews snapshot={snapshot} perform={perform} pending={pending} openSession={openSession} initialCwd={workspace?.cwd}
+            onChooseEvidence={connected ? setEvidenceTarget : undefined} artifactJump={collaborationJump?.kind === 'artifact' ? collaborationJump : undefined}
+            sessionLinkJump={collaborationJump?.kind === 'session' ? collaborationJump : undefined} openProviderSettings={() => openSettings('providers')} />
+        </Suspense>}
         {page === 'workflows' && <div className="split-page"><aside className="item-sidebar"><div className="sidebar-heading"><h2>{t('app.workflows')}</h2><IconButton label={t('workflow.new')} onClick={() => setNewWorkflow(true)}><Plus size={17} /></IconButton></div><p className="sidebar-subtitle">{t('workflow.dependenciesNote')}</p><div className="item-list">{workflows.map(item => <button key={item.id} className={`list-item ${item.id === workflow?.id && !newWorkflow ? 'selected' : ''}`} onClick={() => { setWorkflowId(item.id); setNewWorkflow(false); }}><strong>{item.name}</strong><div><span>{t('workflow.stepCount', { count: item.steps.length })}</span><Status value={item.status} /></div></button>)}</div><button className="sidebar-action" onClick={() => setNewWorkflow(true)}><Plus size={14} />{t('workflow.new')}</button></aside>{newWorkflow ? <WorkflowEditor providers={providers} perform={perform} pending={pending} onClose={() => setNewWorkflow(false)} onCreated={id => { setWorkflowId(id); setNewWorkflow(false); }} /> : workflow ? <WorkflowView workflow={workflow} providers={providers} sessions={sessions} perform={perform} pending={pending} openSession={openSession} openWorkflow={id => { setWorkflowId(id); setNewWorkflow(false); }} /> : <EmptyState icon={<GitBranch size={28} />} title={t('workflow.empty')} action={<button className="button" onClick={() => setNewWorkflow(true)}><Plus size={14} />{t('workflow.new')}</button>}>{t('workflow.emptyNote')}</EmptyState>}</div>}
       </>}
     </main>
@@ -698,7 +714,8 @@ export function App() {
       </button></div>
     </Modal>}
     {dialog === 'settings' && <SettingsDialog snapshot={snapshot} workspace={workspace} sessions={sessions} session={activeSession}
-      perform={perform} pending={pending} updates={applicationUpdates} initialSection={settingsSection} initialTarget={settingsTarget} openSession={openSession} onClose={() => setDialog(null)} />}
+      perform={perform} pending={pending} updates={applicationUpdates} initialSection={settingsSection} initialTarget={settingsTarget}
+      openSession={openSession} openSessionLink={openSessionLink} onClose={() => setDialog(null)} />}
     {projectManagement.dialog}
     {dialog === 'workspace' && <NewWorkspaceDialog perform={perform} pending={pending} onClose={() => setDialog(null)} onCreated={id => { setDialog(null); selectWorkspace(id); }} />}
     {dialog === 'agent' && workspace && <NewAgentDialog key={workspace.id} workspace={workspace} providers={providers}

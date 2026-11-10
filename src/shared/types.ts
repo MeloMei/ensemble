@@ -1,4 +1,4 @@
-import type { CollaborationEvent, CollaborationState, CollaborationIdentity } from './collaboration';
+import type { CollaborationEvent, CollaborationState, CollaborationIdentity, SessionCollaboration } from './collaboration';
 import type { LanguagePreference, LanguageState } from './i18n';
 import type { DisplayText } from './display-text';
 import type { BackendConnectionState, SessionHistoryPage, TerminalOutputEvent } from './backend';
@@ -116,7 +116,7 @@ export interface GitBranchComparison {
 }
 export interface FileDiff { path: string; patch: string; binary: boolean; truncated: boolean; revision?: string }
 
-export interface AgentMessageSource { sessionId: string; title: string; providerId: string }
+export interface AgentMessageSource { sessionId: string; title: string; providerId: string; reply?: true }
 
 export interface Message {
   id: string;
@@ -266,6 +266,7 @@ export interface Workflow extends WorkflowInput {
 
 export type PublicCollaborationState = Pick<CollaborationState, 'definitions' | 'runs' | 'tasks' | 'messages' | 'artifacts' | 'grants'> & {
   identities: Pick<CollaborationIdentity, 'id' | 'name' | 'createdAt' | 'revokedAt' | 'policy'>[];
+  sessionLinks?: SessionCollaboration[];
 };
 
 export interface Snapshot {
