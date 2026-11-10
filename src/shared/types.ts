@@ -116,6 +116,8 @@ export interface GitBranchComparison {
 }
 export interface FileDiff { path: string; patch: string; binary: boolean; truncated: boolean; revision?: string }
 
+export interface AgentMessageSource { sessionId: string; title: string; providerId: string }
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant' | 'activity';
@@ -127,6 +129,7 @@ export interface Message {
   nativeTurnId?: string;
   event?: ProcessEvent;
   delivery?: MessageDelivery;
+  agentSource?: AgentMessageSource;
   runtimeSwitch?: { fromProviderId: string; toProviderId: string; permissionResetToReview?: true };
 }
 
@@ -195,6 +198,7 @@ export interface Session {
   composerActivity?: SessionComposerActivity;
   latestTrace?: Pick<ProcessEvent, 'title' | 'status'>;
   queue?: SessionQueueItem[];
+  messageTargetIds?: string[];
   queuePaused?: boolean;
   queueHoldReason?: string;
   waitingForProject?: true;
@@ -218,6 +222,7 @@ export interface MessageDelivery {
 }
 export interface SessionQueueItem {
   id: string; commandId: string; input: PromptInput; modelId?: string; settings?: SessionSettings; createdAt: string; updatedAt: string;
+  agentSource?: AgentMessageSource;
   revision?: number;
   edit?: { id: string; draft?: PromptInput; draftRevision?: number; lease?: { ownerId: string; expiresAt: number } };
 }
@@ -423,7 +428,10 @@ export interface CurrencyBalance { currency: string; total: string; granted: str
 export interface DeepSeekBalance extends CurrencyBalance { balances: CurrencyBalance[]; checkedAt: string }
 export interface SessionSettings { effort?: string; permission?: SessionPermission; skillIds?: string[] }
 export type SessionSettingsPatch = { [K in keyof SessionSettings]?: SessionSettings[K] | null };
-export interface SessionUpdate { title?: string; archived?: boolean; settings?: SessionSettingsPatch; modelId?: string | null }
+export interface SessionUpdate {
+  title?: string; archived?: boolean; settings?: SessionSettingsPatch; modelId?: string | null;
+  messageTarget?: { sessionId: string; enabled: boolean };
+}
 export interface SessionSkillAssignment { skillId: string; enabled: boolean }
 export interface SessionSkillAssignmentReceipt { skillIds: string[]; updatedAt: string }
 export interface ProcessEvent {

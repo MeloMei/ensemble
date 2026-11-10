@@ -18,10 +18,10 @@ import {
   Activity, Archive, ArrowDown, ArrowUp, ArrowUpLeft, Check, ChevronDown,
   CircleAlert, CircleStop, Clock3, Copy, CornerDownLeft, FileText, FolderOpen,
   GitCompareArrows, GitFork, Image, ListChecks, LoaderCircle, MessageCircle, PanelsTopLeft,
-  Paperclip, Pause, Play, Search, ShieldCheck, TerminalSquare, Users, X, ArrowRightLeft,
+  Paperclip, Pause, Play, Plus, Search, ShieldCheck, TerminalSquare, Users, X, ArrowRightLeft,
 } from 'lucide-react';
 import type {
-  Approval, DraftEvidence, DraftEvidenceSource, Message, ProcessEvent, PromptAttachment, PromptInput, ProviderInfo, Session, SessionQueueItem, SessionSkillAssignmentReceipt, SkillInfo, UsageRecord,
+  AgentMessageSource, Approval, DraftEvidence, DraftEvidenceSource, Message, ProcessEvent, PromptAttachment, PromptInput, ProviderInfo, Session, SessionQueueItem, SessionSkillAssignmentReceipt, SkillInfo, UsageRecord,
 } from '../shared/types';
 import { BusyIcon, IconButton, Modal, ModelField, ProviderSelect, Status, defaultModelId, modelName, pathName, validModelSelection, type Perform } from './ui';
 import { SPRING_SNAPPY } from './vendor/open-claude-ui/ClaudeMotionPresets';
@@ -32,6 +32,7 @@ import { sessionAttentionMessage, sessionIsUnread, type SessionAttentionOpen } f
 import { Tooltip } from './Tooltip';
 import { DetailCard } from './ui-kit/DetailCard';
 import { RollingText } from './ui-kit/RollingText';
+import { SearchPicker, type SearchPickerSection } from './ui-kit';
 import { expandConversation, type TraceEntry } from './conversation-index';
 import { measureConversationRow, useReadingAnchor, useSessionReadingPosition } from './useSessionReadingPosition';
 import { WorkspaceFileNavigation, workspaceFileReference } from './workspace-file-reference';
@@ -276,19 +277,109 @@ function SessionSkillAssignments({ session, workspaceId, visible, perform }: {
   </section>;
 }
 
-export function SessionSettingsPanel({ session, workspaceId, visible, perform, openSession }: {
+function SessionMessageTargets({ session, sessions, providers, perform }: {
+  session: Session;
+  sessions: Session[];
+  providers: ProviderInfo[];
+  perform: Perform;
+}) {
+  const { t } = useTranslation('workspace');
+  const id = useId();
+  const trigger = useRef<HTMLButtonElement>(null);
+  const search = useRef<HTMLInputElement>(null);
+  const inFlight = useRef(false);
+  const [saving, setSaving] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [selectedId, setSelectedId] = useState('');
+  const grantedIds = session.messageTargetIds ?? [];
+  const candidates = sessions.filter(item => item.id !== session.id && !item.archived && !item.parentSessionId && !grantedIds.includes(item.id));
+  const selected = candidates.find(item => item.id === selectedId);
+  const sections: SearchPickerSection[] = [{
+    id: 'sessions',
+    items: candidates.map(item => ({
+      id: item.id,
+      label: item.title,
+      detail: `${providers.find(provider => provider.id === item.providerId)?.name ?? item.providerId} · ${item.cwd}`,
+      icon: <AgentIcon providerId={item.providerId} />,
+    })),
+  }];
+  useLayoutEffect(() => {
+    if (expanded) search.current?.focus();
+  }, [expanded]);
+
+  const close = () => {
+    setExpanded(false);
+    setSelectedId('');
+    trigger.current?.focus();
+  };
+  const change = (sessionId: string, enabled: boolean) => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setSaving(true);
+    void perform(`session-message-target-${session.id}`, async () => {
+      try {
+        await window.workbench.updateSession(session.id, { messageTarget: { sessionId, enabled } });
+        if (enabled) close();
+      } finally {
+        inFlight.current = false;
+        setSaving(false);
+      }
+    });
+  };
+
+  return <section className="session-message-targets" aria-labelledby={`${id}-heading`} aria-busy={saving}>
+    <h4 id={`${id}-heading`}>{t('chat.messageTargets')}</h4>
+    <p>{t('chat.messageTargetsHelp')}</p>
+    <p>{t('chat.messageTargetsRevokeHelp')}</p>
+    {grantedIds.length > 0 && <ul className="session-message-target-list">{grantedIds.map(targetId => {
+      const target = sessions.find(item => item.id === targetId);
+      const title = target?.title ?? t('chat.messageTargetUnavailable');
+      return <li key={targetId}>
+        <span className="session-message-target-title" title={title}>
+          <span aria-hidden="true"><AgentIcon providerId={target?.providerId ?? ''} /></span>
+          <strong>{title}</strong>
+        </span>
+        <button type="button" className="button small" disabled={saving}
+          aria-label={t('chat.revokeNamedMessageTarget', { title })}
+          onClick={() => change(targetId, false)}>{t('chat.revokeMessageTarget')}</button>
+      </li>;
+    })}</ul>}
+    <button ref={trigger} type="button" className="button small" aria-expanded={expanded}
+      aria-controls={expanded ? `${id}-picker` : undefined}
+      onClick={() => { if (expanded) close(); else setExpanded(true); }}>
+      <Plus size={14} />{t('chat.addMessageTarget')}
+    </button>
+    {expanded && <div className="session-message-target-picker" id={`${id}-picker`}>
+      <SearchPicker sections={sections} inputLabel={t('chat.searchMessageTargets')} resultsLabel={t('chat.messageTargetResults')}
+        placeholder={t('chat.searchMessageTargets')} emptyText={t(candidates.length ? 'chat.noMatchingMessageTargets' : 'chat.noMessageTargets')}
+        selectedId={selectedId} onSelect={setSelectedId} onQueryChange={() => setSelectedId('')} inputRef={search} readOnly={saving} />
+      <div className="session-message-target-actions">
+        <button type="button" className="button small" onClick={close}>{t('shell:common.cancel')}</button>
+        <button type="button" className="button small primary" disabled={saving || !selected}
+          onClick={() => { if (selected) change(selected.id, true); }}>
+          {selected ? t('chat.confirmNamedMessageTarget', { title: selected.title }) : t('chat.confirmMessageTarget')}
+        </button>
+      </div>
+    </div>}
+  </section>;
+}
+
+export function SessionSettingsPanel({ session, workspaceId, visible, perform, openSession, sessions = [], providers = [] }: {
   session: Session;
   workspaceId: string;
   visible: boolean;
   perform: Perform;
   openSession: (id: string) => void;
+  sessions?: Session[];
+  providers?: ProviderInfo[];
 }) {
   const { t } = useTranslation('workspace');
   const active = activeStatuses.has(session.status);
   return <div className="session-settings">
     <SessionSkillAssignments key={`${workspaceId}:${session.id}`} session={session} workspaceId={workspaceId} visible={visible} perform={perform} />
+    {!session.archived && !session.parentSessionId && <SessionMessageTargets key={session.id} session={session} sessions={sessions} providers={providers} perform={perform} />}
     <div className="session-settings-footer">
-      {active && <span>{t('chat.settingsAfterTask')}</span>}
+      {active && <span>{t('chat.sessionActionsAfterTask')}</span>}
       <button disabled={active} onClick={() => void perform('archive-session',
         () => window.workbench.updateSession(session.id, { archived: !session.archived }))}>
         <Archive size={13} />{session.archived ? t('chat.unarchive') : t('chat.archive')}
@@ -546,11 +637,28 @@ function DeliveryState({ message, sessionId, pending, perform, connected, readOn
   </div>;
 }
 
-type QueueProps = Pick<SessionChatProps, 'session' | 'provider' | 'pending' | 'perform'> & { connected: boolean };
+function AgentMessageAttribution({ source, sessions, openSession }: {
+  source: AgentMessageSource;
+  sessions?: Session[];
+  openSession: (id: string) => void;
+}) {
+  const { t } = useTranslation('workspace');
+  const current = sessions?.find(item => item.id === source.sessionId);
+  const label = t('chat.agentMessageFrom', { title: current?.title ?? source.title });
+  const attribution = <>
+    <span aria-hidden="true"><AgentIcon providerId={current?.providerId ?? source.providerId} size={13} /></span>
+    <span className="agent-message-source-label" title={label}>{label}</span>
+  </>;
+  return current ? <button type="button" className="agent-message-source" onClick={() => openSession(current.id)}>
+    {attribution}<ArrowUpLeft size={12} aria-hidden="true" />
+  </button> : <span className="agent-message-source">{attribution}</span>;
+}
+
+type QueueProps = Pick<SessionChatProps, 'session' | 'provider' | 'pending' | 'perform' | 'sessions' | 'openSession'> & { connected: boolean };
 const queueEditorWindowId = crypto.randomUUID();
 const queueDraftFlushes = new Map<string, Promise<void>>();
 
-function PromptQueue({ session, provider, pending, perform, connected }: QueueProps) {
+function PromptQueue({ session, provider, pending, perform, connected, sessions, openSession }: QueueProps) {
   const { t } = useTranslation('workspace');
   const queue = session.queue ?? [];
   if (!queue.length) return null;
@@ -565,11 +673,11 @@ function PromptQueue({ session, provider, pending, perform, connected }: QueuePr
     {session.queuePaused && <p className="queue-paused"><Pause size={12} />{t('chat.queuePaused')}{session.queueHoldReason && <span>{session.queueHoldReason}</span>}</p>}
     {!session.queuePaused && !queue[0].edit && session.waitingForProject && <p className="queue-paused" role="status"><Clock3 size={12} />{t('chat.sideQuestion.waiting')}</p>}
     <ol>{queue.map(item => <QueuedPromptRow key={item.id} item={item} sessionId={session.id} provider={provider}
-      connected={connected} pending={pending} perform={perform} />)}</ol>
+      connected={connected} pending={pending} perform={perform} sessions={sessions} openSession={openSession} />)}</ol>
   </section>;
 }
 
-function QueuedPromptRow({ sessionId, item, provider, connected, pending, perform }:
+function QueuedPromptRow({ sessionId, item, provider, connected, pending, perform, sessions, openSession }:
   Omit<QueueProps, 'session'> & { sessionId: string; item: SessionQueueItem }) {
   const { t } = useTranslation('workspace');
   const [acquired, setAcquired] = useState<{ id: string; revision: number; input: PromptInput }>();
@@ -587,6 +695,7 @@ function QueuedPromptRow({ sessionId, item, provider, connected, pending, perfor
   const remove = () => runSessionCommand(`queue-remove:${sessionId}:${item.id}`, { revision: edit?.revision ?? revision, editId: edit?.id },
     commandId => window.workbench.removeQueuedPrompt(sessionId, item.id, edit?.revision ?? revision, commandId, edit?.id));
   return <li data-queue-id={item.id}>
+    {item.agentSource && <AgentMessageAttribution source={item.agentSource} sessions={sessions} openSession={openSession} />}
     {(item.edit || edit) && <p className="queue-edit-hold" role="status">{t('chat.queueEditHeld')}</p>}
     {editingElsewhere && <p className="queue-edit-hold" role="alert">{t('chat.queueEditMoved')}</p>}
     {(edit || editingElsewhere) && acquired && <QueuedPromptEditor key={acquired.id} sessionId={sessionId} itemId={item.id}
@@ -599,9 +708,9 @@ function QueuedPromptRow({ sessionId, item, provider, connected, pending, perfor
         <small>{item.modelId ? modelName(provider, item.modelId) : t('chat.runtimeDefault')}{item.settings?.effort ? ` · ${item.settings.effort}` : ''}</small>
         <AttachmentChips attachments={item.input.attachments ?? []} />
       </div>}
-      <div className="queue-item-actions"><button disabled={disabled} onClick={begin}>
+      <div className="queue-item-actions">{!item.agentSource && <button disabled={disabled} onClick={begin}>
         {t(item.edit ? 'chat.resumeQueuedEdit' : 'chat.editQueued')}
-      </button>
+      </button>}
         {!item.edit && <button disabled={disabled} onClick={() => void perform(key, remove)}>{t('chat.removeQueued')}</button>}
       </div>
     </>}
@@ -699,8 +808,7 @@ function QueuedPromptEditor({ sessionId, itemId, editId, initial, current, conne
 
 type DockSection = 'queue' | 'agents' | 'plan';
 
-function ComposerDock({ session, provider, pending, perform, connected, active, children, openSession, openNativeAgent }: Pick<SessionChatProps, 'session' | 'provider' | 'pending' | 'perform' | 'openSession'> & {
-  connected: boolean;
+function ComposerDock({ session, provider, pending, perform, connected, active, children, sessions, openSession, openNativeAgent }: QueueProps & {
   active: boolean;
   children: Session[];
   openNativeAgent: (id: string, messageId: string) => void;
@@ -724,7 +832,7 @@ function ComposerDock({ session, provider, pending, perform, connected, active, 
   const initialSection = queueCount ? 'queue' : active && completedSteps < plan.length ? 'plan' : null;
   const selected = selection === null || available.some(section => section.id === selection) ? selection : initialSection;
   const content: Record<DockSection, ReactNode> = {
-    queue: <PromptQueue session={session} provider={provider} pending={pending} perform={perform} connected={connected} />,
+    queue: <PromptQueue session={session} provider={provider} pending={pending} perform={perform} connected={connected} sessions={sessions} openSession={openSession} />,
     agents: <ul className="composer-dock-list">
       {runningChildren.map(child => <li key={child.id}><button onClick={() => openSession(child.id)}><span>{child.title}</span><ArrowUpLeft size={12} /></button><Status value={child.status} /></li>)}
       {runningNative.map(({ id, nativeId, messageId, title, status }) => <li key={id}>
@@ -1412,6 +1520,7 @@ export function SessionChat({
               className={`message message-${message.role}${selectedMatch?.id === message.id || inspectedMessageId === message.id ? ' conversation-match' : ''}`}>
               {message.role === 'user'
                   ? <>
+                    {message.agentSource && <AgentMessageAttribution source={message.agentSource} sessions={sessions} openSession={openSession} />}
                     <div className="user-message">{message.originalPrompt ?? message.text}
                       {message.attachments && <AttachmentChips attachments={message.attachments} />}
                       <DraftEvidenceCards evidence={message.evidence} onOpen={onOpenEvidence} />
@@ -1485,7 +1594,7 @@ export function SessionChat({
         <WorkspaceFileMention mention={fileMention} onPick={file => { if (composer.current) fileMention.insert(composer.current, file); }} />
         <div className="composer-frame">
           {historyReady && <ComposerDock session={session} provider={provider} pending={pending} perform={perform}
-            connected={connected} active={active} children={children} openSession={openSession} openNativeAgent={openDockAgent} />}
+            connected={connected} active={active} children={children} sessions={sessions} openSession={openSession} openNativeAgent={openDockAgent} />}
         <div className={`composer${active ? ' composer-task-active' : ''}`}>
           <DraftEvidenceCards evidence={draft.evidence} onOpen={onOpenEvidence}
             onRemove={busy || !historyReady ? undefined : id => {

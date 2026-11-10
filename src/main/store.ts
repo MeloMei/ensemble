@@ -48,6 +48,7 @@ const sessionStatus = z.enum(['idle', 'queued', 'running', 'waiting_approval', '
 const stepStatus = z.enum(['pending', 'running', 'completed', 'failed', 'blocked', 'cancelled']);
 const attachmentSchema = record({ id: z.string(), name: z.string(), kind: z.enum(['image', 'text']), mimeType: z.string(), size: z.number(), sha256: z.string(), ownedPath: z.string() });
 const promptInputSchema = record({ text: z.string(), attachments: z.array(attachmentSchema).optional(), evidence: draftEvidenceListSchema.optional() });
+const agentSourceSchema = z.object({ sessionId: z.string(), title: z.string(), providerId: z.string() }).strict();
 const sessionSettingsSchema = record({ effort: z.string().optional(), permission: sessionPermissionSchema.optional(), skillIds: z.array(z.string()).optional() });
 const usageSchema = record({
   id: z.string(), source: z.string(), scope: z.enum(['turn', 'cumulative', 'context']),
@@ -64,6 +65,7 @@ const messageSchema = record({
   id: z.string(), role: z.enum(['user', 'assistant', 'activity']), text: z.string(), createdAt: z.string(),
   attachments: z.array(attachmentSchema).optional(), nativeTurnId: z.string().optional(), event: eventSchema.optional(),
   evidence: draftEvidenceListSchema.optional(), originalPrompt: z.string().optional(),
+  agentSource: agentSourceSchema.optional(),
   runtimeSwitch: record({ fromProviderId: z.string(), toProviderId: z.string(), permissionResetToReview: z.literal(true).optional() }).optional(),
   delivery: z.object({ id: z.string(), clientUserMessageId: z.string(), status: z.enum(['pending', 'accepted', 'rejected', 'unknown']),
     createdAt: z.string(), updatedAt: z.string(), nativeThreadId: z.string().optional(), nativeTurnId: z.string().optional(),
@@ -81,7 +83,9 @@ const savedSchema = record({
     archived: z.boolean().optional(), parentSessionId: z.string().optional(), parentAttemptId: z.string().optional(),
     forkedFrom: z.object({ sessionId: z.string(), messageId: z.string().optional() }).strict().optional(),
     draft: promptInputSchema.optional(),
+    messageTargetIds: z.array(z.string()).optional(),
     queue: z.array(z.object({ id: z.string(), commandId: z.string(), input: promptInputSchema, modelId: z.string().optional(),
+      agentSource: agentSourceSchema.optional(),
       revision: z.number().int().nonnegative().optional(),
       edit: z.object({ id: z.string(), draft: promptInputSchema.optional(), draftRevision: z.number().int().positive().optional(),
         lease: z.object({ ownerId: z.string(), expiresAt: z.number().int().nonnegative() }).strict().optional() }).strict().optional(),

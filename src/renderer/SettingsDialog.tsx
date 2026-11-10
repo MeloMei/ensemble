@@ -174,7 +174,7 @@ export function SettingsDialog({ snapshot, workspace, sessions, session, perform
           {visited.has('session') && <>
             <header className="settings-section-heading"><h3>{t('settings.session')}</h3><p>{session?.title ?? t('settings.sessionEmpty')}</p></header>
             {session && workspace && <div data-setting-anchor="session-skills"><SessionSettingsPanel key={session.id} session={session} workspaceId={workspace.id}
-              visible={section === 'session'} perform={perform} openSession={openSession} /></div>}
+              visible={section === 'session'} sessions={sessions} providers={snapshot?.providers} perform={perform} openSession={openSession} /></div>}
           </>}
         </section>
       </div>

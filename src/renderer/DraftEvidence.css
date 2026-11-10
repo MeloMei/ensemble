@@ -2,6 +2,7 @@
   min-width: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface);
 }
 .draft-evidence-review { display: grid; gap: 6px; }
+.draft-target-dialog .draft-evidence-review { margin-bottom: 12px; }
 .draft-evidence-review pre, .draft-evidence-cards pre {
   margin: 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); font-size: 11px;
 }

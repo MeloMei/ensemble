@@ -1,0 +1,88 @@
+.search-picker { display: flex; flex-direction: column; min-height: 0; }
+.search-picker-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text);
+  font-size: 12px;
+}
+.search-picker-field {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+  padding-inline: 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  color: var(--muted);
+  background: var(--bg);
+}
+.search-picker-field:focus-within { border-color: var(--accent); }
+.search-picker-field > svg { flex-shrink: 0; }
+.search-picker-field input {
+  border: 0;
+  padding: 10px 0;
+  background: transparent;
+}
+.search-picker-field input:focus { box-shadow: none; }
+.search-picker-results {
+  position: relative;
+  min-height: 0;
+  height: var(--search-picker-results-height, min(32dvh, 216px));
+  margin-block: 8px;
+}
+.search-picker-list {
+  height: 100%;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.search-picker-section {
+  padding: 7px 8px 4px;
+  color: var(--dim);
+  font-size: 11px;
+}
+.search-picker-option {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 42px;
+  padding: 0 8px;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+.search-picker-option:hover { background: var(--hover); }
+.search-picker-option[data-active] { background: var(--accent-soft); }
+.search-picker-list[aria-readonly=true] .search-picker-option { cursor: default; }
+.search-picker-icon {
+  display: grid;
+  flex: 0 0 20px;
+  place-items: center;
+  color: var(--muted);
+}
+.search-picker-option[data-active] .search-picker-icon { color: var(--accent); }
+.search-picker-copy { flex: 1; min-width: 0; }
+.search-picker-copy > * {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.search-picker-copy small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.search-picker-check { flex-shrink: 0; color: var(--accent); }
+.search-picker-status {
+  position: absolute;
+  inset: 16px 8px auto;
+  color: var(--muted);
+  pointer-events: none;
+}
+.search-picker-status[data-has-options] {
+  inset: 0 auto auto 0;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}

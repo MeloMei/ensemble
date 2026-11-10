@@ -13,7 +13,7 @@ import {
 import { StateStore, type StoreTransaction } from './store';
 import { WorkbenchEngine, validateWorkspace, type ExecutionObservation } from './engine';
 import { AttachmentService } from './attachment-service';
-import { collaborationOperationSchemas, definitionInputSchema } from './mcp-tool-catalog';
+import { collaborationOperationSchemas, definitionInputSchema, SESSION_MESSAGE_MCP_TOOLS } from './mcp-tool-catalog';
 
 export type CollaborationPrincipal = { kind: 'user' }
   | { kind: 'external'; identityId: string }
@@ -24,6 +24,7 @@ type Args = Record<string, any>;
 type Actor = { id: string; participantId: string; source: Source; participant?: CollaborationParticipant; task?: CollaborationTask };
 const now = () => new Date().toISOString();
 const hash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+const [listSessionTargets, sendSessionMessage, getSessionMessage] = SESSION_MESSAGE_MCP_TOOLS;
 const terminal = new Set<CollaborationTaskStatus>(['completed', 'failed', 'cancelled', 'interrupted']);
 const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical)
   : value !== null && typeof value === 'object' ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonical(item)])) : value;
@@ -81,6 +82,15 @@ export class CollaborationCore {
   async call(principal: CollaborationPrincipal, operation: string, input: unknown): Promise<unknown> {
     if (this.closing) throw new Error('协作后台正在停止。');
     this.assertPrincipal(principal);
+    if (operation === listSessionTargets.name || operation === sendSessionMessage.name || operation === getSessionMessage.name) {
+      if (principal.kind !== 'session') throw new Error('只有普通会话的 Agent 能联系其他会话。');
+      if (operation === listSessionTargets.name) {
+        z.object(listSessionTargets.schema).strict().parse(input);
+        return this.engine.listSessionMessageTargets(principal);
+      }
+      if (operation === sendSessionMessage.name) return this.engine.sendSessionMessage(principal, z.object(sendSessionMessage.schema).strict().parse(input));
+      return this.engine.getSessionMessage(principal, z.object(getSessionMessage.schema).strict().parse(input).requestId);
+    }
     const legacyOperation = ['create_worker', 'get_worker', 'wait_workers', 'ask_parent'].includes(operation)
       || operation === 'send_message' && input !== null && typeof input === 'object' && 'toSessionId' in input && !('runId' in input);
     if (principal.kind === 'session' && legacyOperation) return this.engine.collaborate(principal, operation, input);
