@@ -2,12 +2,14 @@ import { useContext, useEffect, useId, useState, type AriaAttributes, type React
 import * as Select from '@radix-ui/react-select';
 import { Check, ChevronDown, ChevronUp } from 'lucide-react';
 import { OverlayContext } from './overlays';
+import { Tooltip } from './Tooltip';
 import './AppSelect.css';
 
 export interface AppSelectOption {
   value: string;
   label: string;
   description?: string;
+  tooltip?: string;
   disabled?: boolean;
 }
 
@@ -55,13 +57,16 @@ export function AppSelect({ label, value, onChange, options, disabled, required,
         <Select.Viewport className="app-select-viewport">
           <Select.Group>
             <Select.Label className="app-select-heading">{label}</Select.Label>
-            {options.map((option, index) => <Select.Item key={option.value} value={`choice:${option.value}`} data-value={option.value}
-              aria-describedby={option.description ? `${descriptionId}-${index}` : undefined}
-              className="app-select-option" disabled={option.disabled} textValue={option.label}>
-              <span className="app-select-option-copy"><Select.ItemText>{option.label}</Select.ItemText>
-                {option.description && <small id={`${descriptionId}-${index}`}>{option.description}</small>}</span>
-              <Select.ItemIndicator className="app-select-check"><Check size={13} /></Select.ItemIndicator>
-            </Select.Item>)}
+            {options.map((option, index) => {
+              const item = <Select.Item key={option.value} value={`choice:${option.value}`} data-value={option.value}
+                aria-describedby={option.description ? `${descriptionId}-${index}` : undefined}
+                className="app-select-option" disabled={option.disabled} textValue={option.label}>
+                <span className="app-select-option-copy"><Select.ItemText>{option.label}</Select.ItemText>
+                  {option.description && <small id={`${descriptionId}-${index}`}>{option.description}</small>}</span>
+                <Select.ItemIndicator className="app-select-check"><Check size={13} /></Select.ItemIndicator>
+              </Select.Item>;
+              return option.tooltip ? <Tooltip key={option.value} label={option.tooltip}>{item}</Tooltip> : item;
+            })}
           </Select.Group>
         </Select.Viewport>
         <Select.ScrollDownButton className="app-select-scroll"><ChevronDown size={12} /></Select.ScrollDownButton>

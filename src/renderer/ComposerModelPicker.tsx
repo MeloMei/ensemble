@@ -1,3 +1,4 @@
+import { Tooltip } from './Tooltip';
 import * as Popover from '@radix-ui/react-popover';
 import { Check, ChevronDown, ChevronRight, Search } from 'lucide-react';
 import { useContext, useEffect, useId, useRef, useState, type CSSProperties } from 'react';
@@ -176,7 +177,8 @@ export function ComposerModelPicker({ session, provider, disabled, saving, hint,
               {showDefault && <ModelOption label={defaultLabel} selected={!selection.modelId} disabled={locked} onClick={() => chooseModel(undefined)} />}
               {showUnavailable && <ModelOption label={unavailable} description={t('chat.modelUnavailable')} selected disabled />}
               {filteredModels.map(model => <ModelOption key={model.id} label={model.name} selected={model.id === selection.modelId}
-                description={t(model.free ? 'chat.modelFree' : session.providerId === 'codex' ? 'chat.modelAccount' : 'chat.modelMetered')}
+                description={model.free ? t('chat.modelFree') : session.providerId === 'codex' ? undefined : t('chat.modelMetered')}
+                tooltip={!model.free && session.providerId === 'codex' ? t('chat.modelAccount') : undefined}
                 disabled={locked} onClick={() => chooseModel(model.id)} />)}
               {!showDefault && !showUnavailable && !filteredModels.length && <p className="composer-model-empty" role="status">{t('chat.noMatchingModels')}</p>}
             </div>
@@ -187,15 +189,17 @@ export function ComposerModelPicker({ session, provider, disabled, saving, hint,
   </Popover.Root>;
 }
 
-function ModelOption({ label, description, selected, disabled, onClick }: {
+function ModelOption({ label, description, tooltip, selected, disabled, onClick }: {
   label: string;
   description?: string;
+  tooltip?: string;
   selected: boolean;
   disabled?: boolean;
   onClick?: () => void;
 }) {
-  return <button className="composer-model-option" type="button" aria-pressed={selected} disabled={disabled} onClick={onClick} title={label}>
+  const option = <button className="composer-model-option" type="button" aria-pressed={selected} disabled={disabled} onClick={onClick} title={label}>
     <span><span>{label}</span>{description && <small>{description}</small>}</span>
     {selected && <Check size={14} aria-hidden="true" />}
   </button>;
+  return tooltip ? <Tooltip label={tooltip}>{option}</Tooltip> : option;
 }

@@ -14,7 +14,7 @@ import { SettingsDialog } from './SettingsDialog';
 import { LanguageProvider } from './language';
 import { OverlayProvider } from './overlays';
 import { TooltipProvider } from './Tooltip';
-import { IconButton } from './ui';
+import { IconButton, Modal, ModelField } from './ui';
 import { ProvidersContent, WorkflowEditor, WorkflowView } from './WorkflowViews';
 import { DiagnosticsPanel } from './DiagnosticsPanel';
 import { ManagedWorktreePanel } from './ManagedWorktreePanel';
@@ -2018,6 +2018,56 @@ const cases: Record<string, () => Promise<void>> = {
     await updateUsage(57);
     assert(card() === usageCard && usageCard.querySelectorAll('dt').length === 1 && !usageCard.textContent?.includes('%'), 'The card invented a percentage without a reported limit');
   },
+  'UI-05: quota tooltip works in a modal select': async () => {
+    let closed = false;
+    const configured: ProviderInfo = { ...provider, models: [
+      { id: 'a', name: 'Model A', free: false }, { id: 'b', name: 'Model B', free: false },
+    ] };
+    function Fixture() {
+      const [value, setValue] = React.useState('a');
+      return <Modal title="Models" onClose={() => { closed = true; }}><ModelField provider={configured} value={value} onChange={setValue} /></Modal>;
+    }
+    await render(<Fixture />);
+    const control = document.querySelector<HTMLButtonElement>('dialog [role=combobox]')!;
+    assert(control.textContent?.trim() === 'Model A', 'The selected model retains an account quota suffix');
+    const menu = await openSelect(control);
+    const option = menu.querySelector<HTMLElement>('[data-value="b"]')!;
+    assert(option.textContent?.trim() === 'Model B', 'The model option retains an account quota suffix');
+    const bounds = option.getBoundingClientRect();
+    await act(async () => { await rendererInput({ type: 'mouseMoved', x: Math.floor(bounds.left + bounds.width / 2), y: Math.floor(bounds.top + bounds.height / 2) }); });
+    await waitFor(() => Boolean(document.querySelector('dialog .ensemble-tooltip')?.textContent?.includes(translate('shell:provider.accountQuota'))), 'Hover did not show the quota tooltip in the modal');
+    await act(async () => { await rendererInput({ type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }); await rendererInput({ type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }); });
+    assert(!closed, 'Escape closed the modal while the select was open');
+    if (document.querySelector('[role=listbox][data-state=open]')) {
+      await act(async () => { await rendererInput({ type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }); await rendererInput({ type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }); });
+    }
+    const reopened = await openSelect(control);
+    const target = reopened.querySelector<HTMLElement>('[data-value="b"]')!;
+    const targetBounds = target.getBoundingClientRect();
+    const x = Math.floor(targetBounds.left + targetBounds.width / 2), y = Math.floor(targetBounds.top + targetBounds.height / 2);
+    await act(async () => {
+      await rendererInput({ type: 'mouseMoved', x, y });
+      await rendererInput({ type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1 });
+      await rendererInput({ type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1 });
+    });
+    await waitFor(() => !document.querySelector('[role=listbox][data-state=open]'), 'Mouse selection did not close the model list');
+    assert(control.textContent?.trim() === 'Model B' && !closed, 'Mouse selection did not update the model');
+    await render(<div />);
+    await render(<Fixture />);
+    const keyboardControl = document.querySelector<HTMLButtonElement>('dialog [role=combobox]')!;
+    await openSelect(keyboardControl);
+    await waitFor(() => document.activeElement?.getAttribute('data-value') === 'a', 'The selected model did not receive focus');
+    await act(async () => {
+      await rendererInput({ type: 'keyDown', key: 'ArrowDown', code: 'ArrowDown', windowsVirtualKeyCode: 40 });
+      await rendererInput({ type: 'keyUp', key: 'ArrowDown', code: 'ArrowDown', windowsVirtualKeyCode: 40 });
+    });
+    await waitFor(() => document.activeElement?.getAttribute('data-value') === 'b' && Boolean(document.activeElement?.getAttribute('aria-describedby')), () => `Keyboard focus did not expose the quota tooltip: ${document.activeElement?.outerHTML}`);
+    await act(async () => {
+      await rendererInput({ type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+      await rendererInput({ type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    });
+    assert(keyboardControl.textContent?.trim() === 'Model B' && !closed, 'Keyboard selection did not update the model');
+  },
   'UI-05: inline session controls preserve drafts, capabilities and partial settings updates': async () => {
     const writes: Record<string, unknown>[] = [];
     let sends = 0;
@@ -2102,7 +2152,7 @@ const cases: Record<string, () => Promise<void>> = {
     const originalSlider = slider()!;
     assert(originalSlider && document.activeElement === originalSlider && disclosure().getAttribute('aria-expanded') === 'false', 'The model picker did not start with the current value and effort');
     await expand();
-    assert(modelOption('Model A')?.getAttribute('aria-pressed') === 'true', 'The model list does not identify its current selection');
+    assert(modelOption('Model A')?.getAttribute('aria-pressed') === 'true' && modelOption('Model A')?.textContent?.trim() === 'Model A', 'The model list does not identify its current selection without a quota suffix');
     await key('Escape', 27);
     assert(picker() === panel && document.activeElement === disclosure(), 'Escape from search did not fold the model list');
     await key('Escape', 27);
