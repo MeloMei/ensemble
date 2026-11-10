@@ -1219,7 +1219,9 @@ export function SessionChat({
           scrollToBottom();
         });
       } catch (error) {
-        setSendError({ message: error instanceof Error ? error.message : String(error), rejected: error instanceof SessionCommandRejectedError });
+        if (!(error instanceof SessionCommandRejectedError)) {
+          setSendError({ message: error instanceof Error ? error.message : String(error), rejected: false });
+        }
         throw error;
       } finally {
         sendLock.current = false;
