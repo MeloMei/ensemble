@@ -2953,6 +2953,74 @@ const cases: Record<string, () => Promise<void>> = {
     assert(document.querySelector('.markdown-message a') === link && document.activeElement === link, 'Streaming replaced the focused link');
     assert(document.querySelector('.markdown-message')?.textContent?.includes('Streaming continuation.'), 'Memoized output dropped a streamed update');
   },
+  'CHAT-READ: folded prompts reveal search matches and a code block copies only its own source': async () => {
+    const short: Message = { id: 'reading-short', role: 'user', text: 'Short prompt', createdAt: session.createdAt };
+    const long: Message = { ...short, id: 'reading-long', text: 'hidden runtime metadata',
+      originalPrompt: Array.from({ length: 10 }, (_, index) => index === 9 ? 'hidden search needle' : `Prompt line ${index + 1}`).join('\n'),
+      evidence: [{ id: 'reading-evidence', label: 'Evidence stays available', excerpt: 'Related answer',
+        source: { kind: 'message', sessionId: 'reading-fixture', messageId: 'reading-answer' } }],
+    };
+    const wrapped: Message = { ...short, id: 'reading-wrapped', text: 'singlelongword'.repeat(52) };
+    const source = 'if true:\n    print("visible")\n';
+    const answer: Message = { ...short, id: 'reading-answer', role: 'assistant', text: [
+      'Before the code.',
+      '```python\n' + source + '```',
+      '> ```\n> src/workspace.ts:42\n> ```',
+      'Indented example\n\n    echo test',
+    ].join('\n\n') };
+    const reading = { ...session, id: 'reading-fixture', status: 'completed' as const, messages: [short, wrapped, long, answer] };
+    window.workbench = { sessionSearch: async () => ({ messages: [long], truncated: false }) } as unknown as Window['workbench'];
+    const show = () => render(<div style={{ width: 880, height: 640 }}>{chat({ session: reading })}</div>);
+    const row = (id: string) => document.querySelector<HTMLElement>(`[data-message-id="${id}"]`);
+    const viewport = (id: string) => row(id)?.querySelector<HTMLElement>('.ui-foldable-text-viewport');
+    const toggle = (id: string) => row(id)?.querySelector<HTMLButtonElement>('.ui-foldable-text-toggle');
+    const clipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    const writes: string[] = [];
+    let fail = false;
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => {
+      if (fail) throw new Error('clipboard refused');
+      writes.push(text);
+    } } });
+    try {
+      await show();
+      await waitFor(() => Boolean(toggle(long.id) && toggle(wrapped.id)), 'Long prompts did not fold by rendered lines');
+      assert(!toggle(short.id) && viewport(long.id)?.hasAttribute('data-collapsed')
+        && viewport(long.id)?.textContent?.includes('hidden search needle'), 'The fold did not retain the full original prompt');
+      assert(row(long.id)?.textContent?.includes('Evidence stays available'), 'Evidence was clipped with the prompt');
+      const expand = toggle(long.id)!;
+      await act(async () => { expand.focus(); expand.click(); await tick(); });
+      assert(document.activeElement === expand && expand.getAttribute('aria-expanded') === 'true'
+        && !viewport(long.id)?.hasAttribute('data-collapsed'), 'Expanding remounted the button or left the text clipped');
+      await render(<div />);
+      await show();
+      await waitFor(() => toggle(long.id)?.getAttribute('aria-expanded') === 'true', 'The fold choice was lost when the conversation reopened');
+      await act(async () => { toggle(long.id)?.click(); await tick(); });
+      await click('workspace:chat.find');
+      await change(input('.conversation-find input'), 'hidden search needle');
+      await waitFor(() => toggle(long.id)?.getAttribute('aria-expanded') === 'true'
+        && row(long.id)?.classList.contains('conversation-match') === true, 'Find left the matching prompt folded');
+      await click('workspace:chat.closeFind');
+      const blocks = [...(row(answer.id)?.querySelectorAll<HTMLElement>('.ui-code-block') ?? [])];
+      assert(blocks.length === 3 && blocks[0].querySelector('.ui-code-block-language')?.textContent === 'python'
+        && !blocks[1].querySelector('.ui-code-block-language') && !blocks[1].querySelector('.markdown-file-link'),
+      'Fenced, nested, or indented code did not stay a plain code block');
+      const copy = blocks[0].querySelector<HTMLButtonElement>('button')!;
+      await act(async () => { copy.focus(); copy.click(); await tick(); });
+      assert(writes.join('') === source && document.activeElement === copy
+        && blocks[0].querySelector('[role=status]')?.textContent === translate('workspace:chat.copied')
+        && !blocks[1].querySelector('[role=status]')?.textContent, 'Code copy changed whitespace, focus, or another block’s status');
+      fail = true;
+      await act(async () => { blocks[1].querySelector('button')?.click(); await tick(); });
+      assert(writes.length === 1 && blocks[1].querySelector('[role=status]')?.textContent === translate('workspace:chat.copyFailed'),
+        'Clipboard failure did not stay on the attempted block');
+      fail = false;
+      await click('workspace:chat.copyAnswer');
+      assert(writes[1] === answer.text, 'Whole-answer copy did not preserve the original Markdown');
+    } finally {
+      if (clipboard) Object.defineProperty(navigator, 'clipboard', clipboard);
+      else Reflect.deleteProperty(navigator, 'clipboard');
+    }
+  },
   'UI-06: paged variable-height messages preserve the reading anchor and concurrent live output': async () => {
     const gate = deferred<{ messages: Message[]; beforeCursor?: string; hasMore: boolean }>();
     let requests = 0;
