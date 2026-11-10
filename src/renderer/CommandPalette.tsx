@@ -1,10 +1,11 @@
 import { useContext, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from 'react';
-import { Folder, Search } from 'lucide-react';
+import { File, Folder, Search } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { ProviderInfo, Session, Workspace } from '../shared/types';
 import { AgentIcon } from './AgentIcon';
 import { OverlayContext } from './overlays';
 import { Modal } from './ui';
+import { useWorkspaceFileMatches } from './workspace-file-search';
 import './CommandPalette.css';
 
 export interface CommandEntry {
@@ -24,6 +25,9 @@ interface CommandSection {
 
 interface CommandPaletteProps {
   actions: CommandEntry[];
+  settings?: CommandEntry[];
+  fileWorkspaceId?: string;
+  onOpenFile?: (path: string) => void;
   projects: Workspace[];
   sessions: Session[];
   providers: ProviderInfo[];
@@ -65,7 +69,7 @@ export function CommandPalette(props: CommandPaletteProps) {
   </>;
 }
 
-function PaletteDialog({ actions, projects, sessions, providers, onSelectProject, onSelectSession, search, trigger, onClose }: CommandPaletteProps & {
+function PaletteDialog({ actions, settings = [], fileWorkspaceId, onOpenFile, projects, sessions, providers, onSelectProject, onSelectSession, search, trigger, onClose }: CommandPaletteProps & {
   search: RefObject<HTMLInputElement | null>;
   trigger: RefObject<HTMLButtonElement | null>;
   onClose: () => void;
@@ -79,8 +83,14 @@ function PaletteDialog({ actions, projects, sessions, providers, onSelectProject
   const projectNames = new Map(projects.map(project => [project.cwd, project.name]));
   const providerNames = new Map(providers.map(provider => [provider.id, provider.name]));
   const tokens = query.trim().toLocaleLowerCase().split(/\s+/u).filter(Boolean);
+  const { matches: files, loading: filesLoading, error: filesError } = useWorkspaceFileMatches(fileWorkspaceId, query.trim() || null);
   const sections: CommandSection[] = [
     { id: 'actions', label: t('commandPalette.actions'), entries: actions },
+    { id: 'settings', label: t('preferences.title'), entries: tokens.length ? settings : [] },
+    { id: 'files', label: t('commandPalette.files'), entries: files.map(file => ({
+      id: `file:${file.path}`, label: file.name, detail: file.path,
+      icon: <File size={16} aria-hidden="true" />, run: () => onOpenFile?.(file.path),
+    })) },
     { id: 'projects', label: t('commandPalette.projects'), entries: projects.map(project => ({
       id: `project:${project.id}`, label: project.name, detail: project.cwd,
       icon: <Folder size={16} aria-hidden="true" />, run: () => onSelectProject(project.id),
@@ -94,7 +104,7 @@ function PaletteDialog({ actions, projects, sessions, providers, onSelectProject
   ];
   const results = sections.map(section => ({
     ...section,
-    entries: tokens.length ? section.entries.filter(entry => {
+    entries: section.id === 'files' ? section.entries : tokens.length ? section.entries.filter(entry => {
       const searchable = [entry.label, entry.detail, entry.keywords].filter(Boolean).join(' ').toLocaleLowerCase();
       return tokens.every(token => searchable.includes(token));
     }) : section.entries.slice(0, 8),
@@ -151,7 +161,9 @@ function PaletteDialog({ actions, projects, sessions, providers, onSelectProject
           </div>)}
         </div>)}
       </div>
-      {!selected && <p role="status" className="command-palette-empty">{t('commandPalette.empty')}</p>}
+      {!selected && <p role="status" className="command-palette-empty">
+        {filesLoading ? t('commandPalette.searchingFiles') : filesError || t('commandPalette.empty')}
+      </p>}
     </div>
     <div className="command-palette-hints">
       <span><kbd>↑</kbd><kbd>↓</kbd>{t('commandPalette.navigate')}</span>

@@ -145,10 +145,11 @@ test('continuation saves a text draft in a new runtime and keeps the source and 
 test('session drafts restore text and attachments, survive a rejected send and clear only on accepted input', async () => {
   const dataPath = await realpath(await mkdtemp(join(tmpdir(), 'workbench-drafts-')));
   let finish!: () => void;
+  let delivered = '';
   const gate = new Promise<void>(resolve => { finish = resolve; });
   const options = { dataPath, command: process.execPath, bridgePath: join(dataPath, 'bridge.cjs'), publish() {}, providers: [{
     info: { id: 'controlled', name: 'Controlled', source: 'plugin' as const, available: true, detail: '', capabilities: { resume: true, approvals: false } },
-    async run() { await gate; },
+    async run(context: { prompt: string }) { delivered = context.prompt; await gate; },
   }] };
   let service = await createWorkbenchService(options);
   try {
@@ -160,7 +161,7 @@ test('session drafts restore text and attachments, survive a rejected send and c
     await service.call('workbench:save-session-draft', [id, legacy]);
     assert.deepEqual(service.engine.getSession(id).draft, legacy);
     await assert.rejects(service.call('workbench:send-prompt', [id, legacy]), /每轮最多 4/);
-    await assert.rejects(service.call('workbench:update-queued-prompt', [id, 'oversized', legacy]), /每轮最多 4/);
+    await assert.rejects(service.call('workbench:finish-queued-prompt-edit', [id, 'oversized', '00000000-0000-4000-8000-000000000001', legacy]), /每轮最多 4/);
     assert.deepEqual(service.engine.getSession(id).draft, legacy);
     await service.call('workbench:save-session-draft', [id, input]);
     await assert.rejects(service.call('workbench:save-session-draft', [id, { text: 'x'.repeat(200_001) }]));
@@ -172,16 +173,71 @@ test('session drafts restore text and attachments, survive a rejected send and c
     try { await assert.rejects(service.call('workbench:send-prompt', [id, input]), /已有会话/); }
     finally { release(); }
     assert.deepEqual(service.engine.getSession(id).draft, input);
-    await service.call('workbench:send-prompt', [id, { ...input, text: input.text.trim() }]);
+    const reference = { id: '00000000-0000-4000-8000-000000000006', label: 'Failure output', excerpt: 'Expected 200, received 503',
+      source: { kind: 'message', sessionId: 'original-session', messageId: 'original-message' } };
+    await service.call('workbench:add-session-evidence', [id, reference]);
+    const withReference = { ...input, evidence: [reference] };
+    assert.deepEqual(service.engine.getSession(id).draft, withReference);
+    await service.call('workbench:send-prompt', [id, { ...withReference, text: input.text.trim() }]);
     assert.equal(service.engine.getSession(id).draft, undefined);
     await service.call('workbench:save-session-draft', [id, { text: 'next task' }]);
     finish(); await service.engine.waitSession(id);
+    assert.match(delivered, /original-session, message original-message/);
+    assert.match(delivered, /Expected 200, received 503/);
+    const sent = service.engine.getSession(id).messages.find(item => item.role === 'user');
+    assert.equal(sent?.originalPrompt, input.text.trim());
+    assert.deepEqual(sent?.evidence, [reference]);
     assert.deepEqual(service.engine.getSession(id).draft, { text: 'next task' });
     await service.call('workbench:save-session-draft', [id, { text: '' }]);
     await service.shutdown();
     service = await createWorkbenchService(options);
     assert.equal(service.engine.getSession(id).draft, undefined);
   } finally { finish(); await service.shutdown(); await rm(dataPath, { recursive: true, force: true }); }
+});
+
+test('an edit holds the queue head after the live turn completes, then sends the saved version in order', async t => {
+  const dataPath = await realpath(await mkdtemp(join(tmpdir(), 'workbench-queue-edit-')));
+  let completeFirst!: () => void;
+  const first = new Promise<void>(resolve => { completeFirst = resolve; });
+  const prompts: string[] = [];
+  const service = await createWorkbenchService({ dataPath, command: process.execPath, bridgePath: join(dataPath, 'bridge.cjs'), publish() {}, providers: [{
+    info: { id: 'controlled', name: 'Controlled', source: 'plugin' as const, available: true, detail: '', capabilities: { resume: true, approvals: false } },
+    async run(context) {
+      prompts.push(context.prompt);
+      if (context.prompt === 'First') await first;
+    },
+  }] });
+  try {
+    const id = await service.call('workbench:create-session', [{ title: 'queue', providerId: 'controlled', cwd: dataPath }]) as string;
+    for (const text of ['First', 'Original', 'Later']) await service.call('workbench:send-prompt', [id, { text }]);
+    const [head, next] = service.engine.getSession(id).queue!;
+    const editId = '00000000-0000-4000-8000-000000000001';
+    const ownerId = '00000000-0000-4000-8000-000000000002';
+    const resumedEdit = '00000000-0000-4000-8000-000000000003';
+    const otherOwner = '00000000-0000-4000-8000-000000000004';
+    let time = Date.now();
+    t.mock.method(Date, 'now', () => time);
+    assert.deepEqual(await service.call('workbench:begin-queued-prompt-edit', [id, head.id, 0, editId, ownerId]), head.input);
+    const resume = () => service.call('workbench:begin-queued-prompt-edit', [id, head.id, 1, resumedEdit, otherOwner]);
+    await assert.rejects(resume(), /另一窗口正在编辑/);
+    completeFirst();
+    await service.engine.waitSession(id);
+    assert.deepEqual(prompts, ['First']);
+    assert.deepEqual(service.engine.getSession(id).queue?.map(item => item.id), [head.id, next.id]);
+    assert.equal(service.engine.getSession(id).queuePaused, undefined);
+    await service.call('workbench:save-queued-prompt-draft', [id, head.id, editId, 1, { text: 'Autosaved draft' }]);
+    time += 30_000;
+    await service.call('workbench:renew-queued-prompt-edit', [id, head.id, editId]);
+    time += 20_000;
+    await assert.rejects(resume(), /另一窗口正在编辑/);
+    time += 30_000;
+    assert.deepEqual(prompts, ['First']);
+    assert.deepEqual(await resume(), { text: 'Autosaved draft' });
+    await assert.rejects(service.call('workbench:finish-queued-prompt-edit', [id, head.id, editId]), /其他窗口/);
+    await service.call('workbench:finish-queued-prompt-edit', [id, head.id, resumedEdit, { text: 'Final edit' }]);
+    await service.engine.waitSession(id);
+    assert.deepEqual(prompts, ['First', 'Final edit', 'Later']);
+  } finally { completeFirst(); await service.shutdown(); await rm(dataPath, { recursive: true, force: true }); }
 });
 
 test('one backend owns execution and persists results after a client disconnects', async () => {

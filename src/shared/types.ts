@@ -69,7 +69,19 @@ export interface ManagedWorktree {
   repoRoot: string; path: string; branch: string; baseSha: string; createdAt: string;
   ownership: 'created'; status?: 'ready' | 'removing';
 }
-export interface CreateWorkspaceInput { name: string; cwd: string; mode?: 'directory' | 'worktree'; branch?: string; commandId?: string }
+export interface CreateWorkspaceInput { name: string; cwd: string; mode?: 'directory' | 'worktree'; branch?: string; fromRef?: string; commandId?: string }
+export interface SessionDirectory { cwd: string; branch: string | null }
+export interface SessionLocations {
+  current: SessionDirectory;
+  repository: boolean;
+  worktrees: SessionDirectory[];
+  branches: string[];
+  managed?: { planId: string; cwd: string; branch: string };
+}
+export type SessionLocationChoice =
+  | { kind: 'current'; branch: string | null }
+  | ({ kind: 'registered' } & SessionDirectory)
+  | { kind: 'managed'; planId: string; cwd: string; branch: string; fromRef: string };
 export interface WorktreeOperation extends Omit<ManagedWorktree, 'status'> {
   commandId: string; inputHash: string; name: string; sourceCwd: string; relativeCwd: string;
   status: 'creating' | 'ready' | 'failed' | 'removing' | 'removed'; workspaceId?: string; error?: string; updatedAt: string;
@@ -94,6 +106,7 @@ export interface TerminalInfo {
 export interface TerminalService { host: '127.0.0.1' | '::1'; port: number }
 
 export interface FileEntry { path: string; name: string; kind: 'file' | 'directory'; size: number }
+export interface WorkspaceFileMatch { path: string; name: string }
 export interface FileContent { path: string; content: string; size: number; language: string; revision: string }
 export interface GitChange { path: string; status: string; staged: boolean; additions: number; deletions: number }
 export interface GitState { available: boolean; branch: string; changes: GitChange[]; error?: string }
@@ -108,6 +121,8 @@ export interface Message {
   text: string;
   createdAt: string;
   attachments?: PromptAttachment[];
+  evidence?: DraftEvidence[];
+  originalPrompt?: string;
   nativeTurnId?: string;
   event?: ProcessEvent;
   delivery?: MessageDelivery;
@@ -144,6 +159,7 @@ export interface Session {
   settings?: SessionSettings;
   archived?: boolean;
   parentSessionId?: string;
+  forkedFrom?: { sessionId: string; messageId?: string };
   parentAttemptId?: string;
   attempts?: SessionAttempt[];
   usage?: UsageRecord[];
@@ -167,7 +183,15 @@ export interface Session {
 }
 
 export interface SessionAttention {
-  revision: number; seenRevision: number; reason: 'approval' | 'result' | 'failure'; updatedAt: string; sourceId?: string;
+  revision: number; seenRevision: number; reason: 'approval' | 'result' | 'failure'; updatedAt: string; sourceId?: string; messageId?: string;
+}
+
+export interface SessionAttentionOpen {
+  sessionId: string;
+  reason: SessionAttention['reason'];
+  revision?: number;
+  approvalId?: string;
+  messageId?: string;
 }
 export interface MessageDelivery {
   id: string; clientUserMessageId: string; status: 'pending' | 'accepted' | 'rejected' | 'unknown';
@@ -175,6 +199,8 @@ export interface MessageDelivery {
 }
 export interface SessionQueueItem {
   id: string; commandId: string; input: PromptInput; modelId?: string; settings?: SessionSettings; createdAt: string; updatedAt: string;
+  revision?: number;
+  edit?: { id: string; draft?: PromptInput; draftRevision?: number; lease?: { ownerId: string; expiresAt: number } };
 }
 export interface SessionCommandReceipt { commandId: string; kind: string; result: unknown; createdAt: string }
 export interface DiagnosticEntry {
@@ -255,8 +281,11 @@ export interface WorkbenchAPI {
   listTerminalServices(id: string): Promise<TerminalService[]>;
   markSessionSeen(id: string, revision: number): Promise<void>;
   commandReceipt(commandId: string): Promise<SessionCommandReceipt | undefined>;
-  updateQueuedPrompt(id: string, itemId: string, input: PromptInput): Promise<void>;
-  removeQueuedPrompt(id: string, itemId: string): Promise<void>;
+  beginQueuedPromptEdit(id: string, itemId: string, revision: number, editId: string, ownerId: string): Promise<PromptInput>;
+  renewQueuedPromptEdit(id: string, itemId: string, editId: string): Promise<void>;
+  saveQueuedPromptDraft(id: string, itemId: string, editId: string, revision: number, input: PromptInput): Promise<void>;
+  finishQueuedPromptEdit(id: string, itemId: string, editId: string, input?: PromptInput): Promise<void>;
+  removeQueuedPrompt(id: string, itemId: string, revision: number, commandId?: string, editId?: string): Promise<void>;
   setSessionQueuePaused(id: string, paused: boolean): Promise<void>;
   reconcileSessionDelivery(id: string): Promise<void>;
   providerHealth(cwd?: string): Promise<ProviderInfo[]>;
@@ -275,6 +304,7 @@ export interface WorkbenchAPI {
   refreshProviders(): Promise<void>;
   chooseDirectory(): Promise<string | null>;
   createSession(input: CreateSessionInput): Promise<string>;
+  sessionLocations(workspaceId: string): Promise<SessionLocations>;
   sendMessage(sessionId: string, prompt: string, commandId?: string): Promise<void>;
   cancelSession(sessionId: string, commandId?: string, expectedAttemptId?: string): Promise<void>;
   decideApproval(approvalId: string, choiceId: string, commandId?: string): Promise<void>;
@@ -290,24 +320,31 @@ export interface WorkbenchAPI {
   updateWorkspace(id: string, input: { name?: string; pinned?: boolean }): Promise<void>;
   activateTab(workspaceId: string, tabId: string): Promise<void>;
   closeTab(workspaceId: string, tabId: string, confirmStop?: boolean): Promise<void>;
-  openSessionTab(workspaceId: string, sessionId: string): Promise<void>;
-  createTerminal(workspaceId: string): Promise<string>;
+  openSessionTab(workspaceId: string, sessionId: string, besideSessionId?: string): Promise<void>;
+  createTerminal(workspaceId: string, besideSessionId?: string): Promise<string>;
   writeTerminal(terminalId: string, data: string): Promise<void>;
   resizeTerminal(terminalId: string, columns: number, rows: number): Promise<void>;
   stopTerminal(terminalId: string): Promise<void>;
   createPreview(workspaceId: string, url: string): Promise<void>;
+  capturePreviewElement(tabId: string, point: { x: number; y: number }): Promise<{ url: string; selector: string; excerpt: string } | null>;
+  displayPreviewAnnotations(tabId: string, annotations: PreviewEvidenceSource[], revealId?: string): Promise<'shown' | 'wrong-page' | 'unavailable' | 'missing-element'>;
+  previewDraftEvidence(tabId: string): Promise<Record<string, DraftEvidence[]>>;
   listFiles(workspaceId: string, relativePath?: string): Promise<FileEntry[] | null>;
+  findWorkspaceFiles(workspaceId: string, query: string): Promise<WorkspaceFileMatch[]>;
   readFile(workspaceId: string, relativePath: string): Promise<FileContent | null>;
   gitState(workspaceId: string): Promise<GitState>;
   gitBranchRefs(workspaceId: string): Promise<string[]>;
   gitBranchComparison(workspaceId: string, targetRef: string): Promise<GitBranchComparison>;
   fileDiff(workspaceId: string, relativePath: string): Promise<FileDiff>;
   chooseAttachments(): Promise<PromptAttachment[]>;
+  importPastedImage(name: string, bytes: Uint8Array): Promise<PromptAttachment>;
+  readImageAttachment(attachment: PromptAttachment): Promise<string>;
   sendPrompt(sessionId: string, input: PromptInput, commandId?: string): Promise<void>;
   saveSessionDraft(sessionId: string, input: PromptInput): Promise<void>;
+  addSessionEvidence(sessionId: string, evidence: DraftEvidence): Promise<PromptInput>;
   updateSession(sessionId: string, input: SessionUpdate & { skillAssignment: SessionSkillAssignment }): Promise<SessionSkillAssignmentReceipt>;
   updateSession(sessionId: string, input: SessionUpdate): Promise<void>;
-  forkSession(sessionId: string, beforeMessageId?: string): Promise<string>;
+  forkSession(sessionId: string, beforeMessageId?: string, beside?: boolean): Promise<string>;
   continueSession(sessionId: string, target: SessionContinuationTarget): Promise<string>;
   askSideQuestion(sessionId: string, input: SideQuestionInput, commandId?: string): Promise<SideQuestionReceipt>;
   rewindSession(sessionId: string, userMessageId: string): Promise<PromptInput>;
@@ -328,7 +365,15 @@ export interface WorkbenchAPI {
   testMcpServer(workspaceId: string, name: string): Promise<{ status: string; tools: string[]; error?: string }>;
   deepSeekBalance(): Promise<DeepSeekBalance>;
   notificationStatus(): Promise<NotificationStatus>;
-  onFocusSession(listener: (sessionId: string) => void): () => void;
+  notificationPreferences(): Promise<NotificationPreferences>;
+  setNotificationPreferences(patch: Partial<NotificationPreferences>): Promise<NotificationPreferences>;
+  captureWindow(): Promise<PromptAttachment | undefined>;
+  cancelWindowCapture(): Promise<void>;
+  windowCaptureShortcut(): Promise<boolean>;
+  setWindowCaptureShortcut(enabled: boolean): Promise<boolean>;
+  onWindowCaptured(listener: (attachment: PromptAttachment) => void): () => void;
+  addSessionAttachment(sessionId: string, attachment: PromptAttachment): Promise<PromptInput>;
+  onFocusSession(listener: (target: SessionAttentionOpen) => void): () => void;
 }
 
 export interface PromptAttachment {
@@ -341,8 +386,18 @@ export const SIDE_QUESTION_REFERENCE_LIMIT = 1200;
 export type SideQuestionReference = { kind: 'answer'; messageId: string; excerpt: string } | { kind: 'trace'; messageId: string };
 export interface SideQuestionInput { question: string; reference: SideQuestionReference }
 export interface SideQuestionReceipt { sessionId: string; inSplit: boolean; waitingForProject: boolean }
-export interface PromptInput { text: string; attachments?: PromptAttachment[] }
-export interface CreateSessionInput { title: string; providerId: string; cwd: string; modelId?: string; commandId?: string; initialDraft?: PromptInput['text'] }
+export interface PreviewEvidenceSource {
+  kind: 'preview'; tabId: string; url: string; selector: string; number: number; annotationId: string;
+}
+export type DraftEvidenceSource = { kind: 'message'; sessionId: string; messageId: string }
+  | { kind: 'artifact'; runId: string; artifactId: string }
+  | PreviewEvidenceSource;
+export interface DraftEvidence { id: string; label: string; excerpt: string; source: DraftEvidenceSource }
+export interface PromptInput { text: string; attachments?: PromptAttachment[]; evidence?: DraftEvidence[] }
+export interface CreateSessionInput {
+  title: string; providerId: string; cwd: string; modelId?: string; commandId?: string; initialDraft?: PromptInput['text'];
+  location?: { workspaceId: string; choice: SessionLocationChoice };
+}
 export interface SessionContinuationTarget { providerId: string; modelId?: string }
 export interface CurrencyBalance { currency: string; total: string; granted: string; toppedUp: string }
 export interface DeepSeekBalance extends CurrencyBalance { balances: CurrencyBalance[]; checkedAt: string }
@@ -389,6 +444,15 @@ export interface McpSettingsView { content: string; revision: string; servers: {
 export type GitMutation = { action: 'stage' | 'unstage' | 'discard'; path: string; revision?: string };
 export interface GitCommitPreview { revision: string; patch: string; paths: string[]; truncated: boolean }
 export interface PullRequestReview { status: 'ready' | 'unavailable' | 'error'; url?: string; number?: number; title?: string; state?: string; headSha?: string; checkedAt?: string; reviewDecision?: string; checks?: { name: string; status: string; conclusion?: string; url?: string }[]; error?: string }
+export interface NotificationPreferences {
+  enabled: boolean;
+  backgroundOnly: boolean;
+  approvals: boolean;
+  results: boolean;
+  failures: boolean;
+  sound: boolean;
+}
+
 export interface NotificationStatus { supported: boolean; state: 'idle' | 'requested' | 'shown' | 'failed'; error?: string }
 
 declare global {

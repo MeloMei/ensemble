@@ -142,6 +142,142 @@ async function graphReady(count: number) {
 }
 
 const cases: Record<string, () => Promise<void>> = {
+  'VISIT-HISTORY: cross-project traversal returns to the active split and conversation reading position': async () => {
+    const source: Session = { ...session, id: 'visits-source', title: 'Original session',
+      draft: { text: 'Preserved draft' }, messages: messageRange(0, 100) };
+    const sibling: Session = { ...session, id: 'visits-sibling', title: 'Second session', status: 'running' };
+    const extra = (['waiting_approval', 'waiting_children', 'queued'] as const).map(status => ({ ...session, id: `visits-${status}`, status }));
+    const elsewhere: Session = { ...session, id: 'visits-elsewhere', title: 'Elsewhere', cwd: '/visits-other' };
+    const sourceTab = { kind: 'agent' as const, id: 'visits-source-tab', sessionId: source.id };
+    const siblingTab = { kind: 'agent' as const, id: 'visits-sibling-tab', sessionId: sibling.id };
+    const otherTab = { kind: 'agent' as const, id: 'visits-other-tab', sessionId: elsewhere.id };
+    const original: Workspace = { ...workspace, tabs: [sourceTab, siblingTab], activeTabId: sourceTab.id,
+      secondaryTabId: siblingTab.id, splitRatio: 0.6 };
+    const other: Workspace = { ...workspace, id: 'visits-other', name: 'Other project', cwd: elsewhere.cwd, tabs: [otherTab], activeTabId: otherTab.id };
+    let snapshot: Snapshot = { ...collaborationSnapshot([]), sessions: [source, sibling, ...extra, elsewhere],
+      workspaces: [original, other], providers: [provider] };
+    let publish = (_value: Snapshot) => {};
+    window.workbench = {
+      ...applicationUpdateApi, snapshot: async () => snapshot,
+      subscribe: (listener: typeof publish) => { publish = listener; return () => {}; },
+      getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
+      onLanguageChanged: () => () => {},
+      watchSessions: async () => {}, listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {},
+      activateTab: async (id: string, tabId: string) => {
+        snapshot = { ...snapshot, workspaces: snapshot.workspaces.map(project => project.id !== id ? project : { ...project,
+          activeTabId: tabId, secondaryTabId: project.activeTabId!, secondaryPlacement: project.secondaryPlacement === 'before' ? 'after' : 'before' }) };
+        publish(snapshot);
+      },
+    } as unknown as Window['workbench'];
+    await render(<LanguageProvider initial={{ preference: 'en', language: 'en' }}><App /></LanguageProvider>);
+    const activeTab = () => document.querySelector('.tab-select[aria-current=page]')?.textContent;
+    const viewport = (id: string) => document.querySelector<HTMLDivElement>(`[data-chat-session-id="${id}"] .message-scroll`)!;
+    const at = (id: string) => viewport(id)?.querySelector<HTMLElement>(`[data-message-id="${anchorId}"]`);
+    const panes = () => [...document.querySelectorAll<HTMLElement>('[data-workspace-pane]')].map(pane => pane.dataset.workspacePane).join(',');
+    await waitFor(() => Boolean(viewport(source.id)), 'The original split did not load');
+    await frames(5);
+    const initial = viewport(source.id);
+    await act(async () => {
+      initial.dispatchEvent(new WheelEvent('wheel', { deltaY: -100 }));
+      initial.scrollTop = 350;
+      initial.dispatchEvent(new Event('scroll'));
+      await tick();
+    });
+    await frames(4);
+    const visible = [...initial.querySelectorAll<HTMLElement>('[data-message-id]')].find(row => row.getBoundingClientRect().bottom > initial.getBoundingClientRect().top);
+    assert(visible?.dataset.messageId, 'The reading point was outside the virtual viewport');
+    const anchorId = visible.dataset.messageId;
+    const anchorOffset = visible.getBoundingClientRect().top - initial.getBoundingClientRect().top;
+    const row = document.querySelector<HTMLElement>(`[data-workspace-id="${workspace.id}"]`)!;
+    for (const status of ['running', 'waiting_approval', 'waiting_children', 'queued']) {
+      assert(row.textContent?.includes(`1 · ${translate(`shell:status.${status}`)}`), `Missing ${status} project count`);
+    }
+    const toggle = row.parentElement!.querySelector<HTMLButtonElement>('.workspace-session-toggle')!;
+    await act(async () => { toggle.focus(); toggle.click(); await tick(); });
+    assert(toggle === document.activeElement && toggle.getAttribute('aria-expanded') === 'true' && activeTab() === source.title,
+      'Expanding sessions moved focus or activated a session');
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>(`[data-workspace-pane="${siblingTab.id}"]`)?.focus();
+      [...document.querySelectorAll<HTMLButtonElement>('.tab-select')].find(item => item.textContent?.startsWith(sibling.title))!.click();
+      await tick();
+    });
+    await act(async () => { document.querySelector<HTMLButtonElement>(`[data-workspace-id="${other.id}"]`)!.click(); await tick(); });
+    await click('shell:app.history');
+    const key = (value: string) => act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: value, metaKey: true, cancelable: true }));
+      await tick();
+    });
+    await key('[');
+    assert(activeTab() === elsewhere.title && document.activeElement === viewport(elsewhere.id), 'Back did not focus the other project conversation');
+    await click('shell:app.visitBack');
+    assert(activeTab() === sibling.title && panes() === `${sourceTab.id},${siblingTab.id}`, 'Back did not restore the selected split tab');
+    await key('[');
+    assert(activeTab() === source.title && panes() === `${sourceTab.id},${siblingTab.id}`, 'Back moved or merged the original split');
+    await waitFor(() => {
+      const restored = at(source.id);
+      return Boolean(restored && Math.abs(restored.getBoundingClientRect().top - viewport(source.id).getBoundingClientRect().top - anchorOffset) < 5);
+    }, 'Back did not restore the original message and viewport offset');
+    assert(document.activeElement === viewport(source.id) && input('[data-chat-session-id="visits-source"] .composer textarea').value === 'Preserved draft',
+      'Back lost conversation focus or changed the draft');
+    await click('shell:app.visitForward');
+    assert(activeTab() === sibling.title, 'Forward missed the sibling tab');
+    await key(']');
+    assert(activeTab() === elsewhere.title, 'Forward missed the other project');
+  },
+  'SESSION-LOCATION: new session keeps the drafted task while selecting a working directory and branch': async () => {
+    const origin = { ...workspace, id: 'session-location-origin', name: 'Origin', cwd: '/location-source' };
+    const busySession = { ...session, id: 'session-location-busy', cwd: origin.cwd, status: 'running' as const };
+    const registered = { cwd: '/location-registered', branch: 'existing' };
+    const managed = { planId: '46dd6ee4-3b35-4a1b-98ca-600596c0b248', cwd: '/managed/location', branch: 'ensemble/location' };
+    let snapshot: Snapshot = { ...collaborationSnapshot([]), sessions: [busySession], workspaces: [origin], providers: [provider] };
+    let publish = (_value: Snapshot) => {};
+    const commands: Parameters<Window['workbench']['createSession']>[0][] = [];
+    window.workbench = {
+      ...applicationUpdateApi, snapshot: async () => snapshot,
+      subscribe: (listener: typeof publish) => { publish = listener; return () => {}; },
+      getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
+      onLanguageChanged: () => () => {}, watchSessions: async () => {}, listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {},
+      sessionLocations: async () => ({ current: { cwd: origin.cwd, branch: 'main' }, repository: true, worktrees: [registered],
+        branches: ['refs/heads/main', 'refs/heads/review'], managed }),
+      createSession: async (command: typeof commands[number]) => {
+        commands.push(command);
+        const created = { ...session, cwd: managed.cwd, title: command.title, id: 'created-at-location', draft: { text: command.initialDraft! } };
+        const tab = { kind: 'agent' as const, id: 'created-location-tab', sessionId: created.id };
+        snapshot = { ...snapshot, sessions: [busySession, created], workspaces: [origin, { ...workspace, id: 'target-location',
+          name: 'Managed worktree', cwd: managed.cwd, tabs: [tab], activeTabId: tab.id }] };
+        publish(snapshot);
+        return created.id;
+      },
+      sendPrompt: async () => { throw new Error('Creating the draft must not send it'); },
+    } as unknown as Window['workbench'];
+    await render(<LanguageProvider initial={{ preference: 'en', language: 'en' }}><App /></LanguageProvider>);
+    const shortcut = (isComposing = false) => act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', metaKey: true, isComposing, cancelable: true }));
+      await tick();
+    });
+    const modal = () => document.querySelector<HTMLDialogElement>('dialog[open]');
+    await shortcut(true);
+    assert(!modal(), 'The shortcut opened a dialog during IME composition');
+    await shortcut();
+    await waitFor(() => Boolean(modal()?.textContent?.includes(origin.cwd)), 'The new session dialog did not confirm the current directory');
+    assert(modal()?.textContent?.includes('Choose a separate worktree'), 'The busy directory did not explain worktree alternatives');
+    await change(input('dialog[open] textarea'), 'Review the implementation');
+    const select = (key: string) => modal()?.querySelector<HTMLButtonElement>(`[role=combobox][aria-label="${translate(key)}"]`)!;
+    const directoryChoice = select('shell:app.sessionDirectory');
+    await chooseOption(directoryChoice, 'registered');
+    assert(modal()?.textContent?.includes(registered.cwd) && modal()?.textContent?.includes(registered.branch), 'The registered worktree path and branch were not visible');
+    await chooseOption(directoryChoice, 'managed');
+    await chooseOption(select('shell:app.sessionBaseBranch'), 'refs/heads/review');
+    assert(modal()?.textContent?.includes(managed.cwd) && modal()?.textContent?.includes(managed.branch), 'The new checkout path and branch were not visible');
+    assert(input('dialog[open] textarea').value === 'Review the implementation', 'Selecting a worktree changed the draft');
+    await click('shell:app.createSession');
+    await waitFor(() => Boolean(document.querySelector('[data-chat-session-id="created-at-location"] .composer textarea')), 'The created session did not open in its worktree');
+    const choice = commands[0]?.location?.choice;
+    assert(commands.length === 1 && commands[0].commandId && commands[0].initialDraft === 'Review the implementation'
+      && choice?.kind === 'managed' && choice.fromRef === 'refs/heads/review' && choice.cwd === managed.cwd,
+    'The create command lost the draft, location, or selected branch');
+    assert(input('[data-chat-session-id="created-at-location"] .composer textarea').value === 'Review the implementation', 'The task was missing from the new composer');
+  },
   'TERMINAL-CLOSE-01: collapsing a running terminal preserves its process and reopen uses the same output': async () => {
     const info = { id: 'terminal-close-fixture', workspaceId: workspace.id, title: 'zsh', status: 'running' as const, exitCode: null, output: '', outputOffset: 0 };
     const tab = { id: 'terminal-close-tab', kind: 'terminal' as const, terminalId: info.id };
@@ -940,6 +1076,18 @@ const cases: Record<string, () => Promise<void>> = {
     const backdropStyle = getComputedStyle(backdrop);
     const availableWidth = backdrop.clientWidth - parseFloat(backdropStyle.paddingLeft) - parseFloat(backdropStyle.paddingRight);
     assert(Math.abs(settingsWidth - Math.min(980, availableWidth)) <= 1, `Settings width ${settingsWidth} does not fit available width ${availableWidth}`);
+    const settingsSearch = input('.settings-search input');
+    await act(async () => {
+      (document.activeElement as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'f', metaKey: true, bubbles: true, cancelable: true }));
+      await tick();
+    });
+    assert(document.activeElement === settingsSearch, 'Search settings did not take keyboard focus');
+    await change(settingsSearch, 'only while in the background');
+    await act(async () => { settingsSearch.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); await tick(); });
+    assert(document.querySelector('[data-setting-anchor="notification-backgroundOnly"].setting-search-highlight')
+      && settingsSearch.value === 'only while in the background' && document.activeElement === settingsSearch,
+    'Setting search did not land on the exact preference or retain its query and focus');
+    await change(settingsSearch, '');
     for (const section of ['shell:app.providers', 'shell:settings.project', 'shell:settings.general']) {
       await click(section);
       assert(settingsModal.offsetWidth === settingsWidth, `Settings width changed from ${settingsWidth} to ${settingsModal.offsetWidth} after opening ${section}`);
@@ -1684,6 +1832,10 @@ const cases: Record<string, () => Promise<void>> = {
       getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
       onLanguageChanged: () => () => {}, watchSessions: async () => {}, markSessionSeen: async () => {},
       listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {},
+      sessionLocations: async (id: string) => ({
+        current: { cwd: (snapshot.workspaces.find(project => project.id === id) ?? workspace).cwd },
+        worktrees: [], branches: [],
+      }),
       createTerminal: async (id: string) => { terminals.push(id); },
       openSessionTab: async (workspaceId: string, sessionId: string) => {
         opened.push([workspaceId, sessionId]);
@@ -2092,6 +2244,59 @@ const cases: Record<string, () => Promise<void>> = {
     assertDraft();
     assert(errors.length === 0, errors.join('\n'));
   },
+  'DRAFT-INPUT: file selection and screenshot paste change only the current draft': async () => {
+    const queries: string[][] = [];
+    let sends = 0;
+    const image = { id: 'pasted-image', name: 'Screenshot.png', kind: 'image' as const, mimeType: 'image/png', size: 4, sha256: 'a'.repeat(64), ownedPath: '/owned/Screenshot.png' };
+    const imageUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII=';
+    window.workbench = {
+      findWorkspaceFiles: async (id: string, query: string) => {
+        queries.push([id, query]);
+        return [{ name: 'shared.ts', path: 'src/shared.ts' }, { name: 'shared.ts', path: 'test/shared.ts' }];
+      },
+      importPastedImage: async (name: string, bytes: Uint8Array) => {
+        assert(name === image.name && bytes.byteLength === 4, 'Clipboard image bytes did not reach the attachment importer');
+        return image;
+      },
+      readImageAttachment: async () => imageUrl,
+      sendPrompt: async () => { sends++; },
+    } as unknown as Window['workbench'];
+    function EditableChat() {
+      const [draft, setDraft] = React.useState<PromptInput>({ text: '' });
+      return chat({ workspaceId: 'actual-worktree', draft, onDraftChange: setDraft });
+    }
+    await render(<EditableChat />);
+    const textarea = input('.composer textarea') as HTMLTextAreaElement;
+    textarea.focus();
+    const key = async (value: string, isComposing = false) => {
+      await act(async () => { textarea.dispatchEvent(new KeyboardEvent('keydown', { key: value, isComposing, bubbles: true, cancelable: true })); await tick(); });
+    };
+    await change(textarea, 'Inspect @sha');
+    await waitFor(() => document.querySelectorAll('.workspace-file-mention [role=option]').length === 2, 'File suggestions did not load');
+    assert(queries.some(([id, query]) => id === 'actual-worktree' && query === 'sha'), 'The composer searched a different workspace');
+    const option = document.querySelector<HTMLElement>('.workspace-file-mention [role=option]')!;
+    const rect = option.getBoundingClientRect();
+    assert(document.elementFromPoint(rect.x + 12, rect.y + 12)?.closest('[role=option]') === option, 'The composer clipped the suggestion menu');
+    assert(document.querySelector('.workspace-file-mention')?.textContent?.includes('test/shared.ts'), 'Same-named files lack a relative path');
+    await key('ArrowDown'); await key('Enter', true);
+    assert(String(textarea.value) === 'Inspect @sha' && sends === 0, 'IME Enter inserted a file or sent the draft');
+    await key('Enter');
+    assert(String(textarea.value) === 'Inspect @test/shared.ts ' && sends === 0, 'Keyboard confirmation did not insert only the selected reference');
+    await change(textarea, 'Inspect @s');
+    await waitFor(() => Boolean(document.querySelector('.workspace-file-mention')), 'File suggestions did not reopen');
+    await key('Escape');
+    assert(!document.querySelector('.workspace-file-mention') && String(textarea.value) === 'Inspect @s' && sends === 0,
+      `Escape left the file menu open or changed the draft: menu=${Boolean(document.querySelector('.workspace-file-mention'))}, value=${JSON.stringify(textarea.value)}, sends=${sends}`);
+    const clipboard = new DataTransfer();
+    clipboard.items.add(new File([new Uint8Array([1, 2, 3, 4])], 'clipboard.png', { type: 'image/png' }));
+    await act(async () => { textarea.dispatchEvent(new ClipboardEvent('paste', { clipboardData: clipboard, bubbles: true, cancelable: true })); await tick(); });
+    await waitFor(() => Boolean(document.querySelector('.composer .attachment-preview-trigger')), 'The screenshot was not added to the draft');
+    await act(async () => { document.querySelector<HTMLButtonElement>('.attachment-preview-trigger')!.click(); await tick(); });
+    await waitFor(() => Boolean(document.querySelector('dialog img[src^="data:image/png"]')), 'The screenshot could not be reviewed');
+    await click('shell:common.close');
+    await act(async () => { document.querySelector<HTMLButtonElement>('.composer .attachment-remove')!.click(); await tick(); });
+    assert(!document.querySelector('.composer .attachment-chip') && sends === 0, 'Review or removal sent the screenshot');
+  },
   'UX2-CHAT1: attachment selections keep oversized drafts editable and block invalid sends': async () => {
     const attachment = (index: number, size = 4) => ({ id: `limit-${index}`, name: `file-${index}.txt`, kind: 'text' as const, ownedPath: `/file-${index}.txt`, mimeType: 'text/plain', size, sha256: 'a'.repeat(64) });
     const sends: unknown[] = [];
@@ -2112,7 +2317,7 @@ const cases: Record<string, () => Promise<void>> = {
     assert(document.querySelector('.composer-note[role=alert]')?.textContent?.includes('4'), 'The attachment count limit is not explained');
     await act(async () => { input('.composer textarea').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await tick(); });
     assert(sends.length === 0, 'Enter bypassed the attachment count limit');
-    await act(async () => { document.querySelector<HTMLButtonElement>('.composer .attachment-chip button')!.click(); await tick(); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('.composer .attachment-remove')!.click(); await tick(); });
     assert(!button('workspace:chat.sendTask').disabled && button('workspace:chat.attach').disabled, 'Exactly four attachments do not share the runtime boundary');
     await click('workspace:chat.sendTask'); await settle();
     assert((sends[0] as { attachments: unknown[] }).attachments.length === 4, 'A valid four-file draft changed before sending');
@@ -2123,19 +2328,24 @@ const cases: Record<string, () => Promise<void>> = {
     await click('workspace:chat.attach'); await settle();
     assert(button('workspace:chat.sendTask').disabled && document.querySelectorAll('.composer .attachment-chip').length === 3, 'Combined attachment bytes are allowed to exceed the runtime limit');
     assert(document.querySelector('.composer-note[role=alert]')?.textContent?.includes('8 MiB'), 'The total byte limit is not explained');
-    await act(async () => { document.querySelector<HTMLButtonElement>('.composer .attachment-chip button')!.click(); await tick(); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('.composer .attachment-remove')!.click(); await tick(); });
     assert(!button('workspace:chat.sendTask').disabled, 'Removing an oversized attachment did not restore sending');
     assert(errors.length === 0, errors.join('\n'));
   },
   'UX2-CHAT2: editing an oversized queued draft requires removing excess files before saving': async () => {
     const attachments = Array.from({ length: 5 }, (_, index) => ({ id: `queued-limit-${index}`, name: `file-${index}.txt`, kind: 'text' as const, ownedPath: `/file-${index}.txt`, mimeType: 'text/plain', size: 4, sha256: 'a'.repeat(64) }));
     const writes: unknown[] = [];
-    window.workbench = { updateQueuedPrompt: async (_id: string, _itemId: string, value: unknown) => { writes.push(value); } } as unknown as Window['workbench'];
+    window.workbench = {
+      beginQueuedPromptEdit: async () => ({ text: 'Queued files', attachments }),
+      renewQueuedPromptEdit: async () => {},
+      saveQueuedPromptDraft: async () => {},
+      finishQueuedPromptEdit: async (_id: string, _itemId: string, _editId: string, value: unknown) => { writes.push(value); },
+    } as unknown as Window['workbench'];
     await render(chat({ session: { ...session, queue: [{ id: 'oversized-queued', commandId: 'queued', input: { text: 'Queued files', attachments }, createdAt: session.createdAt, updatedAt: session.updatedAt }] } }));
     await click('workspace:chat.editQueued');
     assert(button('workspace:chat.saveQueued').disabled, 'Queue edits still submit more attachments than the runtime accepts');
     assert(document.querySelector('.prompt-queue [role=alert]')?.textContent?.includes('4'), 'Queue attachment limit is not explained');
-    await act(async () => { document.querySelector<HTMLButtonElement>('.prompt-queue .attachment-chip button')!.click(); await tick(); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('.prompt-queue .attachment-remove')!.click(); await tick(); });
     assert(!button('workspace:chat.saveQueued').disabled, 'A corrected queue draft is still blocked');
     await click('workspace:chat.saveQueued'); await settle();
     assert((writes[0] as { attachments: unknown[] }).attachments.length === 4, 'Saving the corrected queue draft lost an attachment');
@@ -2235,20 +2445,24 @@ const cases: Record<string, () => Promise<void>> = {
   },
   'TURN-DIFF-01: a folded Trace opens the runtime patch for its own turn': async () => {
     const output = 'diff --git a/example.txt b/example.txt\n--- a/example.txt\n+++ b/example.txt\n@@ -1 +1 @@\n-before\n+after';
-    const show = (patch: string) => render(chat({ session: { ...session, id: 'turn-diff-session', status: 'completed',
+    const show = (patch?: string) => render(chat({ session: { ...session, id: 'turn-diff-session', status: 'completed',
       messages: [{ id: 'turn-diff-event', text: 'Turn diff', role: 'activity', createdAt: session.createdAt,
         event: { id: 'native-diff', kind: 'diff', title: 'Turn diff', status: 'completed', output: patch } }],
     } }));
     await show(output);
     await waitFor(() => Boolean(document.querySelector('.trace-diff')), 'The collapsed Trace did not expose its diff action');
     assert(!document.querySelector('[data-message-id="turn-diff-event"]'), 'The completed Trace did not start folded');
-    await click('workspace:chat.trace.turnDiff');
+    const summary = document.querySelector<HTMLButtonElement>('.trace-diff')!;
+    assert(summary.textContent?.includes('example.txt'), 'The folded Trace did not name the changed file');
+    await act(async () => { summary.click(); await tick(); });
     const row = () => document.querySelector('[data-message-id="turn-diff-event"] .process-reveal[data-expanded=true]');
     await waitFor(() => Boolean(row()?.querySelector('.turn-diff-patch')), 'The turn patch did not open inside its Trace');
     assert(row()?.querySelector('.removed')?.textContent?.trim() === '-before'
       && row()?.querySelector('.added')?.textContent?.trim() === '+after', 'The patch did not distinguish deleted and added lines');
     await show('');
     assert(row()?.textContent?.includes(translate('workspace:chat.trace.turnDiffEmpty')), 'An empty native update left a stale patch visible');
+    await show();
+    assert(row()?.textContent?.includes(translate('workspace:chat.trace.turnDiffUnavailable')), 'A missing patch was reported as zero changes');
   },
   'TRACE-01: live events enter once, update in place and keep manual choices': async () => {
     const tool = (id: string, title: string, status: NonNullable<Message['event']>['status'], input?: string, output?: string): Message => ({
@@ -2280,7 +2494,9 @@ const cases: Record<string, () => Promise<void>> = {
     assert(Boolean(document.querySelector('.trace-count .ui-rolling-text-change')) === !reduce, 'The live count did not honor motion preference');
     current = { ...current, status: 'completed' };
     await show(); await frames();
-    assert(controls().every(item => item.getAttribute('aria-expanded') === 'false') && !row(incoming.id), 'Completed traces did not fold');
+    assert(controls().map(item => item.getAttribute('aria-expanded')).join(',') === 'false,true'
+      && stableRow?.querySelector('.process-reveal[data-expanded="true"]'), 'Completing the turn closed manually opened details');
+    assert(document.querySelector('.trace-failure')?.textContent?.includes('New command'), 'The failure summary did not identify its event');
     await toggle(document.querySelector<HTMLButtonElement>('.trace-failure')!);
     await waitFor(() => Boolean(row(incoming.id)?.classList.contains('conversation-match')), 'The failure summary did not locate its event');
     assert(row(incoming.id)?.querySelector('.process-reveal[data-expanded="true"] pre:last-child')?.parentElement?.parentElement?.textContent?.includes('Permission denied'), 'The failed event did not expose the provider output');
@@ -2306,6 +2522,20 @@ const cases: Record<string, () => Promise<void>> = {
     await waitFor(() => Boolean(row(appended.at(-1)!.id)) && scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight <= 40,
       'An expanded live trace lost bottom pinning when events were appended');
     assert(document.querySelectorAll('.message-process').length < 50, 'The active trace mounted events outside the virtual range');
+
+    const detail = tool('trace-inline-detail', 'Inspect settings', 'running', 'Inspect settings\n'.repeat(40));
+    await render(<div style={{ display: 'flex', width: 700, height: 320 }}>
+      {React.cloneElement(chat({ session: { ...current, id: 'trace-inline-position', messages: [...messageRange(0, 6), detail] } }), { key: 'inline-position' })}
+    </div>, 'user');
+    const viewport = document.querySelector<HTMLElement>('.message-scroll')!;
+    await waitFor(() => Boolean(row(detail.id)) && viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= 40,
+      'The Trace detail fixture did not start at the live tail');
+    await frames(4);
+    const detailTop = row(detail.id)!.getBoundingClientRect().top;
+    const previousHeight = viewport.scrollHeight;
+    await toggle(row(detail.id)!.querySelector('button')!);
+    await waitFor(() => viewport.scrollHeight > previousHeight + 80, 'The expanded detail did not increase the content height');
+    assert(Math.abs(row(detail.id)!.getBoundingClientRect().top - detailTop) < 4, 'Opening details displaced the reading position');
   },
   'TRACE-02: search reveals the exact paged event and keeps a long trace virtualized': async () => {
     const events: Message[] = Array.from({ length: 150 }, (_, index) => ({
@@ -2474,7 +2704,10 @@ const cases: Record<string, () => Promise<void>> = {
     let cleared = 0;
     window.workbench = {
       sendPrompt: async (_id: string, input: unknown, id?: string) => { sends.push({ id, input }); if (sends.length === 1) await gate.promise; if (sends.length === 3) await laterGate.promise; },
-      updateQueuedPrompt: async (_id: string, item: string, input: unknown) => { edits.push({ item, input }); },
+      beginQueuedPromptEdit: async () => ({ text: 'Queued before' }),
+      renewQueuedPromptEdit: async () => {},
+      saveQueuedPromptDraft: async () => {},
+      finishQueuedPromptEdit: async (_id: string, item: string, _editId: string, input: unknown) => { edits.push({ item, input }); },
       removeQueuedPrompt: async (_id: string, item: string) => { removals.push(item); },
       setSessionQueuePaused: async (_id: string, paused: boolean) => { pauses.push(paused); },
     } as unknown as Window['workbench'];
@@ -2504,6 +2737,9 @@ const cases: Record<string, () => Promise<void>> = {
     await show({ ...queued, queuePaused: true, queueHoldReason: 'Task stopped' }); await click('workspace:chat.resumeQueue'); await settle();
     await click('workspace:chat.removeQueued'); await settle();
     assert(JSON.stringify(pauses) === '[true,false]' && removals[0] === 'queued-a', 'Queue pause, resume or removal did not use its persisted item identity');
+    await show({ ...queued, status: 'completed', queue: queued.queue?.map(item => ({ ...item, revision: 1, edit: { id: 'held' } })) });
+    assert(document.querySelector('.composer-caption')?.textContent?.includes(translate('workspace:chat.queueNextTurn'))
+      && !button('workspace:chat.resumeQueuedEdit').disabled, 'An edit-held queue hid the recovery action or labeled the next message as immediate');
     await show({ ...queued, historyLoaded: false });
     assert(input('.composer textarea').disabled && button('workspace:chat.sendTask').disabled, 'A summary-only session can overwrite the unloaded server draft');
     assert(document.querySelector('.conversation-history-controls [role=status]')?.textContent === translate('workspace:chat.loadingHistory'), 'The disabled composer is missing its history loading status');
@@ -2532,6 +2768,11 @@ const cases: Record<string, () => Promise<void>> = {
     await openDockSection('queue');
     assert(input('.composer textarea') === composerInput && input('.prompt-queue textarea') === queueInput
       && queueInput.value === 'A queue edit in progress', 'Switching the dock moved the composer or discarded a queue edit');
+    await show({ ...queued, queue: queued.queue?.map(item => ({ ...item, revision: 2, edit: { id: 'other-window' } })) });
+    assert(input('.prompt-queue textarea') === queueInput && queueInput instanceof HTMLTextAreaElement && queueInput.readOnly && queueInput.value === 'A queue edit in progress',
+      'An expired edit lost the text before the old window could copy it');
+    assert(document.querySelector('.prompt-queue [role=alert]')?.textContent === translate('workspace:chat.queueEditMoved'),
+      'An expired edit did not explain that another window resumed it');
     const agent = { id: 'outside-tail', kind: 'subagent', nativeId: 'outside-native', title: 'Agent outside the tail', status: 'running' } as const;
     window.workbench.sessionHistoryAround = async (sessionId, messageId) => {
       assert(sessionId === queued.id && messageId === 'old-agent', 'Opening an older agent used the wrong history anchor');
@@ -2926,10 +3167,11 @@ const cases: Record<string, () => Promise<void>> = {
       workspaces: [workspace, approvalProject, resultProject], providers: [provider], workflows: [], terminals: [], pluginErrors: [], pluginPath: '/plugins', dataPath: '/data' };
     let publish!: (snapshot: Snapshot) => void;
     const seen: string[] = [], opens: { workspaceId: string; sessionId: string }[] = [];
+    let openNotification!: Parameters<Window['workbench']['onFocusSession']>[0];
     window.workbench = {
       subscribe: (listener: typeof publish) => { publish = listener; return () => {}; }, snapshot: async () => snapshot,
       ...applicationUpdateApi, getConnection: async () => ({ status: 'connected', synced: true }),
-      onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
+      onConnectionChanged: () => () => {}, onFocusSession: (listener: typeof openNotification) => { openNotification = listener; return () => {}; },
       listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {},
       watchSessions: async (ids: string[]) => {
         snapshot = { ...snapshot, sessions: sourceSessions.map(value => ids.includes(value.id) ? { ...value, historyLoaded: true }
@@ -2972,10 +3214,13 @@ const cases: Record<string, () => Promise<void>> = {
       await select(waiting.id);
       await waitFor(() => (document.activeElement as HTMLElement)?.dataset.approvalId === 'Latest approval', 'Opening the approval did not focus its card');
       assert(opens[0]?.workspaceId === approvalProject.id, 'The approval opened the wrong project');
+      await act(async () => { openNotification({ sessionId: waiting.id, reason: 'approval', approvalId: 'Older approval' }); await tick(); });
+      await waitFor(() => (document.activeElement as HTMLElement)?.dataset.approvalId === 'Older approval',
+        'A native notification opened the latest approval instead of the approval clicked');
       await visitInbox(); await select(failure.id);
       await waitFor(() => isVisible('[data-message-id="matching-failed-event"].conversation-match') &&
         Boolean(document.querySelector('[data-message-id="matching-failed-event"] .process-reveal[data-expanded=true]')), 'Opening a failure selected an unrelated attempt or did not reveal its Trace');
-      assert(opens[1]?.sessionId === failure.id && !seen.includes(failure.id), 'Opening an earlier failure targeted the wrong session or marked unseen tail output');
+      assert(opens.at(-1)?.sessionId === failure.id && !seen.includes(failure.id), 'Opening an earlier failure targeted the wrong session or marked unseen tail output');
       await visitInbox(); await select(fallback.id);
       await waitFor(() => document.querySelector('.inline-error')?.textContent?.includes(fallback.error!) === true, 'A failure without a Trace lost its existing error state');
       await visitInbox(); await select(result.id);
@@ -3182,7 +3427,7 @@ const cases: Record<string, () => Promise<void>> = {
     await act(async () => { input('textarea').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await tick(); });
     assert(sends === 0 && changes === 0, 'Enter submitted or erased an unsupported draft');
     assert(document.querySelector('[role=alert]')?.textContent?.includes('does not support attachments'), 'Attachment restriction was not explained');
-    const remove = document.querySelector<HTMLButtonElement>('.attachment-chip button'); assert(remove && !remove.disabled, 'User cannot remove the unsupported attachment');
+    const remove = document.querySelector<HTMLButtonElement>('.attachment-remove'); assert(remove && !remove.disabled, 'User cannot remove the unsupported attachment');
   },
   'UI-TAIL-RESET: live resynchronization invalidates an older page without cancelling its replacement': async () => {
     const oldPage = deferred<SessionHistoryWindow>(), newPage = deferred<SessionHistoryWindow>();

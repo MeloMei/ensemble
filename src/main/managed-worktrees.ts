@@ -3,7 +3,7 @@ import { execFile, spawn } from 'node:child_process';
 import { lstat, mkdir, realpath, stat } from 'node:fs/promises';
 import { basename, dirname, join, relative, sep } from 'node:path';
 import { promisify } from 'node:util';
-import type { CreateWorkspaceInput, ManagedWorktree, WorktreeOperation } from '../shared/types';
+import type { CreateWorkspaceInput, ManagedWorktree, SessionDirectory, SessionLocationChoice, SessionLocations, WorktreeOperation } from '../shared/types';
 import type { StateStore } from './store';
 import type { WorkbenchEngine } from './engine';
 import { commandHash, previousSessionCommand, runSessionCommand } from './session-commands';
@@ -12,10 +12,34 @@ import { workspacePathContains as contains } from './workspace-path';
 const execute = promisify(execFile);
 const active = new Set(['queued', 'running', 'waiting_approval', 'waiting_children']);
 const timestamp = () => new Date().toISOString();
+const branchPrefix = 'refs/heads/';
+const worktreeSuffix = (commandId: string) => createHash('sha256').update(commandId).digest('hex').slice(0, 12);
+const agentWorktreeCommand = (planId: string) => `agent-worktree:${planId}`;
 async function git(cwd: string, args: string[]): Promise<string> {
   const result = await execute('git', args, { cwd, encoding: 'utf8', timeout: 30_000, maxBuffer: 2 * 1024 * 1024,
     env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
   return result.stdout.trim();
+}
+
+async function gitRoot(cwd: string): Promise<string | undefined> {
+  try { return await realpath(await git(cwd, ['rev-parse', '--show-toplevel'])); }
+  catch (error) {
+    if (/not a git repository/i.test(error instanceof Error ? error.message : String(error))) return undefined;
+    throw error;
+  }
+}
+
+async function currentBranch(cwd: string): Promise<string | null> {
+  try { return (await git(cwd, ['symbolic-ref', '--quiet', 'HEAD'])).slice(branchPrefix.length); }
+  catch (error) {
+    if ((error as { code?: number }).code === 1) return null;
+    throw error;
+  }
+}
+
+async function worktreePaths(cwd: string): Promise<string[][]> {
+  return (await git(cwd, ['worktree', 'list', '--porcelain', '-z'])).split('\0\0')
+    .map(entry => entry.split('\0')).filter(([first]) => first.startsWith('worktree '));
 }
 
 async function hasStatusSuppressionFlags(cwd: string): Promise<boolean> {
@@ -113,9 +137,69 @@ export class ManagedWorktrees {
     return owner ? `worktree:${owner.commandId}` : `workspace:${workspaceId}`;
   }
 
+  private async sessionWorktreePlan(source: string, root: string, planId: string) {
+    const suffix = worktreeSuffix(agentWorktreeCommand(planId));
+    const directory = await realpath(this.directory).catch(async error => {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      return join(await realpath(dirname(this.directory)), basename(this.directory));
+    });
+    return { planId, cwd: join(directory, suffix, relative(root, source)), branch: `ensemble/session-${suffix}` };
+  }
+
+  async sessionLocations(workspaceId: string): Promise<SessionLocations> {
+    const { cwd } = this.engine.workspace(workspaceId);
+    return this.access(workspaceId, async () => {
+      const root = await gitRoot(cwd);
+      if (!root) return { current: { cwd, branch: null }, repository: false, worktrees: [], branches: [] };
+      const [branch, entries, refs] = await Promise.all([
+        currentBranch(cwd), worktreePaths(root),
+        git(root, ['for-each-ref', '--format=%(refname)', branchPrefix]),
+      ]);
+      const worktrees = entries.flatMap(([path, ...fields]): SessionDirectory[] => {
+        const target = path.slice('worktree '.length);
+        if (target === root || fields.some(field => field === 'bare' || field.startsWith('prunable'))) return [];
+        if (this.store.state.workspaces.some(item => item.cwd === target && item.archived)) return [];
+        const ref = fields.find(field => field.startsWith(`branch ${branchPrefix}`));
+        return [{ cwd: target, branch: ref?.slice('branch '.length + branchPrefix.length) ?? null }];
+      });
+      const branches = refs ? refs.split('\n') : [];
+      return { current: { cwd, branch }, repository: true, worktrees, branches,
+        managed: branches.length ? await this.sessionWorktreePlan(cwd, root, randomUUID()) : undefined };
+    });
+  }
+
+  async resolveSessionLocation(workspaceId: string, sourceCwd: string, title: string, choice: SessionLocationChoice): Promise<string> {
+    return this.access(workspaceId, async () => {
+      const source = this.engine.workspace(workspaceId);
+      if (source.cwd !== sourceCwd || await realpath(sourceCwd) !== sourceCwd) throw new Error('项目目录已变更，请重新打开新建会话。');
+      const root = await gitRoot(sourceCwd);
+      if (choice.kind === 'current') {
+        const branch = root ? await currentBranch(sourceCwd) : null;
+        if (choice.branch !== branch) throw new Error('当前分支已变更，请重新打开新建会话。');
+        return sourceCwd;
+      }
+      if (!root) throw new Error('所选项目已不在 Git 仓库中。');
+      if (choice.kind === 'registered') {
+        const entries = await worktreePaths(root);
+        const target = entries.find(([path, ...fields]) => path === `worktree ${choice.cwd}`
+          && !fields.some(field => field === 'bare' || field.startsWith('prunable')));
+        if (!target || choice.cwd === root || await realpath(choice.cwd) !== choice.cwd) throw new Error('所选 worktree 已变更，请重新打开新建会话。');
+        const gitCommonDir = (cwd: string) => git(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']).then(path => realpath(path));
+        if (await gitCommonDir(root) !== await gitCommonDir(choice.cwd) || await currentBranch(choice.cwd) !== choice.branch) {
+          throw new Error('所选 worktree 的仓库或分支已变更，请重新打开新建会话。');
+        }
+        return choice.cwd;
+      }
+      const plan = await this.sessionWorktreePlan(sourceCwd, root, choice.planId);
+      if (choice.cwd !== plan.cwd || choice.branch !== plan.branch) throw new Error('独立 worktree 的计划已变更，请重新打开新建会话。');
+      const id = await this.create({ name: title, cwd: sourceCwd, branch: plan.branch, fromRef: choice.fromRef, commandId: agentWorktreeCommand(plan.planId) });
+      return this.engine.workspace(id).cwd;
+    });
+  }
+
   create(input: CreateWorkspaceInput): Promise<string> {
     const commandId = input.commandId ?? randomUUID();
-    const payload = { name: input.name.trim(), cwd: input.cwd, branch: input.branch ?? null };
+    const payload = { name: input.name.trim(), cwd: input.cwd, branch: input.branch ?? null, ...(input.fromRef ? { fromRef: input.fromRef } : {}) };
     const hash = commandHash('create-worktree', payload);
     try { previousSessionCommand(this.store, 'create-worktree', commandId, payload); }
     catch (error) { return Promise.reject(error); }
@@ -123,12 +207,12 @@ export class ManagedWorktrees {
     if (previous && previous.inputHash !== hash) return Promise.reject(new Error('commandId 已用于不同的工作区创建请求。'));
     const pending = this.requests.get(commandId);
     if (pending) return pending.hash === hash ? pending.promise : Promise.reject(new Error('commandId 已用于不同的工作区创建请求。'));
-    const request = this.provision(input, commandId, hash).finally(() => this.requests.delete(commandId));
+    const request = this.provision(input, commandId, hash, payload).finally(() => this.requests.delete(commandId));
     this.requests.set(commandId, { hash, promise: request });
     return request;
   }
 
-  private async provision(input: CreateWorkspaceInput, commandId: string, inputHash: string): Promise<string> {
+  private async provision(input: CreateWorkspaceInput, commandId: string, inputHash: string, payload: unknown): Promise<string> {
     let operation = this.store.state.worktreeOperations?.find(item => item.commandId === commandId);
     if (operation?.status === 'ready' && operation.workspaceId) return operation.workspaceId;
     if (operation && operation.status !== 'creating') throw new Error(operation.error ?? '这次创建操作已经结束，请重新创建工作区。');
@@ -138,17 +222,20 @@ export class ManagedWorktrees {
       const sourceRoot = await realpath(await git(sourceCwd, ['rev-parse', '--show-toplevel']));
       const relativeCwd = relative(sourceRoot, sourceCwd);
       if (!contains(sourceRoot, sourceCwd)) throw new Error('执行目录不属于该 Git 仓库。');
-      const mainWorktree = (await git(sourceRoot, ['worktree', 'list', '--porcelain', '-z'])).split('\0')[0];
-      if (!mainWorktree.startsWith('worktree ')) throw new Error('无法确定仓库的主工作区，不能创建独立工作区。');
+      const mainWorktree = (await worktreePaths(sourceRoot))[0]?.[0];
+      if (!mainWorktree) throw new Error('无法确定仓库的主工作区，不能创建独立工作区。');
       const repoRoot = await realpath(mainWorktree.slice('worktree '.length));
-      const baseSha = await git(sourceCwd, ['rev-parse', 'HEAD']);
+      if (input.fromRef && !input.fromRef.startsWith(branchPrefix)) throw new Error('请选择本地分支。');
+      const baseSha = input.fromRef
+        ? await git(sourceCwd, ['show-ref', '--verify', '--hash', input.fromRef])
+        : await git(sourceCwd, ['rev-parse', 'HEAD']);
       if (relativeCwd) {
         let kind: string;
         try { kind = await git(sourceRoot, ['cat-file', '-t', `${baseSha}:${relativeCwd.split(sep).join('/')}`]); }
         catch (error) { throw new Error('所选子目录没有保存在当前提交中，不能在独立工作区中使用。请先提交该目录或选择仓库根目录。', { cause: error }); }
         if (kind !== 'tree') throw new Error('所选路径在当前提交中不是目录，不能在独立工作区中使用。');
       }
-      const suffix = createHash('sha256').update(commandId).digest('hex').slice(0, 12);
+      const suffix = worktreeSuffix(commandId);
       const slug = (input.name.trim() || basename(repoRoot)).replace(/[^a-zA-Z0-9_-]+/g, '-').slice(0, 40) || 'task';
       const branch = input.branch?.trim() || `ensemble/${slug}-${suffix}`;
       await git(repoRoot, ['check-ref-format', '--branch', branch]);
@@ -156,17 +243,17 @@ export class ManagedWorktrees {
       catch (error) { if ((error as { code?: number }).code !== 1) throw error; }
       await mkdir(this.directory, { recursive: true, mode: 0o700 });
       const path = join(await realpath(this.directory), suffix);
+      if (input.fromRef && (contains(repoRoot, path) || contains(sourceRoot, path))) throw new Error('独立 worktree 必须在原 checkout 目录之外。');
       operation = { commandId, inputHash, name: input.name.trim() || basename(repoRoot), sourceCwd, relativeCwd,
         repoRoot, path, branch, baseSha, status: 'creating', ownership: 'created', createdAt: timestamp(), updatedAt: timestamp() };
-      const accepted = runSessionCommand(this.store, 'create-worktree', commandId,
-        { name: input.name.trim(), cwd: input.cwd, branch: input.branch ?? null }, () => {
+      const accepted = runSessionCommand(this.store, 'create-worktree', commandId, payload, () => {
           (this.store.state.worktreeOperations ??= []).push(operation!);
           return { operationId: commandId };
         });
       if (accepted.replayed) throw new Error('创建收据缺少工作区归属记录，不能重复创建。');
     }
     const current = operation;
-    return this.serialize(current.repoRoot, () => this.engine.withProjectMutation(current.sourceCwd, async () => {
+    const checkout = async () => {
       try {
         await this.validateLocation(current);
         const registered = await this.registered(current);
@@ -174,8 +261,9 @@ export class ManagedWorktrees {
           let branchExists = false;
           try { branchExists = (await git(current.repoRoot, ['rev-parse', '--verify', `refs/heads/${current.branch}`])) === current.baseSha; }
           catch (error) { if ((error as { code?: number }).code !== 128 && (error as { code?: number }).code !== 1) throw error; }
-          await git(current.repoRoot, branchExists ? ['worktree', 'add', current.path, current.branch]
-            : ['worktree', 'add', '-b', current.branch, current.path, current.baseSha]);
+          const args = branchExists ? ['worktree', 'add', current.path, current.branch]
+            : ['worktree', 'add', '-b', current.branch, current.path, current.baseSha];
+          await git(current.repoRoot, input.fromRef ? ['-c', 'core.hooksPath=/dev/null', ...args] : args);
         }
         if (await git(current.path, ['symbolic-ref', '--short', 'HEAD']) !== current.branch) throw new Error('工作区分支与创建记录不符，保留目录供检查。');
         const cwd = await realpath(join(current.path, current.relativeCwd));
@@ -188,7 +276,8 @@ export class ManagedWorktrees {
         this.store.atomic(() => { current.status = 'failed'; current.error = error instanceof Error ? error.message : '工作区创建失败。'; current.updatedAt = timestamp(); });
         throw new Error(`工作区创建未完成：${current.error}。已保留创建记录；目录 ${current.path}，分支 ${current.branch}。`, { cause: error });
       }
-    }));
+    };
+    return this.serialize(current.repoRoot, () => input.fromRef ? checkout() : this.engine.withProjectMutation(current.sourceCwd, checkout));
   }
 
   async remove(workspaceId: string): Promise<void> {

@@ -79,8 +79,11 @@ const api: WorkbenchAPI = {
   },
   markSessionSeen: (id, revision) => ipcRenderer.invoke('workbench:mark-session-seen', id, revision),
   commandReceipt: id => ipcRenderer.invoke('workbench:command-receipt', id),
-  updateQueuedPrompt: (id, itemId, input) => ipcRenderer.invoke('workbench:update-queued-prompt', id, itemId, input),
-  removeQueuedPrompt: (id, itemId) => ipcRenderer.invoke('workbench:remove-queued-prompt', id, itemId),
+  beginQueuedPromptEdit: (id, itemId, revision, editId, ownerId) => ipcRenderer.invoke('workbench:begin-queued-prompt-edit', id, itemId, revision, editId, ownerId),
+  renewQueuedPromptEdit: (id, itemId, editId) => ipcRenderer.invoke('workbench:renew-queued-prompt-edit', id, itemId, editId),
+  saveQueuedPromptDraft: (id, itemId, editId, revision, input) => ipcRenderer.invoke('workbench:save-queued-prompt-draft', id, itemId, editId, revision, input),
+  finishQueuedPromptEdit: (id, itemId, editId, input) => ipcRenderer.invoke('workbench:finish-queued-prompt-edit', id, itemId, editId, input),
+  removeQueuedPrompt: (id, itemId, revision, commandId, editId) => ipcRenderer.invoke('workbench:remove-queued-prompt', id, itemId, revision, commandId, editId),
   setSessionQueuePaused: (id, paused) => ipcRenderer.invoke('workbench:set-session-queue-paused', id, paused),
   reconcileSessionDelivery: id => ipcRenderer.invoke('workbench:reconcile-session-delivery', id),
   providerHealth: cwd => ipcRenderer.invoke('workbench:provider-health', cwd),
@@ -110,6 +113,7 @@ const api: WorkbenchAPI = {
   refreshProviders: () => ipcRenderer.invoke('workbench:refresh-providers'),
   chooseDirectory: () => ipcRenderer.invoke('workbench:choose-directory'),
   createSession: input => ipcRenderer.invoke('workbench:create-session', input),
+  sessionLocations: workspaceId => ipcRenderer.invoke('workbench:session-locations', workspaceId),
   sendMessage: (id, prompt, commandId) => ipcRenderer.invoke('workbench:send-message', id, prompt, commandId),
   cancelSession: (id, commandId, expectedAttemptId) => ipcRenderer.invoke('workbench:cancel-session', id, commandId, expectedAttemptId),
   decideApproval: (id, choice, commandId) => ipcRenderer.invoke('workbench:decide-approval', id, choice, commandId),
@@ -131,24 +135,31 @@ const api: WorkbenchAPI = {
   updateWorkspace: (id, input) => ipcRenderer.invoke('workbench:update-workspace', id, input),
   activateTab: (workspaceId, tabId) => ipcRenderer.invoke('workbench:activate-tab', workspaceId, tabId),
   closeTab: (workspaceId, tabId, confirmStop = false) => ipcRenderer.invoke('workbench:close-tab', workspaceId, tabId, confirmStop),
-  openSessionTab: (workspaceId, sessionId) => ipcRenderer.invoke('workbench:open-session-tab', workspaceId, sessionId),
-  createTerminal: workspaceId => ipcRenderer.invoke('workbench:create-terminal', workspaceId),
+  openSessionTab: (workspaceId, sessionId, besideSessionId) => ipcRenderer.invoke('workbench:open-session-tab', workspaceId, sessionId, besideSessionId),
+  createTerminal: (workspaceId, besideSessionId) => ipcRenderer.invoke('workbench:create-terminal', workspaceId, besideSessionId),
   writeTerminal: (id, data) => terminalInputs.write(id, data),
   resizeTerminal: (id, columns, rows) => ipcRenderer.invoke('workbench:resize-terminal', id, columns, rows),
   stopTerminal: id => ipcRenderer.invoke('workbench:stop-terminal', id),
   listTerminalServices: id => ipcRenderer.invoke('workbench:list-terminal-services', id),
   createPreview: (workspaceId, url) => ipcRenderer.invoke('workbench:create-preview', workspaceId, url),
+  capturePreviewElement: (tabId, point) => ipcRenderer.invoke('workbench:capture-preview-element', tabId, point),
+  displayPreviewAnnotations: (tabId, annotations, revealId) => ipcRenderer.invoke('workbench:display-preview-annotations', tabId, annotations, revealId),
+  previewDraftEvidence: tabId => ipcRenderer.invoke('workbench:preview-draft-evidence', tabId),
   listFiles: (workspaceId, path) => ipcRenderer.invoke('workbench:list-files', workspaceId, path),
+  findWorkspaceFiles: (workspaceId, query) => ipcRenderer.invoke('workbench:find-workspace-files', workspaceId, query),
   readFile: (workspaceId, path) => ipcRenderer.invoke('workbench:read-file', workspaceId, path),
   gitState: workspaceId => ipcRenderer.invoke('workbench:git-state', workspaceId),
   gitBranchRefs: workspaceId => ipcRenderer.invoke('workbench:git-branch-refs', workspaceId),
   gitBranchComparison: (workspaceId, targetRef) => ipcRenderer.invoke('workbench:git-branch-comparison', workspaceId, targetRef),
   fileDiff: (workspaceId, path) => ipcRenderer.invoke('workbench:file-diff', workspaceId, path),
   chooseAttachments: () => ipcRenderer.invoke('workbench:choose-attachments'),
+  importPastedImage: (name, bytes) => ipcRenderer.invoke('workbench:import-pasted-image', name, bytes),
+  readImageAttachment: attachment => ipcRenderer.invoke('workbench:read-image-attachment', attachment),
   sendPrompt: async (id, input, commandId) => { await drafts.flush(id); await ipcRenderer.invoke('workbench:send-prompt', id, input, commandId); },
   saveSessionDraft: (id, input) => drafts.save(id, input),
+  addSessionEvidence: async (id, reference) => { await drafts.flush(id); return ipcRenderer.invoke('workbench:add-session-evidence', id, reference); },
   updateSession: (id, input) => ipcRenderer.invoke('workbench:update-session', id, input),
-  forkSession: (id, before) => ipcRenderer.invoke('workbench:fork-session', id, before),
+  forkSession: (id, before, beside) => ipcRenderer.invoke('workbench:fork-session', id, before, beside),
   continueSession: (id, target) => ipcRenderer.invoke('workbench:continue-session', id, target),
   askSideQuestion: (id, input, commandId) => ipcRenderer.invoke('workbench:ask-side-question', id, input, commandId),
   rewindSession: async (id, messageId) => { await drafts.flush(id); return ipcRenderer.invoke('workbench:rewind-session', id, messageId); },
@@ -169,8 +180,23 @@ const api: WorkbenchAPI = {
   testMcpServer: (id, name) => ipcRenderer.invoke('workbench:test-mcp-server', id, name),
   deepSeekBalance: () => ipcRenderer.invoke('workbench:deepseek-balance'),
   notificationStatus: () => ipcRenderer.invoke('workbench:notification-status'),
+  notificationPreferences: () => ipcRenderer.invoke('workbench:notification-preferences'),
+  setNotificationPreferences: patch => ipcRenderer.invoke('workbench:set-notification-preferences', patch),
+  captureWindow: () => ipcRenderer.invoke('workbench:capture-window'),
+  cancelWindowCapture: () => ipcRenderer.invoke('workbench:cancel-window-capture'),
+  windowCaptureShortcut: () => ipcRenderer.invoke('workbench:window-capture-shortcut'),
+  setWindowCaptureShortcut: enabled => ipcRenderer.invoke('workbench:set-window-capture-shortcut', enabled),
+  addSessionAttachment: async (id, attachment) => {
+    await drafts.flush(id);
+    return ipcRenderer.invoke('workbench:add-session-attachment', id, attachment);
+  },
+  onWindowCaptured: listener => {
+    const receive = (_event: Electron.IpcRendererEvent, attachment: Parameters<typeof listener>[0]) => listener(attachment);
+    ipcRenderer.on('workbench:window-captured', receive);
+    return () => ipcRenderer.removeListener('workbench:window-captured', receive);
+  },
   onFocusSession: listener => {
-    const receive = (_event: Electron.IpcRendererEvent, sessionId: string) => listener(sessionId);
+    const receive = (_event: Electron.IpcRendererEvent, target: Parameters<typeof listener>[0]) => listener(target);
     ipcRenderer.on('workbench:focus-session', receive);
     return () => ipcRenderer.removeListener('workbench:focus-session', receive);
   },

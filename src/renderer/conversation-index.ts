@@ -3,8 +3,8 @@ import type { Message } from '../shared/types';
 interface TraceCounts {
   length: number;
   failures: number;
-  lastFailure?: string;
-  lastDiff?: string;
+  lastFailure?: { id: string; title: string };
+  lastDiff?: { id: string; path?: string };
 }
 export interface TraceEntry extends TraceCounts {
   kind: 'trace'; key: string; start: number;
@@ -14,6 +14,11 @@ export interface ConversationPage {
   messageCount: number;
   spans: ConversationEntry[];
   messageSpans: number[];
+}
+
+function firstDiffPath(patch?: string): string | undefined {
+  const header = patch?.match(/^diff --git a\/(.+) b\/\1\r?$|^rename to (.+)\r?$/m);
+  return (header?.[1] ?? header?.[2])?.trim() || undefined;
 }
 
 export function conversationPage(messages: Message[], nextTraceKey?: string): ConversationPage {
@@ -27,10 +32,10 @@ export function conversationPage(messages: Message[], nextTraceKey?: string): Co
       };
       if (trace !== previous) spans.push(trace);
       trace.length++;
-      if (message.event.kind === 'diff') trace.lastDiff = message.id;
+      if (message.event.kind === 'diff') trace.lastDiff = { id: message.id, path: firstDiffPath(message.event.output) };
       if (message.event.status === 'failed') {
         trace.failures++;
-        trace.lastFailure = message.id;
+        trace.lastFailure = { id: message.id, title: message.event.title.trim() };
       }
     } else {
       spans.push({ kind: 'message', key: message.id, start: index });

@@ -10,6 +10,8 @@ import { ManagedWorktreePanel } from './ManagedWorktreePanel';
 import { hasMcpEdits, hasSkillEdits, workspaceToolDrafts, type SkillDraft } from './workspace-tool-drafts';
 import { SPRING_SNAPPY } from './vendor/open-claude-ui/ClaudeMotionPresets';
 
+import type { SettingsTarget } from './settings-targets';
+
 const emptySkill = '---\nname: \ndescription: \n---\n\n';
 type ToolTab = 'skills' | 'mcp' | 'usage' | 'diagnostics' | 'worktree';
 type FeedbackState = 'pending' | 'saved' | 'failed';
@@ -26,6 +28,7 @@ interface WorkspaceToolsPanelProps {
   perform: Perform;
   onBusyChange?: (busy: boolean) => void;
   onRemoved?: () => void;
+  target?: SettingsTarget;
 }
 
 export interface WorkspaceToolsHandle {
@@ -36,11 +39,17 @@ export const WorkspaceToolsPanel = forwardRef<WorkspaceToolsHandle, WorkspaceToo
   return <WorkspaceToolsContent key={JSON.stringify([props.workspace.id, props.workspace.cwd])} {...props} ref={ref} />;
 });
 
-const WorkspaceToolsContent = forwardRef<WorkspaceToolsHandle, WorkspaceToolsPanelProps>(function WorkspaceToolsContent({ workspace, sessions, perform, onBusyChange, onRemoved }, ref) {
+const WorkspaceToolsContent = forwardRef<WorkspaceToolsHandle, WorkspaceToolsPanelProps>(function WorkspaceToolsContent({ workspace, sessions, perform, onBusyChange, onRemoved, target }, ref) {
   const { t } = useTranslation('workspace');
   const { t: runtimeText } = useTranslation('runtime');
   const [tab, setTab] = useState<ToolTab>('skills');
   const [visitedTabs, setVisitedTabs] = useState<Set<ToolTab>>(() => new Set(['skills']));
+  useEffect(() => {
+    const tab = target?.id === 'project-mcp' ? 'mcp' : target?.id === 'project-skills' ? 'skills' : undefined;
+    if (!tab) return;
+    setTab(tab);
+    setVisitedTabs(current => current.has(tab) ? current : new Set([...current, tab]));
+  }, [target]);
   const toolPanels = useRef<Partial<Record<ToolTab, HTMLDivElement>>>({});
   const scrollTops = useRef<Partial<Record<ToolTab, number>>>({});
   const restoringScroll = useRef<ToolTab | undefined>(undefined);
@@ -198,7 +207,7 @@ const WorkspaceToolsContent = forwardRef<WorkspaceToolsHandle, WorkspaceToolsPan
 
   return <><div className="workspace-tools">
       <div className="tools-tabs" role="group" aria-label={t('tools.categories')} data-tab={tab}>
-        {tabs.map(value => <button className={tab === value ? 'selected' : ''} aria-pressed={tab === value} key={value} onClick={() => {
+        {tabs.map(value => <button className={tab === value ? 'selected' : ''} aria-pressed={tab === value} data-setting-anchor={`project-${value}`} key={value} onClick={() => {
           if (restoringScroll.current !== tab) scrollTops.current[tab] = toolPanels.current[tab]?.scrollTop ?? 0;
           setTab(value);
           setVisitedTabs(current => current.has(value) ? current : new Set([...current, value]));

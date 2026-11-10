@@ -3,6 +3,7 @@ import { constants } from 'node:fs';
 import { lstat, mkdir, open, realpath, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { TextDecoder } from 'node:util';
+import { z } from 'zod';
 import type { PromptAttachment } from '../shared/types';
 import type { LoadedPromptAttachment } from './providers/types';
 import { sanitizeAttachmentName } from './vendor/orca/attachment-name';
@@ -11,6 +12,12 @@ import { ATTACHMENT_LIMITS } from '../shared/prompt-attachments';
 const TEXT_EXTENSIONS = new Set(['', '.txt', '.md', '.mdx', '.json', '.jsonl', '.yaml', '.yml', '.toml', '.xml', '.html', '.htm', '.css', '.scss', '.less', '.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.py', '.rs', '.go', '.java', '.kt', '.swift', '.c', '.h', '.cpp', '.hpp', '.sh', '.bash', '.zsh', '.sql', '.csv', '.log', '.ini', '.conf', '.env', '.gitignore', '.dockerignore']);
 const IMAGE_EXTENSIONS = new Map([['.png', 'image/png'], ['.jpg', 'image/jpeg'], ['.jpeg', 'image/jpeg'], ['.gif', 'image/gif'], ['.webp', 'image/webp']]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export const attachmentMetadataSchema = z.object({
+  id: z.string().min(1).max(200), name: z.string().min(1).max(300), kind: z.enum(['image', 'text']),
+  mimeType: z.string().min(1).max(100), size: z.number().int().min(0).max(20_000_000),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/), ownedPath: z.string().min(1).max(4096),
+}).strict();
 
 function hash(data: Buffer): string { return createHash('sha256').update(data).digest('hex'); }
 function imageMime(data: Buffer): string | undefined {
@@ -64,31 +71,44 @@ export class AttachmentService {
     this.root = await realpath(this.root);
   }
 
+  private async writeOwned(name: string, data: Buffer, format: Pick<PromptAttachment, 'kind' | 'mimeType'>): Promise<PromptAttachment> {
+    const id = randomUUID();
+    const directory = path.join(this.root, id);
+    await mkdir(directory, { mode: 0o700 });
+    const ownedPath = path.join(directory, name);
+    try { await writeFile(ownedPath, data, { mode: 0o600, flag: 'wx' }); }
+    catch (error) { await rm(directory, { recursive: true, force: true }); throw error; }
+    return { id, name, kind: format.kind, mimeType: format.mimeType, size: data.length, sha256: hash(data), ownedPath };
+  }
+
+  async importImage(fileName: string, bytes: Uint8Array): Promise<PromptAttachment> {
+    if (!bytes.length || bytes.length > ATTACHMENT_LIMITS.imageBytes) throw new Error('图片大小超出附件限制。');
+    const name = sanitizeAttachmentName(path.basename(fileName));
+    const data = Buffer.from(bytes);
+    const format = classify(name, data);
+    if (format.kind !== 'image') throw new Error('剪贴板中没有支持的图片。');
+    await this.initialize();
+    return this.writeOwned(name, data, format);
+  }
+
   async importFiles(files: string[]): Promise<PromptAttachment[]> {
     if (!files.length || files.length > ATTACHMENT_LIMITS.count) throw new Error(`每次请选择 1 到 ${ATTACHMENT_LIMITS.count} 个附件。`);
     await this.initialize();
     const imported: PromptAttachment[] = [];
-    const created: string[] = [];
     let total = 0;
     try {
       for (const file of files) {
         if (!path.isAbsolute(file)) throw new Error('附件路径必须是绝对路径。');
         const data = await readRegularFile(file, ATTACHMENT_LIMITS.imageBytes);
         const name = sanitizeAttachmentName(path.basename(file));
-        const { kind, mimeType } = classify(name, data);
+        const format = classify(name, data);
         total += data.length;
         if (total > ATTACHMENT_LIMITS.totalBytes) throw new Error(`附件总大小超过 ${ATTACHMENT_LIMITS.totalBytes / 1024 / 1024} MiB 限制。`);
-        const id = randomUUID();
-        const directory = path.join(this.root, id);
-        await mkdir(directory, { mode: 0o700 });
-        created.push(directory);
-        const ownedPath = path.join(directory, name);
-        await writeFile(ownedPath, data, { mode: 0o600, flag: 'wx' });
-        imported.push({ id, name, kind, mimeType, size: data.length, sha256: hash(data), ownedPath });
+        imported.push(await this.writeOwned(name, data, format));
       }
       return imported;
     } catch (error) {
-      await Promise.all(created.map(directory => rm(directory, { recursive: true, force: true })));
+      await Promise.all(imported.map(item => rm(path.dirname(item.ownedPath), { recursive: true, force: true })));
       throw error;
     }
   }

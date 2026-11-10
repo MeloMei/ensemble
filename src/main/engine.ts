@@ -3,7 +3,7 @@ import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, relative, sep } from 'node:path';
 import { z } from 'zod';
 import type {
-  AgentMail, ApprovalInput, CollaborationCaller, CreateSessionInput, McpServerConfig, PromptInput, ProviderInfo,
+  AgentMail, ApprovalInput, CollaborationCaller, CreateSessionInput, DraftEvidence, McpServerConfig, PromptInput, ProviderInfo,
   Session, SessionAttempt, SessionCommandReceipt, SessionContinuationTarget, SessionQueueItem, SessionSettings, SessionSkillAssignment, SessionSkillAssignmentReceipt, SessionStatus, SessionUpdate, SideQuestionInput, SideQuestionReceipt, Snapshot, TerminalInfo, Workflow,
   WorkflowInput, Workspace, WorkspaceManagement, WorkspaceSplitInput, WorkspaceTab,
 } from '../shared/types';
@@ -18,6 +18,8 @@ import { workspaceExecutionKey } from './workspace-files';
 import { workspacePathContains as executionPathContains } from './workspace-path';
 import { previousSessionCommand, runSessionCommand, sessionCommandReceipt } from './session-commands';
 import { recordSessionAttention } from './attention';
+import { addDraftEvidence, draftPromptText, hasPromptInput, samePromptDraft } from '../shared/draft-evidence';
+import { attachmentLimitIssue, supportsPromptAttachment } from '../shared/prompt-attachments';
 
 const now = () => new Date().toISOString();
 function executionPathsOverlap(left: string, right: string): boolean {
@@ -32,6 +34,7 @@ function selectProviderModel(provider: ProviderInfo, requestedModelId?: string):
 
 const MAX_WORKERS = 4;
 const MAX_PHYSICAL_TURNS = 8;
+const QUEUE_EDIT_LEASE_MS = 45_000;
 
 export interface EnrichedTurn {
   prompt?: string; attachments?: LoadedPromptAttachment[]; mcpServers?: McpServerConfig[];
@@ -292,16 +295,38 @@ export class WorkbenchEngine {
   activateTab(workspaceId: string, tabId: string): void {
     const workspace = this.workspace(workspaceId);
     if (!workspace.tabs.some(tab => tab.id === tabId)) throw new Error('标签不存在。');
+    this.setActiveTab(workspace, tabId);
+    this.changed();
+  }
+
+  private setActiveTab(workspace: Workspace, tabId: string): void {
     if (workspace.secondaryTabId === tabId) {
       workspace.secondaryTabId = workspace.activeTabId ?? undefined;
       workspace.secondaryPlacement = workspace.secondaryPlacement === 'before' ? 'after' : 'before';
     }
-    workspace.activeTabId = tabId; this.changed();
+    workspace.activeTabId = tabId;
   }
 
-  addTab(workspaceId: string, tab: WorkspaceTab): void {
-    const workspace = this.workspace(workspaceId);
-    workspace.tabs.push(tab); workspace.activeTabId = tab.id; workspace.updatedAt = now(); this.changed();
+  addTab(workspaceId: string, tab: WorkspaceTab, placement: 'active' | 'secondary' = 'active'): void {
+    this.attachTab(this.workspace(workspaceId), tab, placement);
+    this.changed();
+  }
+
+  private attachTab(workspace: Workspace, tab: WorkspaceTab, placement: 'active' | 'secondary' | 'background', besideTabId?: string): void {
+    workspace.tabs.push(tab);
+    if (placement === 'secondary' && workspace.activeTabId) {
+      if (besideTabId) {
+        this.setActiveTab(workspace, besideTabId);
+        workspace.splitDirection ??= 'horizontal';
+      } else {
+        workspace.secondaryPlacement = 'after';
+        workspace.splitDirection = 'horizontal';
+      }
+      workspace.secondaryTabId = tab.id;
+    } else if (placement !== 'background') {
+      workspace.activeTabId = tab.id;
+    }
+    workspace.updatedAt = now();
   }
 
   closeTab(workspaceId: string, tabId: string): void {
@@ -329,10 +354,20 @@ export class WorkbenchEngine {
     workspace.updatedAt = now(); this.changed();
   }
 
-  openSessionTab(workspaceId: string, sessionId: string): void {
+  openSessionTab(workspaceId: string, sessionId: string, besideSessionId?: string): void {
     const workspace = this.workspace(workspaceId);
     if (this.session(sessionId).cwd !== workspace.cwd) throw new Error('会话不属于这个工作区。');
     const existing = workspace.tabs.find(tab => tab.kind === 'agent' && tab.sessionId === sessionId);
+    if (besideSessionId && besideSessionId !== sessionId) {
+      const primary = workspace.tabs.find(tab => tab.id === workspace.activeTabId);
+      if (primary?.kind !== 'agent' || primary.sessionId !== besideSessionId) throw new Error('当前会话已切换，请重新打开来源。');
+      if (existing) {
+        if (workspace.secondaryTabId !== existing.id) this.splitWorkspace(workspaceId, { tabId: existing.id, direction: 'horizontal', placement: 'after' });
+      } else {
+        this.addTab(workspaceId, { id: randomUUID(), kind: 'agent', sessionId }, 'secondary');
+      }
+      return;
+    }
     if (existing) this.activateTab(workspaceId, existing.id);
     else this.addTab(workspaceId, { id: randomUUID(), kind: 'agent', sessionId });
   }
@@ -359,46 +394,46 @@ export class WorkbenchEngine {
 
   commandReceipt(commandId: string): SessionCommandReceipt | undefined { return sessionCommandReceipt(this.store, commandId); }
 
-  async createSession(input: CreateSessionInput): Promise<string> {
-    return this.createSessionInWorkspace(input);
+  async createSession(input: CreateSessionInput, resolveDirectory?: () => Promise<string>): Promise<string> {
+    return this.createSessionInWorkspace(input, undefined, resolveDirectory);
   }
 
   private async createSessionInWorkspace(input: CreateSessionInput,
-    initialize?: (provider: ProviderInfo, cwd: string) => { title: string; draft: PromptInput; settings?: SessionSettings }): Promise<string> {
+    initialize?: (provider: ProviderInfo, cwd: string) => {
+      title: string; draft: PromptInput; settings?: SessionSettings; forkedFrom?: Session['forkedFrom']; besideTabId?: string;
+    }, resolveDirectory?: () => Promise<string>): Promise<string> {
     this.assertOpen();
     if (input.initialDraft !== undefined) z.string().max(PROMPT_TEXT_LIMIT).parse(input.initialDraft);
     const { commandId, ...payload } = input;
     const previous = previousSessionCommand<string>(this.store, 'create-session', commandId, payload);
     if (previous) return previous.result;
-    const cwd = await validateWorkspace(input.cwd); await this.prepareExecutionKey(cwd); this.assertOpen();
-    this.assertProjectAdmission(cwd);
     const provider = this.adapters.get(input.providerId)?.info;
     if (!provider?.available) throw new Error('这个 Agent 目前不可用。');
     const modelId = selectProviderModel(provider, input.modelId);
-    const { initialDraft, ...creation } = payload;
-    const initial = initialize?.(provider, cwd) ?? (initialDraft ? { draft: { text: initialDraft } } : undefined);
+    const cwd = await validateWorkspace(resolveDirectory ? await resolveDirectory() : input.cwd);
+    await this.prepareExecutionKey(cwd); this.assertOpen();
+    this.assertProjectAdmission(cwd);
+    if (input.location && this.store.state.workspaces.some(workspace => workspace.cwd === cwd && workspace.archived)) {
+      throw new Error(archivedProjectNotice);
+    }
+    const { initialDraft, location: _location, ...creation } = payload;
+    const { besideTabId, ...initial } = initialize?.(provider, cwd) ?? (initialDraft ? { draft: { text: initialDraft } } : {});
     const accepted = runSessionCommand(this.store, 'create-session', commandId, payload,
-      () => this.createSessionRecord({ ...creation, modelId, cwd, ...initial }));
+      () => this.createSessionRecord({ ...creation, modelId, cwd, ...initial }, besideTabId ? 'secondary' : 'active', besideTabId));
     if (!accepted.replayed) this.publish(this.liveSnapshot());
     return accepted.result;
   }
 
-  private createSessionRecord(input: Omit<CreateSessionInput, 'commandId' | 'initialDraft'> & Pick<Session, 'settings' | 'draft'>,
-    tabPlacement: 'active' | 'secondary' | 'background' = 'active'): string {
+  private createSessionRecord(input: Omit<CreateSessionInput, 'commandId' | 'initialDraft' | 'location'> & Pick<Session, 'settings' | 'draft' | 'forkedFrom'>,
+    tabPlacement: 'active' | 'secondary' | 'background' = 'active', besideTabId?: string): string {
     const { cwd, modelId } = input;
     const session: Session = { id: randomUUID(), title: input.title.trim() || '新会话', providerId: input.providerId, modelId, cwd,
       status: 'idle', messages: [], approvals: [], attempts: [], usage: [], createdAt: now(), updatedAt: now() };
     if (input.draft) session.draft = input.draft;
     if (input.settings) session.settings = input.settings;
+    if (input.forkedFrom) session.forkedFrom = input.forkedFrom;
     this.store.state.sessions.unshift(session);
-    const workspace = this.ensureWorkspace(cwd); workspace.updatedAt = now();
-    const tab: WorkspaceTab = { id: randomUUID(), kind: 'agent', sessionId: session.id };
-    workspace.tabs.push(tab);
-    if (tabPlacement === 'active') workspace.activeTabId = tab.id;
-    if (tabPlacement === 'secondary') {
-      workspace.secondaryTabId = tab.id;
-      workspace.splitDirection = 'horizontal';
-    }
+    this.attachTab(this.ensureWorkspace(cwd), { id: randomUUID(), kind: 'agent', sessionId: session.id }, tabPlacement, besideTabId);
     return session.id;
   }
 
@@ -454,10 +489,33 @@ export class WorkbenchEngine {
     this.assertOpen();
     const session = this.session(id);
     this.store.atomic(() => {
-      if (input.text || input.attachments?.length) session.draft = structuredClone(input);
+      if (input.text || input.attachments?.length || input.evidence?.length) session.draft = structuredClone(input);
       else delete session.draft;
     });
     this.publish(this.liveSnapshot());
+  }
+
+  addSessionEvidence(id: string, reference: DraftEvidence): PromptInput {
+    this.assertOpen();
+    const session = this.session(id);
+    if (session.archived) throw new Error('请先恢复该会话。');
+    const draft = addDraftEvidence(session.draft ?? { text: '' }, reference);
+    this.saveSessionDraft(id, draft);
+    return structuredClone(draft);
+  }
+
+  addSessionAttachment(id: string, attachment: import('../shared/types').PromptAttachment): PromptInput {
+    this.assertOpen();
+    const session = this.session(id);
+    if (session.archived) throw new Error('请先恢复该会话。');
+    const provider = this.adapters.get(session.providerId)?.info;
+    if (!supportsPromptAttachment(provider, attachment.kind)) throw new Error('此 Agent 不支持该附件。');
+    const draft = session.draft ?? { text: '' };
+    if (draft.attachments?.some(item => item.id === attachment.id)) return structuredClone(draft);
+    const next = { ...draft, attachments: [...(draft.attachments ?? []), attachment] };
+    if (attachmentLimitIssue(next.attachments)) throw new Error('草稿中的附件已达到上限。');
+    this.saveSessionDraft(id, next);
+    return structuredClone(next);
   }
 
   updateSession(id: string, input: SessionUpdate & { skillAssignment: SessionSkillAssignment }): SessionSkillAssignmentReceipt;
@@ -510,7 +568,7 @@ export class WorkbenchEngine {
     if (input.skillAssignment) return { skillIds: [...(session.settings?.skillIds ?? [])], updatedAt: session.updatedAt };
   }
 
-  async forkSession(id: string, beforeMessageId?: string, target?: SessionContinuationTarget): Promise<string> {
+  async forkSession(id: string, beforeMessageId?: string, target?: SessionContinuationTarget, beside = false): Promise<string> {
     const original = this.session(id);
     return this.createSessionInWorkspace({
       title: original.title, cwd: original.cwd, providerId: target?.providerId ?? original.providerId,
@@ -536,7 +594,14 @@ export class WorkbenchEngine {
       if (target) return { title: `${provider.name} ↪ ${source.title}`.slice(0, 200), draft: { text } };
       const attachments = context.flatMap(message => message.attachments ?? [])
         .filter((attachment, offset, all) => all.findIndex(item => item.id === attachment.id) === offset);
-      return { title: `${source.title} · 分叉`, settings: structuredClone(source.settings), draft: { text, attachments: structuredClone(attachments) } };
+      const workspace = this.store.state.workspaces.find(item => item.cwd === cwd && !item.archived);
+      const sourceTab = workspace?.tabs.find(tab => tab.kind === 'agent' && tab.sessionId === id);
+      const besideTabId = beside && (workspace?.activeTabId === sourceTab?.id || workspace?.secondaryTabId === sourceTab?.id) ? sourceTab?.id : undefined;
+      if (beside && !besideTabId) throw new Error('请在工作区打开原会话后再分叉。');
+      return {
+        title: `${source.title} · 分叉`, settings: structuredClone(source.settings), draft: { text, attachments: structuredClone(attachments) },
+        forkedFrom: { sessionId: id, ...(beforeMessageId ? { messageId: beforeMessageId } : {}) }, besideTabId,
+      };
     });
   }
 
@@ -555,7 +620,8 @@ export class WorkbenchEngine {
     try {
       await adapter.rewind(structuredClone(session), message.nativeTurnId);
       session.messages.splice(index);
-      session.draft = { text: message.text, attachments: structuredClone(message.attachments) };
+      session.draft = { text: message.originalPrompt ?? message.text, attachments: structuredClone(message.attachments),
+        ...(message.evidence?.length ? { evidence: structuredClone(message.evidence) } : {}) };
       session.error = undefined; this.transition(session, 'idle');
       return structuredClone(session.draft);
     } finally { release(); }
@@ -679,7 +745,7 @@ export class WorkbenchEngine {
     const payload = { sessionId: id, input };
     if (previousSessionCommand(this.store, 'send-prompt', commandId, payload)) return;
     const session = this.session(id);
-    if (!input.text.trim() && !input.attachments?.length) throw new Error('请输入任务。');
+    if (!hasPromptInput(input)) throw new Error('请输入任务。');
     this.assertProjectAdmission(session.cwd);
     if (!this.adapters.get(session.providerId)?.info.available) throw new Error('这个 Agent 目前不可用。');
     if (!this.active.has(id) && !session.queuePaused) this.assertProjectAvailable(session.cwd, id);
@@ -693,32 +759,97 @@ export class WorkbenchEngine {
     const item: SessionQueueItem = { id: randomUUID(), commandId, input: structuredClone(input),
       modelId: session.modelId, settings: structuredClone(session.settings), createdAt: now(), updatedAt: now() };
     session.queue ??= []; session.queue.push(item);
-    if (session.draft?.text.trim() === input.text.trim() && JSON.stringify(session.draft.attachments ?? []) === JSON.stringify(input.attachments ?? [])) delete session.draft;
+    if (samePromptDraft(session.draft, input)) delete session.draft;
     session.updatedAt = now();
     return { sessionId: session.id, queueItemId: item.id };
   }
 
-  updateQueuedPrompt(id: string, itemId: string, input: PromptInput): void {
-    this.assertOpen();
-    if (!input.text.trim() && !input.attachments?.length) throw new Error('请输入任务。');
-    this.store.atomic(() => {
-      const item = this.session(id).queue?.find(item => item.id === itemId);
-      if (!item) throw new Error('这条排队消息已开始或已删除。');
-      item.input = structuredClone(input); item.updatedAt = now();
-    });
-    this.publish(this.liveSnapshot());
-  }
-
-  removeQueuedPrompt(id: string, itemId: string): void {
+  beginQueuedPromptEdit(id: string, itemId: string, revision: number, editId: string, ownerId: string): PromptInput {
     this.assertOpen();
     const session = this.session(id);
+    const item = this.queuedPrompt(session, itemId);
+    const edit = item.edit;
+    const lease = edit?.lease;
+    if (lease && lease.ownerId !== ownerId && lease.expiresAt > Date.now()) {
+      throw new Error('另一窗口正在编辑这条消息。请在原窗口继续，或等编辑占用结束后再打开。');
+    }
+    const draft = edit?.draft;
+    if (edit?.id === editId && lease?.ownerId === ownerId && item.revision === revision + 1) {
+      this.renewQueuedPromptEdit(id, itemId, editId);
+      return structuredClone(draft ?? item.input);
+    }
+    if ((item.revision ?? 0) !== revision) throw new Error('这条排队消息已变更，请重新打开。');
     this.store.atomic(() => {
-      if (!session.queue?.some(item => item.id === itemId)) throw new Error('这条排队消息已开始或已删除。');
-      if (session.queue[0]?.id === itemId) delete session.waitingForProject;
-      session.queue = session.queue.filter(item => item.id !== itemId); session.updatedAt = now();
+      item.edit = { id: editId, ...(draft ? { draft } : {}), lease: { ownerId, expiresAt: Date.now() + QUEUE_EDIT_LEASE_MS } };
+      item.revision = revision + 1;
+      item.updatedAt = session.updatedAt = now();
     });
+    this.publish(this.liveSnapshot());
+    return structuredClone(draft ?? item.input);
+  }
+
+  renewQueuedPromptEdit(id: string, itemId: string, editId: string): void {
+    this.assertOpen();
+    const edit = this.queuedPromptEdit(id, itemId, editId);
+    const lease = edit.lease;
+    if (!lease) return;
+    this.store.atomic(() => { lease.expiresAt = Date.now() + QUEUE_EDIT_LEASE_MS; });
+  }
+
+  saveQueuedPromptDraft(id: string, itemId: string, editId: string, revision: number, input: PromptInput): void {
+    this.assertOpen();
+    const edit = this.queuedPromptEdit(id, itemId, editId);
+    if (revision <= (edit.draftRevision ?? 0)) return;
+    this.store.atomic(() => {
+      edit.draft = structuredClone(input);
+      edit.draftRevision = revision;
+      if (edit.lease) edit.lease.expiresAt = Date.now() + QUEUE_EDIT_LEASE_MS;
+    });
+  }
+
+  finishQueuedPromptEdit(id: string, itemId: string, editId: string, input?: PromptInput): void {
+    this.assertOpen();
+    if (input && !hasPromptInput(input)) throw new Error('请输入任务。');
+    const session = this.session(id);
+    const { replayed } = runSessionCommand(this.store, 'queue-edit-finish', `queue-edit-finish:${editId}`, { id, itemId, input }, () => {
+      const item = this.queuedPrompt(session, itemId);
+      if (item.edit?.id !== editId) throw new Error('这条排队消息已在其他窗口接手或提交。');
+      if (input) item.input = structuredClone(input);
+      delete item.edit;
+      item.revision = (item.revision ?? 0) + 1;
+      item.updatedAt = session.updatedAt = now();
+    });
+    if (!replayed) {
+      this.publish(this.liveSnapshot());
+      this.drainSessionQueue(id);
+    }
+  }
+
+  private queuedPrompt(session: Session, itemId: string): SessionQueueItem {
+    const item = session.queue?.find(item => item.id === itemId);
+    if (!item) throw new Error('这条排队消息已开始或已删除。');
+    return item;
+  }
+
+  private queuedPromptEdit(id: string, itemId: string, editId: string): NonNullable<SessionQueueItem['edit']> {
+    const edit = this.queuedPrompt(this.session(id), itemId).edit;
+    if (edit?.id !== editId) throw new Error('这条排队消息已在其他窗口接手或提交。');
+    return edit;
+  }
+
+  removeQueuedPrompt(id: string, itemId: string, revision: number, commandId?: string, editId?: string): void {
+    this.assertOpen();
+    const session = this.session(id);
+    const { replayed } = runSessionCommand(this.store, 'queue-remove', commandId, { id, itemId, revision, editId }, () => {
+      const item = this.queuedPrompt(session, itemId);
+      if (item.edit?.id !== editId || (item.revision ?? 0) !== revision) throw new Error('这条排队消息正在编辑或已变更。');
+      if (session.queue![0]?.id === itemId) delete session.waitingForProject;
+      session.queue = session.queue!.filter(item => item.id !== itemId); session.updatedAt = now();
+    });
+    if (replayed) return;
     if (!session.waitingForProject) this.waitingForProject.delete(id);
     this.publish(this.liveSnapshot());
+    this.drainSessionQueue(id);
   }
 
   setSessionQueuePaused(id: string, paused: boolean): void {
@@ -745,7 +876,7 @@ export class WorkbenchEngine {
   private drainSessionQueue(id: string): void {
     const session = this.session(id);
     const item = session.queue?.[0];
-    if (this.closing || this.active.has(id) || session.queuePaused || !item) { this.waitingForProject.delete(id); return; }
+    if (this.closing || this.active.has(id) || session.queuePaused || !item || item.edit) { this.waitingForProject.delete(id); return; }
     try {
       this.assertQueuedSideQuestionCanRun(session);
       if (session.waitingForProject && !this.projectAvailable(session.cwd, id)) { this.waitingForProject.add(id); return; }
@@ -827,7 +958,7 @@ export class WorkbenchEngine {
     this.assertOpen();
     const session = this.session(id);
     this.assertProjectAdmission(session.cwd);
-    if (!input.text.trim() && !input.attachments?.length) throw new Error('请输入任务。');
+    if (!hasPromptInput(input)) throw new Error('请输入任务。');
     if (this.active.has(id)) throw new Error('这个会话正在运行。');
     this.assertDeliveryResolved(session);
     if (!this.adapters.get(session.providerId)?.info.available) throw new Error('这个 Agent 目前不可用。');
@@ -838,7 +969,8 @@ export class WorkbenchEngine {
     const queued = options.queueItemId ? session.queue?.find(item => item.id === options.queueItemId) : undefined;
     const modelId = options.queueItemId ? options.modelId : session.modelId;
     const settings = structuredClone(options.queueItemId ? options.settings : session.settings);
-    const attempt: SessionAttempt = { id: randomUUID(), status: 'queued', prompt: input.text, userMessageId,
+    const executionInput: PromptInput = { text: draftPromptText(input), attachments: input.attachments };
+    const attempt: SessionAttempt = { id: randomUUID(), status: 'queued', prompt: executionInput.text, userMessageId,
       ...(previous && ['failed', 'cancelled', 'interrupted'].includes(previous.status) ? { retryOf: previous.id } : {}), startedAt: now(),
       modelId, settings, ...(queued ? { queueItemId: queued.id, commandId: queued.commandId } : {}) };
     let resolve!: () => void;
@@ -849,14 +981,14 @@ export class WorkbenchEngine {
     try {
       this.store.atomic(() => {
         if (options.queueItemId) {
-          if (session.queue?.[0]?.id !== options.queueItemId || session.queuePaused) throw new Error('这条排队消息已变更。');
+          if (session.queue?.[0]?.id !== options.queueItemId || session.queue[0].edit || session.queuePaused) throw new Error('这条排队消息已变更。');
           session.queue.shift();
           delete session.waitingForProject;
         }
         session.attempts ??= []; session.attempts.push(attempt);
         session.error = undefined;
-        if (session.draft?.text.trim() === input.text.trim() && JSON.stringify(session.draft.attachments ?? []) === JSON.stringify(input.attachments ?? [])) delete session.draft;
-        this.recordTurnInput(session, input, userMessageId);
+        if (samePromptDraft(session.draft, input)) delete session.draft;
+        this.recordTurnInput(session, input, userMessageId, executionInput.text);
         this.moveSessionState(session, 'queued');
       });
     } catch (error) { releaseProject(); throw error; }
@@ -864,12 +996,13 @@ export class WorkbenchEngine {
     const handle = { sessionId: id, attemptId: attempt.id, done };
     try { options.accepted?.(handle); }
     catch (error) { this.finishTask(task, 'failed', error instanceof Error ? error.message : String(error)); throw error; }
-    this.enqueue(task, input, userMessageId, true); return handle;
+    this.enqueue(task, executionInput, userMessageId, true); return handle;
   }
 
-  private recordTurnInput(session: Session, input: PromptInput, userMessageId: string): void {
+  private recordTurnInput(session: Session, input: PromptInput, userMessageId: string, text = input.text): void {
     const timestamp = now();
-    session.messages.push({ id: userMessageId, role: 'user', text: input.text, attachments: structuredClone(input.attachments), createdAt: timestamp,
+    session.messages.push({ id: userMessageId, role: 'user', text, attachments: structuredClone(input.attachments), createdAt: timestamp,
+      ...(input.evidence?.length ? { evidence: structuredClone(input.evidence), originalPrompt: input.text } : {}),
       ...(this.adapters.get(session.providerId)?.tracksDelivery ? { delivery: { id: randomUUID(), clientUserMessageId: userMessageId, status: 'pending' as const,
         createdAt: timestamp, updatedAt: timestamp, ...(session.externalId ? { nativeThreadId: session.externalId } : {}) } } : {}) });
   }

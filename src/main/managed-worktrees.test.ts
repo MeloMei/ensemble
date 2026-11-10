@@ -8,7 +8,7 @@ import { WorkbenchEngine } from './engine';
 import { ManagedWorktrees } from './managed-worktrees';
 import { StateStore } from './store';
 import type { ProviderAdapter, TurnContext } from './providers/types';
-import type { WorktreeOperation } from '../shared/types';
+import type { CreateSessionInput, WorktreeOperation } from '../shared/types';
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
@@ -75,6 +75,48 @@ test('managed creation keeps relative cwd, isolates files and replays one durabl
     const second = await f.worktrees.create({ ...input, commandId: 'create-second' });
     assert.notEqual(second, id); assert.notEqual(f.worktrees.metadata(second)?.path, metadata.path);
     assert.equal(await readFile(join(f.engine.workspace(second).cwd, 'entry.txt'), 'utf8'), 'base contents\n');
+  } finally { await f.close(); }
+});
+
+test('new session worktree uses the selected local branch while the source is busy', async () => {
+  let running = false;
+  const f = await fixture(async context => {
+    running = true;
+    await new Promise<void>(resolve => context.signal.addEventListener('abort', () => resolve(), { once: true }));
+  });
+  try {
+    git(f.source, 'branch', 'review-base');
+    const base = git(f.source, 'rev-parse', 'review-base');
+    await writeFile(join(f.nested, 'entry.txt'), 'newer main\n');
+    git(f.source, 'add', '.'); git(f.source, 'commit', '-qm', 'advance main');
+    const registered = join(f.directory, 'registered worktree');
+    git(f.source, 'worktree', 'add', '-b', 'registered-branch', registered);
+    const workspaceId = await f.engine.createWorkspace({ name: 'project', cwd: f.nested });
+    const locations = await f.worktrees.sessionLocations(workspaceId);
+    assert.deepEqual(locations.current, { cwd: f.nested, branch: 'main' });
+    assert.deepEqual(locations.worktrees, [{ cwd: registered, branch: 'registered-branch' }]);
+    const existingChoice = { kind: 'registered' as const, ...locations.worktrees[0] };
+    assert.equal(await f.worktrees.resolveSessionLocation(workspaceId, f.nested, 'session', existingChoice), registered);
+    git(registered, 'switch', '--detach');
+    await assert.rejects(f.worktrees.resolveSessionLocation(workspaceId, f.nested, 'session', existingChoice), /分支已变更/);
+    const source = await f.engine.createSession({ title: 'running', providerId: 'fixture', cwd: f.nested });
+    f.engine.sendPrompt(source, { text: 'hold' });
+    await until(() => running);
+    const fromRef = locations.branches.find(ref => ref === 'refs/heads/review-base')!;
+    const choice = { kind: 'managed' as const, ...locations.managed!, fromRef };
+    const input: CreateSessionInput = { title: 'new session', providerId: 'fixture', cwd: f.nested, commandId: 'session-command', initialDraft: 'Unsent task',
+      location: { workspaceId, choice } };
+    const create = () => f.engine.createSession(input, () => f.worktrees.resolveSessionLocation(workspaceId, f.nested, input.title, choice));
+    const [id, replay] = await Promise.all([create(), create()]);
+    assert.equal(id, replay);
+    assert.equal(f.engine.getSession(id).cwd, choice.cwd);
+    assert.deepEqual(f.engine.getSession(id).draft, { text: 'Unsent task' });
+    assert.equal(git(choice.cwd, 'branch', '--show-current'), choice.branch);
+    assert.equal(git(choice.cwd, 'rev-parse', 'HEAD'), base);
+    assert.equal(await readFile(join(choice.cwd, 'entry.txt'), 'utf8'), 'base contents\n');
+    assert.equal(await readFile(join(f.nested, 'entry.txt'), 'utf8'), 'newer main\n');
+    assert.equal(f.store.state.worktreeOperations?.length, 1);
+    assert.equal(f.engine.getSession(source).status, 'running');
   } finally { await f.close(); }
 });
 

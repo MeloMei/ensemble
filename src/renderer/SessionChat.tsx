@@ -4,7 +4,9 @@ import { hasConversationText } from '../shared/message-text';
 import { formatDate, formatNumber, renderDisplayText } from '../shared/i18n';
 import { sessionComposerActivity } from '../shared/session-composer-activity';
 import { validQuestionAnswers } from '../shared/question-answers';
-import { ATTACHMENT_LIMITS, attachmentLimitIssue } from '../shared/prompt-attachments';
+import { ATTACHMENT_LIMITS, attachmentLimitIssue, supportsPromptAttachment } from '../shared/prompt-attachments';
+import { draftPromptText, EVIDENCE_EXCERPT_LIMIT, hasPromptInput } from '../shared/draft-evidence';
+import { PROMPT_TEXT_LIMIT } from '../shared/types';
 import { Fragment, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type Ref } from 'react';
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
@@ -19,7 +21,7 @@ import {
   Paperclip, Pause, Play, Search, ShieldCheck, TerminalSquare, Users, X, ArrowRightLeft,
 } from 'lucide-react';
 import type {
-  Approval, Message, ProcessEvent, PromptAttachment, PromptInput, ProviderInfo, Session, SessionSkillAssignmentReceipt, SkillInfo, UsageRecord,
+  Approval, DraftEvidence, DraftEvidenceSource, Message, ProcessEvent, PromptAttachment, PromptInput, ProviderInfo, Session, SessionQueueItem, SessionSkillAssignmentReceipt, SkillInfo, UsageRecord,
 } from '../shared/types';
 import { BusyIcon, IconButton, Modal, ModelField, ProviderSelect, Status, defaultModelId, modelName, pathName, validModelSelection, type Perform } from './ui';
 import { SPRING_SNAPPY } from './vendor/open-claude-ui/ClaudeMotionPresets';
@@ -36,6 +38,8 @@ import { WorkspaceFileNavigation, workspaceFileReference } from './workspace-fil
 import { diffLines } from './review-notes';
 import { questionExcerpt } from '../shared/side-question';
 import { SideQuestion, SideQuestionAction, useAnswerQuestionSelection, type SideQuestionOrigin } from './SideQuestion';
+import { DraftEvidenceCards } from './DraftEvidence';
+import { useWorkspaceFileMention, WorkspaceFileMention } from './WorkspaceFileMention';
 import './SessionChat.css';
 
 interface SessionChatProps {
@@ -53,11 +57,20 @@ interface SessionChatProps {
   connected?: boolean;
   attentionOpen?: SessionAttentionOpen;
   onAttentionOpened?: (request: SessionAttentionOpen) => void;
+  messageOpen?: { sessionId: string; messageId: string };
+  onMessageOpened?: (request: NonNullable<SessionChatProps['messageOpen']>) => void;
+  onOpenForkSource?: (sessionId: string, messageId?: string) => void;
+  workspaceId?: string;
+  onChooseEvidence?: (reference: DraftEvidence) => void;
+  onOpenEvidence?: (source: DraftEvidenceSource) => void;
 }
 
 type ApprovalProps = Pick<SessionChatProps, 'pending' | 'perform'> & { approval: Approval };
 
 const activeStatuses = new Set<Session['status']>(['running', 'waiting_approval', 'waiting_children', 'queued']);
+const clipboardImageExtensions: Readonly<Record<string, string>> = {
+  'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp',
+};
 
 function QuestionApproval({ approval, pending, perform }: ApprovalProps) {
   const { t } = useTranslation('workspace');
@@ -377,15 +390,33 @@ function AttachmentChips({ attachments, onRemove }: {
   onRemove?: (id: string) => void;
 }) {
   const { t } = useTranslation('workspace');
+  const [preview, setPreview] = useState<PromptAttachment>();
   if (!attachments.length) return null;
-  return <div className="attachments-strip">
+  return <><div className="attachments-strip">
     {attachments.map(item => <span className="attachment-chip" key={item.id} title={`${item.name} · ${Math.ceil(item.size / 1024)} KB`}>
-      {item.kind === 'image' ? <Image size={14} /> : <FileText size={14} />}
-      <span>{item.name}</span>
+      {item.kind === 'image' ? <button className="attachment-preview-trigger" type="button" aria-label={t('evidence.previewAttachment', { name: item.name })}
+        onClick={() => setPreview(item)}><Image size={14} /><span>{item.name}</span></button> : <><FileText size={14} /><span>{item.name}</span></>}
       <small>{Math.ceil(item.size / 1024)} KB</small>
-      {onRemove && <Tooltip label={t('chat.removeAttachment', { name: item.name })}><button type="button" aria-label={t('chat.removeAttachment', { name: item.name })} onClick={() => onRemove(item.id)}><X size={12} /></button></Tooltip>}
+      {onRemove && <Tooltip label={t('chat.removeAttachment', { name: item.name })}><button className="attachment-remove" type="button" aria-label={t('chat.removeAttachment', { name: item.name })} onClick={() => onRemove(item.id)}><X size={12} /></button></Tooltip>}
     </span>)}
-  </div>;
+  </div>{preview && <ImageAttachmentPreview key={preview.id} attachment={preview} onClose={() => setPreview(undefined)} />}</>;
+}
+
+function ImageAttachmentPreview({ attachment, onClose }: { attachment: PromptAttachment; onClose: () => void }) {
+  const { t } = useTranslation('workspace');
+  const [image, setImage] = useState('');
+  const [error, setError] = useState('');
+  useEffect(() => {
+    let active = true;
+    void window.workbench.readImageAttachment(attachment).then(source => { if (active) setImage(source); }, failure => {
+      if (active) setError(failure instanceof Error ? failure.message : String(failure));
+    });
+    return () => { active = false; };
+  }, [attachment]);
+  return <Modal title={t('evidence.previewAttachment', { name: attachment.name })} size="wide" onClose={onClose}>
+    <div className="draft-attachment-preview">{error ? <p className="field-error" role="alert">{error}</p>
+      : image ? <img alt={attachment.name} src={image} /> : <LoaderCircle className="spin" size={16} />}</div>
+  </Modal>;
 }
 
 function CopyAnswer({ message, perform }: { message: Message; perform: Perform }) {
@@ -509,10 +540,12 @@ function DeliveryState({ message, sessionId, pending, perform, connected, readOn
   </div>;
 }
 
-function PromptQueue({ session, provider, pending, perform, connected }: Pick<SessionChatProps, 'session' | 'provider' | 'pending' | 'perform'> & { connected: boolean }) {
+type QueueProps = Pick<SessionChatProps, 'session' | 'provider' | 'pending' | 'perform'> & { connected: boolean };
+const queueEditorWindowId = crypto.randomUUID();
+const queueDraftFlushes = new Map<string, Promise<void>>();
+
+function PromptQueue({ session, provider, pending, perform, connected }: QueueProps) {
   const { t } = useTranslation('workspace');
-  const [editing, setEditing] = useState<{ id: string; input: PromptInput }>();
-  const editingAttachmentIssue = attachmentLimitIssue(editing?.input.attachments ?? []);
   const queue = session.queue ?? [];
   if (!queue.length) return null;
   const pauseKey = `queue-pause-${session.id}`;
@@ -524,38 +557,138 @@ function PromptQueue({ session, provider, pending, perform, connected }: Pick<Se
       </button>
     </header>
     {session.queuePaused && <p className="queue-paused"><Pause size={12} />{t('chat.queuePaused')}{session.queueHoldReason && <span>{session.queueHoldReason}</span>}</p>}
-    {!session.queuePaused && session.waitingForProject && <p className="queue-paused" role="status"><Clock3 size={12} />{t('chat.sideQuestion.waiting')}</p>}
-    <ol>{queue.map(item => {
-      const changing = pending.has(`queue-item-${item.id}`);
-      return <li key={item.id} data-queue-id={item.id}>
-        {editing?.id === item.id ? <form onSubmit={event => {
-          event.preventDefault();
-          if (changing || !connected || editingAttachmentIssue || (!editing.input.text.trim() && !editing.input.attachments?.length)) return;
-          const input = promptCommandInput(editing.input);
-          void perform(`queue-item-${item.id}`, async () => {
-            await window.workbench.updateQueuedPrompt(session.id, item.id, input);
-            setEditing(current => current?.id === item.id ? undefined : current);
-          });
-        }}>
-          <textarea aria-label={t('chat.editQueued')} value={editing.input.text} disabled={changing} rows={2}
-            onChange={event => setEditing(current => current && ({ ...current, input: { ...current.input, text: event.target.value } }))} />
-          <AttachmentChips attachments={editing.input.attachments ?? []} onRemove={changing ? undefined : id =>
-            setEditing(current => current && ({ ...current, input: { ...current.input, attachments: current.input.attachments?.filter(attachment => attachment.id !== id) } }))} />
-          <AttachmentLimitNotice issue={editingAttachmentIssue} />
-          <div className="queue-item-actions"><button type="submit" disabled={changing || !connected || Boolean(editingAttachmentIssue) || (!editing.input.text.trim() && !editing.input.attachments?.length)}>{t('chat.saveQueued')}</button>
-            <button type="button" onClick={() => setEditing(undefined)}>{t('common.cancel')}</button></div>
-        </form> : <>
-          <div className="queue-item-content"><p>{item.input.text || t('chat.queuedAttachments')}</p>
-            <small>{item.modelId ? modelName(provider, item.modelId) : t('chat.runtimeDefault')}{item.settings?.effort ? ` · ${item.settings.effort}` : ''}</small>
-            <AttachmentChips attachments={item.input.attachments ?? []} />
-          </div>
-          <div className="queue-item-actions"><button disabled={changing || !connected} onClick={() => setEditing({ id: item.id, input: item.input })}>{t('chat.editQueued')}</button>
-            <button disabled={changing || !connected} onClick={() => void perform(`queue-item-${item.id}`,
-              () => window.workbench.removeQueuedPrompt(session.id, item.id))}>{t('chat.removeQueued')}</button></div>
-        </>}
-      </li>;
-    })}</ol>
+    {!session.queuePaused && !queue[0].edit && session.waitingForProject && <p className="queue-paused" role="status"><Clock3 size={12} />{t('chat.sideQuestion.waiting')}</p>}
+    <ol>{queue.map(item => <QueuedPromptRow key={item.id} item={item} sessionId={session.id} provider={provider}
+      connected={connected} pending={pending} perform={perform} />)}</ol>
   </section>;
+}
+
+function QueuedPromptRow({ sessionId, item, provider, connected, pending, perform }:
+  Omit<QueueProps, 'session'> & { sessionId: string; item: SessionQueueItem }) {
+  const { t } = useTranslation('workspace');
+  const [acquired, setAcquired] = useState<{ id: string; revision: number; input: PromptInput }>();
+  const key = `queue-item-${item.id}`;
+  const revision = item.revision ?? 0;
+  const disabled = !connected || pending.has(key);
+  const edit = acquired && (revision < acquired.revision || item.edit?.id === acquired.id) ? acquired : undefined;
+  const editingElsewhere = acquired && !edit && item.edit;
+  const begin = () => void perform(key, async () => {
+    await queueDraftFlushes.get(item.id);
+    const id = crypto.randomUUID();
+    const input = await window.workbench.beginQueuedPromptEdit(sessionId, item.id, revision, id, queueEditorWindowId);
+    setAcquired({ id, revision: revision + 1, input });
+  });
+  const remove = () => runSessionCommand(`queue-remove:${sessionId}:${item.id}`, { revision: edit?.revision ?? revision, editId: edit?.id },
+    commandId => window.workbench.removeQueuedPrompt(sessionId, item.id, edit?.revision ?? revision, commandId, edit?.id));
+  return <li data-queue-id={item.id}>
+    {(item.edit || edit) && <p className="queue-edit-hold" role="status">{t('chat.queueEditHeld')}</p>}
+    {editingElsewhere && <p className="queue-edit-hold" role="alert">{t('chat.queueEditMoved')}</p>}
+    {(edit || editingElsewhere) && acquired && <QueuedPromptEditor key={acquired.id} sessionId={sessionId} itemId={item.id}
+      editId={acquired.id} initial={acquired.input} current={Boolean(edit)} connected={connected} disabled={disabled} perform={action => void perform(key, async () => {
+        await action();
+        setAcquired(current => current?.id === acquired.id ? undefined : current);
+      })} remove={remove} />}
+    {!edit && <>
+      {!editingElsewhere && <div className="queue-item-content"><p>{item.input.text || t('chat.queuedAttachments')}</p>
+        <small>{item.modelId ? modelName(provider, item.modelId) : t('chat.runtimeDefault')}{item.settings?.effort ? ` · ${item.settings.effort}` : ''}</small>
+        <AttachmentChips attachments={item.input.attachments ?? []} />
+      </div>}
+      <div className="queue-item-actions"><button disabled={disabled} onClick={begin}>
+        {t(item.edit ? 'chat.resumeQueuedEdit' : 'chat.editQueued')}
+      </button>
+        {!item.edit && <button disabled={disabled} onClick={() => void perform(key, remove)}>{t('chat.removeQueued')}</button>}
+      </div>
+    </>}
+  </li>;
+}
+
+function QueuedPromptEditor({ sessionId, itemId, editId, initial, current, connected, disabled, perform, remove }: {
+  sessionId: string; itemId: string; editId: string; initial: PromptInput; current: boolean; connected: boolean; disabled: boolean;
+  perform: (action: () => Promise<unknown>) => void; remove: () => Promise<void>;
+}) {
+  const { t } = useTranslation('workspace');
+  const [input, setInput] = useState(initial);
+  const [draftError, setDraftError] = useState(false);
+  const [leaseError, setLeaseError] = useState(false);
+  const draft = useRef({ input: initial, revision: 0 });
+  const savedRevision = useRef(0);
+  const resolving = useRef(false);
+  const issue = attachmentLimitIssue(input.attachments ?? []);
+  const canSave = !disabled && !issue && hasPromptInput(input);
+  const persist = useCallback(async () => {
+    const current = draft.current;
+    if (resolving.current || current.revision <= savedRevision.current) return;
+    try {
+      await window.workbench.saveQueuedPromptDraft(sessionId, itemId, editId, current.revision, current.input);
+      savedRevision.current = Math.max(savedRevision.current, current.revision);
+      if (current === draft.current) setDraftError(false);
+    } catch {
+      if (current === draft.current && savedRevision.current < current.revision) setDraftError(true);
+    }
+  }, [sessionId, itemId, editId]);
+  useEffect(() => {
+    if (!connected || !current) return;
+    const timer = window.setTimeout(() => { void persist(); }, 250);
+    return () => window.clearTimeout(timer);
+  }, [input, connected, current, persist]);
+  useEffect(() => {
+    if (!connected || !current) return;
+    return () => {
+      const flush = persist();
+      queueDraftFlushes.set(itemId, flush);
+      void flush.finally(() => { if (queueDraftFlushes.get(itemId) === flush) queueDraftFlushes.delete(itemId); });
+    };
+  }, [connected, current, itemId, persist]);
+  useEffect(() => {
+    if (!connected || !current) return;
+    let mounted = true;
+    const renew = () => {
+      if (resolving.current) return;
+      void window.workbench.renewQueuedPromptEdit(sessionId, itemId, editId).then(
+        () => { if (mounted) setLeaseError(false); },
+        () => { if (mounted) setLeaseError(true); },
+      );
+    };
+    renew();
+    const timer = window.setInterval(renew, 10_000);
+    return () => { mounted = false; window.clearInterval(timer); };
+  }, [connected, current, sessionId, itemId, editId]);
+  const change = (next: PromptInput) => {
+    draft.current = { input: next, revision: draft.current.revision + 1 };
+    setInput(next);
+  };
+  const resolve = (action: () => Promise<unknown>) => {
+    if (!current || disabled || resolving.current) return;
+    resolving.current = true;
+    perform(async () => {
+      try { await action(); }
+      catch (error) {
+        resolving.current = false;
+        void persist();
+        throw error;
+      }
+    });
+  };
+  const finish = (value?: PromptInput) => resolve(() => window.workbench.finishQueuedPromptEdit(sessionId, itemId, editId, value));
+  return <form onSubmit={event => {
+    event.preventDefault();
+    if (canSave) finish(promptCommandInput(input));
+  }}>
+    <textarea aria-label={t('chat.editQueued')} value={input.text} readOnly={!current || leaseError} disabled={current && disabled} rows={2} maxLength={PROMPT_TEXT_LIMIT}
+      onChange={event => change({ ...input, text: event.target.value })} />
+    <AttachmentChips attachments={input.attachments ?? []} onRemove={!current || disabled || leaseError ? undefined : id =>
+      change({ ...input, attachments: input.attachments?.filter(attachment => attachment.id !== id) })} />
+    <DraftEvidenceCards evidence={input.evidence} onRemove={disabled ? undefined : id =>
+      change({ ...input, evidence: input.evidence?.filter(reference => reference.id !== id) })} />
+    <AttachmentLimitNotice issue={issue} />
+    {current && draftError && <p className="queue-edit-hold" role="alert">{t('chat.queueDraftUnsaved')}</p>}
+    {current && leaseError && <p className="queue-edit-hold" role="alert">{t('chat.queueEditLeaseLost')}</p>}
+    {current && <div className="queue-item-actions">
+      <button type="submit" disabled={!canSave}>{t('chat.saveQueued')}</button>
+      <button type="button" disabled={disabled} onClick={() => finish()}>{t('chat.cancelQueuedEdit')}</button>
+      <button type="button" disabled={disabled} onClick={() => resolve(remove)}>{t('chat.removeQueued')}</button>
+    </div>}
+  </form>;
 }
 
 type DockSection = 'queue' | 'agents' | 'plan';
@@ -643,7 +776,7 @@ const traceChoicesBySession = new Map<string, TraceChoices>();
 
 export function SessionChat({
   session, provider, providers, perform, pending, draft, draftError, onDraftChange, sessions = [], openSession, connected = true, readOnly = false,
-  attentionOpen, onAttentionOpened,
+  attentionOpen, onAttentionOpened, messageOpen, onMessageOpened, onOpenForkSource, workspaceId, onChooseEvidence, onOpenEvidence,
 }: SessionChatProps) {
   const { t } = useTranslation('workspace');
   const [showActivity, setShowActivity] = useState(false);
@@ -656,6 +789,10 @@ export function SessionChat({
   const [inspectedMessageId, setInspectedMessageId] = useState<string>();
   const [sideQuestion, setSideQuestion] = useState<SideQuestionOrigin>();
   const [sideQuestionJump, setSideQuestionJump] = useState<string>();
+  const [attentionNotice, setAttentionNotice] = useState<'approval' | 'message'>();
+  const attentionLookup = useRef<SessionAttentionOpen>(undefined);
+  const latestAttention = useRef(attentionOpen);
+  latestAttention.current = attentionOpen;
   const handledAttention = useRef<SessionAttentionOpen>(undefined);
   const [sendError, setSendError] = useState('');
   const [readingAnchor, setReadingAnchor] = useReadingAnchor(session.id);
@@ -671,9 +808,10 @@ export function SessionChat({
   }, [session.id]);
   const attachments = draft.attachments ?? [];
   const attachmentIssue = attachmentLimitIssue(attachments);
-  const attachmentCapabilities = provider?.declaredCapabilities ?? provider?.capabilities;
-  const supportsAttachment = (kind: PromptAttachment['kind']) => provider?.source !== 'plugin'
-    || (provider.protocolVersion === 2 && attachmentCapabilities?.[kind === 'image' ? 'images' : 'textAttachments'] === true);
+  const promptLengthIssue = Boolean(draft.evidence?.length && draftPromptText(draft).length > PROMPT_TEXT_LIMIT);
+  const [attachmentError, setAttachmentError] = useState('');
+  const [importingAttachments, setImportingAttachments] = useState(false);
+  const supportsAttachment = (kind: PromptAttachment['kind']) => supportsPromptAttachment(provider, kind);
   const attachmentsSupported = supportsAttachment('image') || supportsAttachment('text');
   const unsupportedAttachments = attachments.some(attachment => !supportsAttachment(attachment.kind));
   const [rewindMessage, setRewindMessage] = useState<string>();
@@ -681,7 +819,11 @@ export function SessionChat({
   const [loadedNativeEvents, setLoadedNativeEvents] = useState<{ id: string; events: ProcessEvent[] }>();
   const composing = useRef(false);
   const sendLock = useRef(false);
+  const attachmentLock = useRef(false);
   const currentDraft = useRef(draft);
+  const composer = useRef<HTMLTextAreaElement>(null);
+  const changeComposerText = (value: string) => onDraftChange({ ...currentDraft.current, text: value });
+  const fileMention = useWorkspaceFileMention(workspaceId, changeComposerText);
   const reducedMotion = useReducedMotion();
   const activityId = useId();
   const activityRegion = useRef<HTMLDivElement>(null);
@@ -702,6 +844,7 @@ export function SessionChat({
 
   const active = activeStatuses.has(session.status);
   const historyReady = session.historyLoaded !== false;
+  const queuesNextTurn = active || session.queuePaused || Boolean(session.queue?.length);
   const canAskSideQuestion = !readOnly && !session.archived && connected && historyReady && Boolean(provider?.available);
   const busy = pending.has(`send-${session.id}`);
   const settingsBusy = pending.has(`session-settings-${session.id}`);
@@ -757,7 +900,7 @@ export function SessionChat({
     saveTraceChoices({ ...traceChoices, groups });
   }, [carriedChoice, saveTraceChoices, traceChoices]);
 
-  const chooseTrace = (trace: TraceEntry, expanded: boolean) => {
+  const chooseTrace = (trace: TraceEntry, expanded: boolean, events = traceChoices.events) => {
     cancelReadingRestore();
     const groups = new Map(traceChoices.groups);
     for (const [anchor, choice] of groups) {
@@ -774,14 +917,20 @@ export function SessionChat({
       const index = messages.indexOf(restoredTraceId);
       if (index >= trace.start && index < trace.start + trace.length) setRestoredTrace(undefined);
     }
-    saveTraceChoices({ ...traceChoices, groups });
+    saveTraceChoices({ groups, events });
   };
-  const chooseEvent = (id: string, expanded: boolean) => {
+  const chooseEvent = (trace: TraceEntry, id: string, expanded: boolean) => {
     cancelReadingRestore();
+    pauseForNavigation();
     const events = new Set(traceChoices.events);
-    if (expanded) events.add(id); else events.delete(id);
-    if (!expanded && revealedMatchId === id) setRevealedMatch({ id, detail: false });
-    if (!expanded && restoredTrace?.id === id && restoredTrace.detailsOpen) setRestoredTrace({ ...restoredTrace, detailsOpen: false });
+    if (expanded) {
+      events.add(id);
+      chooseTrace(trace, true, events);
+      return;
+    }
+    events.delete(id);
+    if (revealedMatchId === id) setRevealedMatch({ id, detail: false });
+    if (restoredTrace?.id === id && restoredTrace.detailsOpen) setRestoredTrace({ ...restoredTrace, detailsOpen: false });
     saveTraceChoices({ ...traceChoices, events });
   };
   const children = sessions.filter(item => item.parentSessionId === session.id);
@@ -813,7 +962,11 @@ export function SessionChat({
     setInspectedMessageId(id);
     setScrollTarget({ id, attention });
   };
-  const answerReference = useAnswerQuestionSelection(scroll, canAskSideQuestion);
+  const answerReference = useAnswerQuestionSelection(scroll, canAskSideQuestion || Boolean(onChooseEvidence));
+  const quoteMessage = (message: Message, label: string, excerpt: string) => onChooseEvidence?.({
+    id: crypto.randomUUID(), label: label.slice(0, 300), excerpt: excerpt.slice(0, EVIDENCE_EXCERPT_LIMIT),
+    source: { kind: 'message', sessionId: session.id, messageId: message.id },
+  });
   const openSideQuestion = (origin: SideQuestionOrigin) => setSideQuestion(current => current ?? origin);
   const closeSideQuestion = () => {
     setSideQuestion(undefined);
@@ -853,7 +1006,8 @@ export function SessionChat({
     },
     anchorTo: 'end',
     followOnAppend: false,
-    scrollEndThreshold: 40,
+    // When detail navigation pauses following, row expansion should leave the viewport in place.
+    scrollEndThreshold: isPinned ? 40 : -1,
   });
   virtualScroll.current = virtualizer;
   const followLatestAfterMissingAnchor = useCallback(() => {
@@ -880,6 +1034,21 @@ export function SessionChat({
     setSideQuestionJump(id);
     return true;
   };
+  useEffect(() => {
+    if (!messageOpen || !connected || !history.tailReady) return;
+    let active = true;
+    closeFind();
+    cancelReadingRestore();
+    void history.locateMessage(messageOpen.messageId, false).then(found => {
+      if (!active) return;
+      if (found) {
+        setSideQuestionJump(messageOpen.messageId);
+        scroll.current?.focus({ preventScroll: true });
+      } else void perform('open-source-message', async () => { throw new Error(t('chat.sourceMessageMissing')); });
+      onMessageOpened?.(messageOpen);
+    });
+    return () => { active = false; };
+  }, [messageOpen, connected, history.tailReady]);
   const showLatestOutput = (smooth = false) => {
     cancelReadingRestore();
     setRestoredTrace(undefined);
@@ -929,14 +1098,34 @@ export function SessionChat({
     if (!attentionOpen || attentionOpen === handledAttention.current) return;
     cancelReadingRestore();
     if (!history.tailReady) return;
-    if (history.showingHistory) { closeFind(); history.showLatest(); return; }
 
     const finish = () => {
       handledAttention.current = attentionOpen;
       onAttentionOpened?.(attentionOpen);
     };
+    if (attentionOpen.reason !== 'approval' && attentionOpen.messageId) {
+      const id = attentionOpen.messageId;
+      if (messages.indexOf(id) >= 0) {
+        setAttentionNotice(undefined);
+        inspectMessage(id, true);
+        finish();
+      } else if (attentionLookup.current !== attentionOpen) {
+        attentionLookup.current = attentionOpen;
+        closeFind();
+        void history.locateMessage(id, false).then(found => {
+          if (!found && latestAttention.current === attentionOpen) {
+            setAttentionNotice('message');
+            finish();
+          }
+        });
+      }
+      return;
+    }
+    if (history.showingHistory) { closeFind(); history.showLatest(); return; }
     if (attentionOpen.reason === 'approval') {
-      const approval = session.approvals.find(item => item.id === attentionOpen.approvalId) ?? session.approvals.at(-1);
+      const approval = attentionOpen.approvalId
+        ? session.approvals.find(item => item.id === attentionOpen.approvalId)
+        : session.approvals.at(-1);
       if (approval) {
         const viewport = scroll.current;
         const card = viewport?.querySelector<HTMLElement>(`[data-approval-id="${CSS.escape(approval.id)}"]`);
@@ -945,6 +1134,7 @@ export function SessionChat({
         markUserInput();
         virtualizer.scrollToOffset(viewport.scrollTop + card.getBoundingClientRect().top - viewport.getBoundingClientRect().top - 12);
         card.focus({ preventScroll: true });
+        setAttentionNotice(undefined);
         handleScroll();
         finish();
         return;
@@ -957,6 +1147,7 @@ export function SessionChat({
         return;
       }
     }
+    if (attentionOpen.reason === 'approval' && attentionOpen.approvalId) setAttentionNotice('approval');
     showLatestOutput();
     finish();
   });
@@ -1007,8 +1198,8 @@ export function SessionChat({
   }, [showActivity, activityId]);
 
   const send = () => {
-    const prompt = draft.text.trim();
-    if (readOnly || (!prompt && !attachments.length) || unsupportedAttachments || attachmentIssue || !connected || !historyReady || busy || settingsBusy || sendLock.current || !provider?.available) return;
+    if (readOnly || !hasPromptInput(draft) || unsupportedAttachments || attachmentIssue || promptLengthIssue
+      || !connected || !historyReady || busy || settingsBusy || sendLock.current || attachmentLock.current || !provider?.available) return;
     sendLock.current = true;
     setSendError('');
     void perform(`send-${session.id}`, async () => {
@@ -1031,13 +1222,37 @@ export function SessionChat({
     });
   };
 
-  return <section className={`chat-pane${readOnly ? ' chat-pane-readonly' : ''}`} aria-label={session.title}>
+  const importAttachments = (load: () => Promise<PromptAttachment[]>, source: 'picker' | 'clipboard') => {
+    if (attachmentLock.current || sendLock.current) return;
+    attachmentLock.current = true;
+    setImportingAttachments(true);
+    setAttachmentError('');
+    void (async () => {
+      try {
+        const selected = await load();
+        if (!selected.length) return;
+        const current = currentDraft.current;
+        const next = [...(current.attachments ?? []), ...selected];
+        if (source === 'clipboard' && attachmentLimitIssue(next)) throw new Error(t('evidence.pasteLimit'));
+        onDraftChange({ ...current, attachments: next }, current);
+      } catch (error) {
+        setAttachmentError(error instanceof Error ? error.message : String(error));
+      } finally {
+        attachmentLock.current = false;
+        setImportingAttachments(false);
+      }
+    })();
+  };
+
+  return <section data-chat-session-id={session.id} className={`chat-pane${readOnly ? ' chat-pane-readonly' : ''}`} aria-label={session.title}>
     <header className="chat-toolbar">
       <div className="chat-toolbar-heading">
         <MessageCircle size={14} /><h2 title={session.title}>{session.title}</h2>
       </div>
       <Status value={session.status} />
       <div className="chat-toolbar-actions">
+        {session.forkedFrom && onOpenForkSource && <IconButton label={t('chat.forkSource')} disabled={!connected}
+          onClick={() => onOpenForkSource(session.forkedFrom!.sessionId, session.forkedFrom!.messageId)}><GitFork size={14} /></IconButton>}
         {!readOnly && providers && <SessionContinuation session={session} providers={providers} connected={connected} perform={perform} />}
         <IconButton label={find === null ? t('chat.find') : t('chat.closeFind')} aria-pressed={find !== null}
           onClick={() => {
@@ -1079,6 +1294,9 @@ export function SessionChat({
       </motion.div>}
     </AnimatePresence>
 
+    {attentionNotice && <p className="pane-note" role="status">
+      {t(attentionNotice === 'approval' ? 'chat.attentionApprovalEnded' : 'chat.attentionMessageMissing')}
+    </p>}
     {(parent || children.length > 0) && <nav className="session-children" aria-label={t('chat.relatedSessions')}>
       {parent && <button onClick={() => openSession(parent.id)}><ArrowUpLeft size={13} />{t('chat.coordinator', { title: parent.title })}</button>}
       {children.map(child => <button key={child.id} onClick={() => openSession(child.id)}>
@@ -1119,17 +1337,20 @@ export function SessionChat({
               || (restoredTraceId === message.id && Boolean(restoredTrace?.detailsOpen)) || inspectedMessageId === message.id}
             onExpandedChange={expanded => {
               if (!expanded && inspectedMessageId === message.id) setInspectedMessageId(undefined);
-              chooseEvent(message.id, expanded);
+              chooseEvent(row.trace, message.id, expanded);
             }} openSession={openSession} openNativeAgent={setNativeAgentId}
             onAsk={canAskSideQuestion && message.event.title.trim() ? trigger => openSideQuestion({
               reference: { kind: 'trace', messageId: message.id }, excerpt: questionExcerpt(message.event!.title), trigger,
-            }) : undefined} />
+            }) : undefined}
+            onQuote={onChooseEvidence && message.event.status === 'failed' && message.event.output?.trim() ? () =>
+              quoteMessage(message, `${session.title} · ${message.event!.title}`, message.event!.output!.trim()) : undefined} />
         : message ? <div className="messages"><article data-message-id={message.id}
               className={`message message-${message.role}${selectedMatch?.id === message.id || inspectedMessageId === message.id ? ' conversation-match' : ''}`}>
               {message.role === 'user'
                   ? <>
-                    <div className="user-message">{message.text}
+                    <div className="user-message">{message.originalPrompt ?? message.text}
                       {message.attachments && <AttachmentChips attachments={message.attachments} />}
+                      <DraftEvidenceCards evidence={message.evidence} onOpen={onOpenEvidence} />
                     </div>
                     <DeliveryState message={message} sessionId={session.id} connected={connected} readOnly={readOnly} pending={pending} perform={perform} />
                     {!readOnly && !active && provider?.capabilities.rewind && message.nativeTurnId && <div className="message-tools">
@@ -1148,9 +1369,15 @@ export function SessionChat({
                     </div>
                     <div className="message-tools">
                       <CopyAnswer message={message} perform={perform} />
-                      {answerReference?.messageId === message.id && <SideQuestionAction onClick={trigger => openSideQuestion({ reference: answerReference, excerpt: answerReference.excerpt, trigger })} />}
-                      {!readOnly && !active && <button onClick={() => void perform('fork-session',
-                        async () => openSession(await window.workbench.forkSession(session.id, message.id)))}>
+                      {answerReference?.messageId === message.id && <>
+                        {canAskSideQuestion && <SideQuestionAction onClick={trigger => openSideQuestion({ reference: answerReference, excerpt: answerReference.excerpt, trigger })} />}
+                        {onChooseEvidence && <button type="button" onMouseDown={event => event.preventDefault()}
+                          onClick={() => quoteMessage(message, t('evidence.replySource', { title: session.title }), answerReference.excerpt)}>
+                          <FileText size={12} />{t('evidence.quoteReply')}
+                        </button>}
+                      </>}
+                      {!readOnly && message.text.trim() && <button title={t('chat.forkHereHint')} disabled={!connected || pending.has(`fork-${session.id}`)}
+                        onClick={() => void perform(`fork-${session.id}`, () => window.workbench.forkSession(session.id, message.id, true))}>
                         <GitFork size={12} />{t('chat.forkHere')}</button>}
                     </div>
                   </>}
@@ -1191,37 +1418,58 @@ export function SessionChat({
         </section>
       </CollapsibleRegion>
       {!readOnly && <div className="composer-area">
+        <WorkspaceFileMention mention={fileMention} onPick={file => { if (composer.current) fileMention.insert(composer.current, file); }} />
         <div className="composer-frame">
           {historyReady && <ComposerDock session={session} provider={provider} pending={pending} perform={perform}
             connected={connected} active={active} children={children} openSession={openSession} openNativeAgent={openDockAgent} />}
         <div className={`composer${active ? ' composer-task-active' : ''}`}>
+          <DraftEvidenceCards evidence={draft.evidence} onOpen={onOpenEvidence}
+            onRemove={busy || !historyReady ? undefined : id => {
+              const current = currentDraft.current;
+              onDraftChange({ ...current, evidence: current.evidence?.filter(item => item.id !== id) });
+            }} />
           <AttachmentChips attachments={attachments}
             onRemove={busy || !historyReady ? undefined : id => onDraftChange({ ...currentDraft.current, attachments: attachments.filter(attachment => attachment.id !== id) })} />
-          <textarea aria-label={t('chat.taskContent')} value={draft.text} rows={3} maxLength={200_000} disabled={busy || !historyReady}
-            onChange={event => onDraftChange({ ...currentDraft.current, text: event.target.value })}
+          <textarea ref={composer} aria-label={t('chat.taskContent')} value={draft.text} rows={3} maxLength={PROMPT_TEXT_LIMIT} disabled={busy || !historyReady}
+            aria-autocomplete={workspaceId ? 'list' : undefined} aria-controls={fileMention.open ? fileMention.id : undefined}
+            aria-activedescendant={fileMention.open && fileMention.matches.length ? `${fileMention.id}-${fileMention.selected}` : undefined}
+            onChange={event => { changeComposerText(event.target.value); if (!composing.current) fileMention.update(event.currentTarget); }}
             placeholder={active ? t('chat.nextPromptPlaceholder') : t('chat.promptPlaceholder')}
-            onCompositionStart={() => { composing.current = true; }}
-            onCompositionEnd={() => { composing.current = false; }}
+            onSelect={event => { if (!composing.current) fileMention.update(event.currentTarget); }}
+            onBlur={event => fileMention.close(event.currentTarget)}
+            onCompositionStart={event => { composing.current = true; fileMention.close(event.currentTarget); }}
+            onCompositionEnd={event => { composing.current = false; fileMention.update(event.currentTarget); }}
+            onPaste={event => {
+              const file = [...event.clipboardData.files].find(item => clipboardImageExtensions[item.type]);
+              if (!file) return;
+              event.preventDefault();
+              if (!supportsAttachment('image')) { setAttachmentError(t('evidence.pasteUnsupported')); return; }
+              if (file.size > ATTACHMENT_LIMITS.imageBytes || attachmentLimitIssue([...attachments, file])) {
+                setAttachmentError(t('evidence.pasteLimit')); return;
+              }
+              if (!busy && historyReady) importAttachments(async () => [await window.workbench.importPastedImage(
+                `Screenshot.${clipboardImageExtensions[file.type]}`, new Uint8Array(await file.arrayBuffer()))], 'clipboard');
+            }}
             onKeyDown={event => {
-              if (event.key === 'Enter' && !event.shiftKey && !composing.current && !event.nativeEvent.isComposing && event.keyCode !== 229) {
+              if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229 || fileMention.keyDown(event)) return;
+              if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault();
                 send();
               }
             }} />
           <div className="composer-bottom">
             <div className="composer-controls">
-              <IconButton label={attachmentsSupported ? t('chat.attach') : t('chat.pluginAttachmentsUnsupported')} disabled={!historyReady || !attachmentsSupported || busy || attachments.length >= ATTACHMENT_LIMITS.count || pending.has('attachments')}
-                onClick={() => void perform('attachments', async () => {
-                  const selected = await window.workbench.chooseAttachments();
-                  onDraftChange({ ...currentDraft.current, attachments: [...(currentDraft.current.attachments ?? []), ...selected] });
-                })}><Paperclip size={16} /></IconButton>
+              <IconButton label={attachmentsSupported ? t('chat.attach') : t('chat.pluginAttachmentsUnsupported')} disabled={!historyReady || !attachmentsSupported || busy || attachments.length >= ATTACHMENT_LIMITS.count || importingAttachments}
+                onClick={() => importAttachments(() => window.workbench.chooseAttachments(), 'picker')}>
+                {importingAttachments ? <LoaderCircle className="spin" size={16} /> : <Paperclip size={16} />}
+              </IconButton>
               <span className="composer-divider" />
               <ComposerSettings session={session} provider={provider} disabled={!historyReady || !connected || active || busy}
                 saving={settingsBusy} perform={perform} />
             </div>
-            <Tooltip label={active || session.queuePaused ? t('chat.queueNextTurn') : t('chat.sendTask')}><motion.button className="send-button" aria-label={t('chat.sendTask')}
-              title={active || session.queuePaused ? t('chat.queueNextTurn') : t('chat.sendTask')}
-              disabled={(!draft.text.trim() && !attachments.length) || unsupportedAttachments || Boolean(attachmentIssue) || !historyReady || !connected || busy || settingsBusy || !provider?.available}
+            <Tooltip label={queuesNextTurn ? t('chat.queueNextTurn') : t('chat.sendTask')}><motion.button className="send-button" aria-label={t('chat.sendTask')}
+              title={queuesNextTurn ? t('chat.queueNextTurn') : t('chat.sendTask')}
+              disabled={!hasPromptInput(draft) || unsupportedAttachments || Boolean(attachmentIssue) || promptLengthIssue || !historyReady || !connected || busy || settingsBusy || importingAttachments || !provider?.available}
               whileTap={reducedMotion ? undefined : { scale: 0.98 }} transition={transition} onClick={send}>
               {busy ? <LoaderCircle className="spin" size={17} /> : <ArrowUp size={18} />}
             </motion.button></Tooltip>
@@ -1231,13 +1479,15 @@ export function SessionChat({
         <div className="composer-caption">
           <span className="composer-project" title={session.cwd}><FolderOpen size={12} />{pathName(session.cwd)}</span>
           <UsageBadge records={session.usage} />
-          <span className="composer-shortcut"><CornerDownLeft size={11} />{active || session.queuePaused ? t('chat.queueNextTurn') : t('chat.send')}<span>·</span>{t('chat.newLine')}</span>
+          <span className="composer-shortcut"><CornerDownLeft size={11} />{queuesNextTurn ? t('chat.queueNextTurn') : t('chat.send')}<span>·</span>{t('chat.newLine')}</span>
         </div>
         {!connected && <p className="composer-note" role="status"><CircleAlert size={13} />{t('chat.connectionUnavailable')}</p>}
         {sendError && <p className="composer-note" role="alert"><CircleAlert size={13} />{t('chat.sendUnconfirmed', { error: sendError })}</p>}
         {draftError && <p className="composer-note" role="alert"><CircleAlert size={13} />{t('chat.draftError', { error: draftError })}<button className="text-button" onClick={() => onDraftChange(draft)}>{t('chat.retrySave')}</button></p>}
         {unsupportedAttachments && <p className="composer-note" role="alert"><CircleAlert size={13} />{t(attachmentsSupported ? 'chat.pluginAttachmentKindsRemove' : 'chat.pluginAttachmentsRemove')}</p>}
         <AttachmentLimitNotice issue={attachmentIssue} />
+        {attachmentError && <p className="composer-note" role="alert"><CircleAlert size={13} />{attachmentError}</p>}
+        {promptLengthIssue && <p className="composer-note" role="alert"><CircleAlert size={13} />{t('evidence.promptTooLong')}</p>}
         {!provider?.available && <p className="composer-note"><CircleAlert size={13} />{t('chat.providerUnavailable')}</p>}
       </div>}
     </div>
@@ -1294,12 +1544,15 @@ function TraceHeading({ trace, live, addedEvents, expanded, onToggle, onInspect 
         {live && <span className="trace-live">{t('chat.trace.live')}</span>}
         <ChevronDown className="trace-chevron" size={14} aria-hidden="true" />
       </button>
-      {lastDiff && <button className="trace-diff" onClick={() => onInspect(lastDiff)}>
-        <GitCompareArrows size={13} aria-hidden="true" />{t('chat.trace.turnDiff')}
+      {lastDiff && <button className="trace-diff" title={lastDiff.path} onClick={() => onInspect(lastDiff.id)}>
+        <GitCompareArrows size={13} aria-hidden="true" />
+        <span>{lastDiff.path ? t('chat.trace.turnDiffPath', { path: lastDiff.path }) : t('chat.trace.turnDiff')}</span>
       </button>}
-      {lastFailure && <button className="trace-failure" title={t('chat.trace.locateFailure')} onClick={() => onInspect(lastFailure)}>
+      {lastFailure && <button className="trace-failure" title={lastFailure.title || t('chat.trace.locateFailure')} onClick={() => onInspect(lastFailure.id)}>
         <CircleAlert size={13} aria-hidden="true" />
-        {t('chat.trace.failed', { count: trace.failures, total: formatNumber(trace.failures) })}
+        <span>{lastFailure.title
+          ? t('chat.trace.failedTitle', { total: formatNumber(trace.failures), title: lastFailure.title })
+          : t('chat.trace.failed', { count: trace.failures, total: formatNumber(trace.failures) })}</span>
       </button>}
     </div>
   </div>;
@@ -1317,13 +1570,14 @@ function TraceEventRow({ message, end, entering, matched, ...card }: Parameters<
   </div>;
 }
 
-function ProcessCard({ event, openSession, openNativeAgent, expanded, onExpandedChange, onAsk }: {
+function ProcessCard({ event, openSession, openNativeAgent, expanded, onExpandedChange, onAsk, onQuote }: {
   event: ProcessEvent;
   openSession: (id: string) => void;
   openNativeAgent: (id: string) => void;
   expanded: boolean;
   onExpandedChange: (expanded: boolean) => void;
   onAsk?: (trigger: HTMLButtonElement) => void;
+  onQuote?: () => void;
 }) {
   const { t } = useTranslation('workspace');
   const bodyId = useId();
@@ -1342,8 +1596,9 @@ function ProcessCard({ event, openSession, openNativeAgent, expanded, onExpanded
         <span className="process-symbol" aria-hidden="true">{icon}</span><strong title={title}>{title}</strong>
         <Status value={event.status} /><ChevronDown className="process-chevron" size={14} />
       </button>
-      {(onAsk || event.sessionId || (event.kind === 'subagent' && event.nativeId)) && <div className="process-links">
+      {(onAsk || onQuote || event.sessionId || (event.kind === 'subagent' && event.nativeId)) && <div className="process-links">
         {onAsk && <SideQuestionAction onClick={onAsk} />}
+        {onQuote && <button type="button" onClick={onQuote}><FileText size={12} />{t('evidence.quoteFailure')}</button>}
         {event.sessionId && <button onClick={() => openSession(event.sessionId!)}>{t('chat.openChild')}<ArrowUpLeft size={12} /></button>}
         {event.kind === 'subagent' && event.nativeId && <button onClick={() => openNativeAgent(event.nativeId!)}>{t('chat.openNative')}<ArrowUpLeft size={12} /></button>}
       </div>}
@@ -1361,7 +1616,7 @@ function ProcessBody({ event }: { event: ProcessEvent }) {
       <span>{t('chat.trace.turnDiffSource')}</span>
       <pre className="turn-diff-patch" data-scroll-key={`${event.id}:output`}>{diffLines(event.output).map((line, index) =>
         <span className={line.kind} key={index}>{line.text}{'\n'}</span>)}</pre>
-    </div> : <p className="process-empty">{t('chat.trace.turnDiffEmpty')}</p>}
+    </div> : <p className="process-empty">{t(event.output === '' ? 'chat.trace.turnDiffEmpty' : 'chat.trace.turnDiffUnavailable')}</p>}
   </div>;
   return <div className="process-body">
     {event.input && <div className="process-output"><span>{t('common.input')}</span><pre data-scroll-key={`${event.id}:input`}>{event.input}</pre></div>}

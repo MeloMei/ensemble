@@ -21,6 +21,9 @@ export const en = {
   'notification.error': 'Agent failed',
   'notification.finished': 'Agent finished',
   'notification.unsupported': 'Desktop notifications are not supported on this system.',
+  'capture.title': 'Window capture',
+  'capture.permission': 'Allow screen recording for Ensemble in System Settings to capture a window.',
+  'capture.shortcutUnavailable': 'The window capture shortcut is already in use.',
   'notification.deliveryFailed': 'The system could not show the notification. Check the app signature and system notification settings.',
 };
 
@@ -47,5 +50,8 @@ export const zhCN: Record<keyof typeof en, string> = {
   'notification.error': 'Agent 运行失败',
   'notification.finished': 'Agent 已完成',
   'notification.unsupported': '当前系统不支持桌面通知。',
+  'capture.title': '窗口截图',
+  'capture.permission': '请在系统设置中允许 Ensemble 录制屏幕，再截取窗口。',
+  'capture.shortcutUnavailable': '窗口截图快捷键已被占用。',
   'notification.deliveryFailed': '系统未能显示通知；请检查应用签名和系统通知设置。',
 };
