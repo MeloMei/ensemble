@@ -80,7 +80,7 @@ export function ModelField({ provider, value, onChange, disabled }: { provider?:
     disabled={disabled || !provider.models.length} onChange={onChange} required={!usesCliModelDefault(provider)} options={[
       { value: '', disabled: !usesCliModelDefault(provider), label: usesCliModelDefault(provider) ? t('provider.cliConfiguration') : provider.models.length ? t('provider.chooseModel') : t('provider.noModels') },
       ...(value && !provider.models.some(model => model.id === value) ? [{ value, label: `${value} ${t('provider.modelUnavailableSuffix')}`, disabled: true }] : []),
-      ...provider.models.map(model => ({ value: model.id, label: `${model.name}${model.free ? t('provider.freeSuffix') : provider.id === 'codex' ? t('provider.accountQuotaSuffix') : t('provider.meteredSuffix')}` })),
+      ...provider.models.map(model => ({ value: model.id, label: `${model.name}${model.free ? t('provider.freeSuffix') : provider.id === 'codex' ? '' : t('provider.meteredSuffix')}`, tooltip: !model.free && provider.id === 'codex' ? t('provider.accountQuota') : undefined })),
     ]} /></label>{policy && <p className="model-policy">{policy}</p>}</div>;
 }
 
