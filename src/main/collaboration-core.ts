@@ -3,6 +3,7 @@ import { realpath, rm } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { z } from 'zod';
 import type { PromptAttachment, PromptInput, Session, Workflow } from '../shared/types';
+import { permissionTiersFor } from '../shared/session-permissions';
 import {
   collaborationDefinitionSchema, type CollaborationArtifactVersion, type CollaborationAttempt,
   type CollaborationDefinition, type CollaborationEvent, type CollaborationEventInput,
@@ -200,10 +201,11 @@ export class CollaborationCore {
         if (!provider?.available) throw new Error(`参与者 ${participant.name} 的运行时不可用。`);
         if (participant.modelId !== undefined && !provider.models?.some(item => item.id === participant.modelId)) throw new Error(`参与者 ${participant.name} 的模型不存在。`);
         participant.modelId ??= provider.defaultModelId;
-        const readOnly = participant.permissions.workspace?.access === 'read-only' || participant.settings?.permission === 'read-only';
-        if (participant.settings?.permission && !provider.capabilities.permissions) throw new Error(`参与者 ${participant.name} 的运行时不支持权限设置。`);
-        if (readOnly && !provider.capabilities.permissions) throw new Error(`参与者 ${participant.name} 的运行时未提供可验证的只读权限。`);
-        if (readOnly) participant.settings = { ...participant.settings, permission: 'read-only' };
+        const permission = participant.permissions.workspace?.access === 'read-only' ? 'read-only' : participant.settings?.permission;
+        if (permission && !permissionTiersFor(provider.capabilities).includes(permission)) {
+          throw new Error(permission === 'read-only' ? `参与者 ${participant.name} 的运行时未提供可验证的只读权限。` : `参与者 ${participant.name} 的运行时不支持所选权限档位。`);
+        }
+        if (permission === 'read-only') participant.settings = { ...participant.settings, permission };
         if (participant.settings?.effort && !provider.capabilities.effort) throw new Error(`参与者 ${participant.name} 的运行时不支持思考档设置。`);
         if (participant.binding?.sessionId) {
           const session = this.engine.getSession(participant.binding.sessionId);
@@ -226,6 +228,16 @@ export class CollaborationCore {
       visiting.add(id); for (const dependency of parsed.steps?.find(step => step.id === id)?.dependsOn ?? []) visit(dependency); visiting.delete(id); visited.add(id); };
     for (const id of stepIds) visit(id);
     if (principal.kind !== 'user') {
+      for (const participant of participants) {
+        if (participant.mode !== 'managed' || participant.settings?.permission !== 'full-access') continue;
+        const existing = previous?.participants.find(item => item.id === participant.id);
+        if (existing?.settings?.permission !== 'full-access' || existing.mode !== participant.mode
+          || existing.providerId !== participant.providerId || existing.cwd !== participant.cwd
+          || JSON.stringify(canonical(existing.binding)) !== JSON.stringify(canonical(participant.binding))
+          || JSON.stringify(canonical(existing.permissions.workspace)) !== JSON.stringify(canonical(participant.permissions.workspace))) {
+          throw new Error('完全访问权限只能由用户为指定参与者授予。');
+        }
+      }
       let roots: string[], providers: string[] | undefined;
       if (principal.kind === 'external') {
         const policy = this.store.state.collaboration.identities.find(item => item.id === principal.identityId)?.policy;
@@ -234,7 +246,7 @@ export class CollaborationCore {
       } else {
         const source = this.engine.getSession(principal.sessionId);
         roots = [source.cwd];
-        if (principal.kind === 'session' && source.settings?.permission === 'read-only' && participants.some(participant =>
+        if (principal.kind === 'session' && this.engine.activeCallerPermission(principal) === 'read-only' && participants.some(participant =>
           participant.mode === 'managed' && participant.settings?.permission !== 'read-only')) throw new Error('当前普通会话为只读，不能通过创建协作扩大执行权限。需要可写执行者时，请使用用户已配置并授权的运行。');
         if (principal.kind === 'managed') {
           const actor = this.actor(principal, this.run(principal.runId), 'configure');

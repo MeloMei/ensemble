@@ -80,6 +80,7 @@ export async function createCursorGuard(dataPath: string, session: Session, serv
   const controllers = new Set<AbortController>();
   const approved = new Map<string, number>();
   const token = randomBytes(32).toString('hex');
+  const fullAccess = session.settings?.permission === 'full-access';
   let closing = false;
   const server = createServer(async (request, response) => {
     response.setHeader('Content-Type', 'application/json');
@@ -98,7 +99,7 @@ export async function createCursorGuard(dataPath: string, session: Session, serv
       if (session.externalId && input.conversation_id && input.conversation_id !== session.externalId) throw new Error('Cursor 工具请求不属于当前会话。');
       // Native MCP executes its identity-bearing beforeMCPExecution hook before the tool executor.
       const decision = phase === 'preToolUse' && input.tool_name.startsWith('MCP:') ? 'allow'
-        : phase === 'preToolUse' && !Object.hasOwn(kinds, input.tool_name) ? 'deny' : policy(tool, session, servers);
+        : phase === 'preToolUse' && !fullAccess && !Object.hasOwn(kinds, input.tool_name) ? 'deny' : policy(tool, session, servers);
       let allowed = decision === 'allow';
       let grant: string | undefined;
       if (decision === 'ask') {
@@ -160,6 +161,7 @@ try {
         [{ command: `${command} ${phase}`, failClosed: true, timeout: 3600 }]])) } }), { mode: 0o600, flag: 'wx' });
     if (context.signal.aborted) throw abortError();
     return { configDirectory, pluginDirectory, permissionDecision(tool) {
+      if (closing || context.signal.aborted) return 'deny';
       const decision = policy(tool, session, servers);
       if (decision === 'deny') return 'deny';
       const key = approvalKey(tool); const count = approved.get(key) ?? 0;

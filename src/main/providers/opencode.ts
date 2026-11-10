@@ -7,6 +7,7 @@ import { delimiter, join } from 'node:path';
 import { promisify } from 'node:util';
 import { z } from 'zod';
 import type { AcpRuntimeDescriptor } from './acp-types';
+import { SESSION_PERMISSION_TIERS } from '../../shared/session-permissions';
 import type { McpServerConfig } from '../../shared/types';
 import { isIssuedWorkbenchMcpServer } from '../collaboration-server';
 import { issuedOpenCodeToolActions, openCodeAgentConfiguration } from './opencode-policy';
@@ -159,7 +160,8 @@ export async function createOpenCodeDescriptor({ dataPath }: { dataPath: string 
     detail: `OpenCode ${binary.version} · ${binary.command} · 仅免费模型，独立数据目录`,
     detailI18n: { key: 'runtime:detection.openCode', values: { version: binary.version, command: binary.command } },
     defaultModelId: DEFAULT_MODEL,
-    sessionModes: { review: 'build', 'read-only': 'plan' },
+    permissionTiers: SESSION_PERMISSION_TIERS,
+    sessionModes: { review: 'build', 'read-only': 'plan', 'full-access': 'build' },
     models,
     async launch(session, servers = []) {
       requireFreeModel(session.modelId ?? DEFAULT_MODEL);

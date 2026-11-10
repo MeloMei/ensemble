@@ -10,6 +10,7 @@ import { signalProcessTree, watchOutputDrain } from './process-tree';
 import { attachmentText, emitProcess, processStatus, processText } from './provider-events';
 import { answerFormElicitation } from './form-elicitation';
 import { PRODUCT_ID, PRODUCT_NAME, PRODUCT_VERSION } from '../../shared/app-identity';
+import { SESSION_PERMISSION_TIERS } from '../../shared/session-permissions';
 import type { ProviderModel } from '../../shared/types';
 
 type Options = acp.SessionConfigOption[];
@@ -18,6 +19,10 @@ type SessionConfiguration = {
   models?: { currentModelId: string; availableModels: { modelId: string; name: string }[] } | null;
   modes?: acp.SessionModeState | null;
 };
+
+function permissionTiers(descriptor: AcpRuntimeDescriptor) {
+  return descriptor.permissionTiers ?? SESSION_PERMISSION_TIERS.filter(tier => descriptor.sessionModes?.[tier] !== undefined);
+}
 
 export function mergeAcpTool(previous: acp.ToolCallUpdate | undefined, update: acp.ToolCallUpdate): acp.ToolCallUpdate {
   return { ...previous, ...Object.fromEntries(Object.entries(update).filter(([, value]) => value !== undefined && value !== null)), toolCallId: update.toolCallId };
@@ -156,11 +161,11 @@ class AcpSession {
       const result = await this.request(acp.methods.agent.session.setConfigOption, { sessionId: this.nativeId!, configId: reasoning.id, value: preference });
       if (!result.configOptions.some(option => option.id === reasoning.id && option.type === 'select' && option.currentValue === preference)) throw new Error('运行时没有确认推理设置，任务未发送。');
     }
-    const permission = this.current?.session.settings?.permission ?? 'review';
-    if (permission === 'read-only' && !this.descriptor.sessionModes) throw new Error(`${this.descriptor.name} 尚未验证原生只读模式，任务未发送。`);
     if (this.descriptor.sessionModes) {
+      const permission = this.original.settings?.permission ?? 'review';
       const mode = configured.find(option => option.id === 'mode' || option.category === 'mode');
       const value = this.descriptor.sessionModes[permission];
+      if (!value) throw new Error(`${this.descriptor.name} 未提供所选权限模式。`);
       if (mode?.type === 'select') {
         if (!configChoices(mode.options).some(choice => choice.value === value)) throw new Error(`${this.descriptor.name} 未提供所选权限模式。`);
         const result = await this.request(acp.methods.agent.session.setConfigOption, { sessionId: this.nativeId!, configId: mode.id, value });
@@ -206,22 +211,29 @@ class AcpSession {
 
   private async permission(request: acp.RequestPermissionRequest, requestSignal: AbortSignal): Promise<acp.RequestPermissionResponse> {
     const current = this.current;
-    if (!current || current.signal.aborted || request.sessionId !== this.nativeId) return { outcome: { outcome: 'cancelled' } };
+    if (!current || !this.prompting || this.closing || current.signal.aborted || requestSignal.aborted || request.sessionId !== this.nativeId) {
+      return { outcome: { outcome: 'cancelled' } };
+    }
     const controller = new AbortController();
     this.permissions.add(controller);
     try {
       const tool = mergeAcpTool(this.tools.get(request.toolCall.toolCallId), request.toolCall);
-      const choices = request.options.filter(option => ['allow_once', 'reject_once'].includes(option.kind));
+      const ids = new Set(request.options.map(option => option.optionId));
+      if (ids.size !== request.options.length || ids.has('')) throw new Error('运行时提供了无效的审批选项。');
+      const choices = request.options.filter(option => option.kind === 'allow_once' || option.kind === 'reject_once');
       if (!choices.length) throw new Error('运行时没有提供单次审批选项。');
-      const decision = this.descriptor.permissionDecision?.(tool, current.session, this.launch?.mcpServers ?? current.mcpServers ?? []) ?? 'ask';
+      const policy = this.descriptor.permissionDecision?.(tool, current.session, this.launch?.mcpServers ?? current.mcpServers ?? []) ?? 'ask';
+      const decision = policy === 'ask' && current.session.settings?.permission === 'full-access' ? 'allow' : policy;
       if (decision !== 'ask') {
         const option = choices.find(option => option.kind === (decision === 'allow' ? 'allow_once' : 'reject_once'));
         return option ? { outcome: { outcome: 'selected', optionId: option.optionId } } : { outcome: { outcome: 'cancelled' } };
       }
       const detail = [tool.title, tool.rawInput === undefined ? '' : JSON.stringify(tool.rawInput, null, 2)].filter(Boolean).join('\n');
+      const signal = AbortSignal.any([requestSignal, current.signal, controller.signal]);
       const selected = await current.approve({ title: `${this.descriptor.name} 请求操作`, titleI18n: { key: 'runtime:approval.requestAction', values: { provider: this.descriptor.name } }, detail: detail || tool.toolCallId,
         choices: choices.map(option => ({ id: option.optionId, label: option.kind === 'allow_once' ? '允许本次' : '拒绝本次', labelI18n: { key: option.kind === 'allow_once' ? 'runtime:approval.allowOnce' : 'runtime:approval.denyOnce' } })) },
-      AbortSignal.any([requestSignal, controller.signal]));
+      signal);
+      if (signal.aborted) return { outcome: { outcome: 'cancelled' } };
       if (!choices.some(option => option.optionId === selected)) throw new Error('审批结果不属于运行时提供的选项。');
       return { outcome: { outcome: 'selected', optionId: selected } };
     } catch (error) {
@@ -295,10 +307,15 @@ class AcpSession {
     context.signal.addEventListener('abort', forceStop, { once: true });
     try {
       if (context.signal.aborted) throw abortError();
+      const permission = context.session.settings?.permission ?? 'review';
+      if (permission !== 'review' && !permissionTiers(this.descriptor).includes(permission)) {
+        throw new Error(`${this.descriptor.name} 不支持所选权限档位，任务未发送。`);
+      }
       const options = await this.start(context);
       if (context.signal.aborted || this.closing) throw abortError();
+      await this.launch?.waitUntilReady?.(context.signal, this.nativeId!);
+      if (context.signal.aborted || this.closing) throw abortError();
       context.emit({ type: 'external-id', id: this.nativeId! });
-      await this.launch?.waitUntilReady?.(context.signal);
       this.current = context;
       this.text.clear(); this.tools.clear(); this.segments = 0; this.usage = undefined; this.fatal = undefined;
       await this.configure(options, context.session.modelId ?? this.descriptor.defaultModelId);
@@ -381,10 +398,11 @@ export async function createAcpProvider(id: string, name: string, discover: () =
       try {
         descriptor = await discover();
         if (descriptor.id !== id) throw new Error('ACP provider 身份不符');
+        const tiers = permissionTiers(descriptor);
         provider.info = { ...provider.info, available: true, detail: descriptor.detail, detailI18n: descriptor.detailI18n, models: descriptor.models, defaultModelId: descriptor.defaultModelId,
           health: discoveryHealth({ binary: true, catalog: descriptor.models?.length ? true : undefined, source: 'acp-runtime-discovery' }),
           efforts: descriptor.efforts,
-          capabilities: { resume: true, approvals: true, images: true, textAttachments: true, structured: true, usage: descriptor.reportsUsage !== false, questions: Boolean(descriptor.clientRequests), rewind: false, effort: Boolean(descriptor.efforts?.length), permissions: Boolean(descriptor.sessionModes) } };
+          capabilities: { resume: true, approvals: true, images: true, textAttachments: true, structured: true, usage: descriptor.reportsUsage !== false, questions: Boolean(descriptor.clientRequests), rewind: false, effort: Boolean(descriptor.efforts?.length), permissions: tiers.length > 0, permissionTiers: tiers.length ? tiers : undefined } };
       } catch (error) { descriptor = undefined; provider.info = { ...provider.info, available: false, detail: asError(error).message, detailI18n: { key: 'runtime:detection.failed', values: { provider: name, reason: asError(error).message } }, models: undefined, defaultModelId: undefined,
         health: discoveryHealth({ binary: undefined, source: 'acp-discovery-error' }) }; }
     },

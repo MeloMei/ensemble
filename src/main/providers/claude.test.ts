@@ -15,6 +15,7 @@ if (process.argv.includes('--version')) { console.log('2.1.263 (Claude Code fixt
 const mode = process.env.CLAUDE_ADAPTER_FIXTURE_MODE;
 const trace = process.env.CLAUDE_ADAPTER_FIXTURE_TRACE;
 const sessionId = process.argv.find(arg => arg.startsWith('--session-id=') || arg.startsWith('--resume=')).split('=')[1];
+const permissionMode = process.argv[process.argv.indexOf('--permission-mode') + 1];
 const log = value => appendFileSync(trace, JSON.stringify(value) + '\n');
 log({ argv: process.argv.slice(2) });
 if (process.argv.includes('--mcp-config')) {
@@ -65,7 +66,8 @@ createInterface({ input: process.stdin }).on('line', line => {
     return;
   }
   if (frame.type !== 'user') return;
-  send({ type: 'system', subtype: 'init', model: 'fixture', cwd: process.cwd(), permissionMode: 'manual' });
+  send({ type: 'system', subtype: 'init', model: 'fixture', cwd: process.cwd(),
+    permissionMode: permissionMode === 'manual' || mode === 'wrong-permission-mode' ? 'default' : permissionMode });
   if (mode === 'platform-tool') { host('platform', 'mcp__workbench__get_worker', { sessionId: 'child' }); return; }
   if (mode === 'approval') {
     host('bash-approval', 'Bash', { command: 'fixture command' });
@@ -235,6 +237,34 @@ test('Claude read-only mode denies unverified write tools without asking the use
   assert.equal(argv[argv.indexOf('--permission-mode') + 1], 'plan');
   const decisions = rows.filter(record => record.type === 'control_response');
   assert.equal(decisions.length, 2); assert(decisions.every(record => record.response.response.behavior === 'deny'));
+}));
+
+test('Claude full access preserves questions and resumes under the newly selected permission mode', async () => withFixture(async ({ session, context, records }) => {
+  process.env.CLAUDE_ADAPTER_FIXTURE_MODE = 'question';
+  const provider = await createClaudeProvider();
+  const full = context({
+    session: { ...session, settings: { permission: 'full-access' } },
+    approve: async input => {
+      assert.equal(input.questions?.length, 2);
+      return JSON.stringify({ q0: ['摘要'], q1: ['开头'] });
+    },
+  });
+  await provider.run(full);
+  const native = full.events.find(event => event.type === 'external-id');
+  assert.equal(native?.type, 'external-id');
+  const resumed = { ...session, externalId: native.id };
+  process.env.CLAUDE_ADAPTER_FIXTURE_MODE = 'approval';
+  await provider.run(context({ session: { ...resumed, settings: { permission: 'read-only' } } }));
+  await provider.run(context({ session: { ...resumed, settings: { permission: 'review' } }, approve: async () => 'accept' }));
+  const rows = await records();
+  const invocations = rows.filter(record => record.argv).map(record => record.argv as string[]);
+  assert.deepEqual(invocations.map(argv => argv[argv.indexOf('--permission-mode') + 1]), ['bypassPermissions', 'plan', 'manual']);
+  assert(invocations.slice(1).every(argv => argv.includes(`--resume=${native.id}`)));
+  const edits = rows.filter(record => record.response?.request_id === 'edit-approval');
+  assert.deepEqual(edits.map(record => record.response.response.behavior), ['deny', 'allow']);
+
+  process.env.CLAUDE_ADAPTER_FIXTURE_MODE = 'wrong-permission-mode';
+  await assert.rejects(provider.run(context({ session: full.session })), /Claude 未启用所选权限模式/);
 }));
 
 test('Claude CLI adapter handles its independent streaming and control protocol', async t => withFixture(async ({ context, records }) => {

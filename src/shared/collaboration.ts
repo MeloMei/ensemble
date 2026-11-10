@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { sessionPermissionSchema } from './session-permissions';
 
 const record = <T extends z.ZodRawShape>(shape: T) => z.object(shape).passthrough();
 const timestamp = z.string();
@@ -21,7 +22,7 @@ export const collaborationParticipantSchema = record({
   id: identifier, name: z.string(), mode: z.enum(['managed', 'external']), roles: z.array(z.string()),
   instructions: z.string().optional(), providerId: z.string().optional(), modelId: z.string().optional(), cwd: z.string().optional(),
   binding: record({ identityId: z.string().optional(), sessionId: z.string().optional(), nativeId: z.string().optional() }).optional(),
-  settings: record({ effort: z.string().optional(), permission: z.enum(['review', 'read-only']).optional(), skillIds: z.array(z.string()).optional() }).optional(),
+  settings: record({ effort: z.string().optional(), permission: sessionPermissionSchema.optional(), skillIds: z.array(z.string()).optional() }).optional(),
   permissions: collaborationPermissionsSchema,
 });
 export type CollaborationParticipant = z.infer<typeof collaborationParticipantSchema>;

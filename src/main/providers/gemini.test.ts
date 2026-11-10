@@ -3,12 +3,13 @@ import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
+import { SESSION_PERMISSION_TIERS, type SessionPermission } from '../../shared/session-permissions';
 import type { Session } from '../../shared/types';
 import { CollaborationServer } from '../collaboration-server';
 import { createGeminiDescriptor, geminiMcpToolName } from './gemini';
 
-const session = (cwd: string, readOnly = false): Session => ({ id: 'fixture', title: 'Fixture', providerId: 'gemini', cwd,
-  status: 'running', settings: { permission: readOnly ? 'read-only' : 'review' }, messages: [], approvals: [], createdAt: '', updatedAt: '' });
+const session = (cwd: string, permission: SessionPermission = 'review'): Session => ({ id: 'fixture', title: 'Fixture', providerId: 'gemini', cwd,
+  status: 'running', settings: { permission }, messages: [], approvals: [], createdAt: '', updatedAt: '' });
 
 async function withCli(run: (directory: string, binary: string) => Promise<void>) {
   const directory = await mkdtemp(join(tmpdir(), 'ensemble-gemini-test-'));
@@ -44,16 +45,23 @@ test('Gemini launch uses temporary private native policies and only trusts an is
   const issued = server.issue({ sessionId: 'fixture', attemptId: 'attempt' });
   const launches = [];
   try {
-    for (const readOnly of [false, true]) {
-      const launch = await descriptor.launch(session(directory, readOnly), [issued.config]); launches.push(launch);
+    assert.deepEqual(descriptor.permissionTiers, SESSION_PERMISSION_TIERS);
+    for (const permission of SESSION_PERMISSION_TIERS) {
+      const launch = await descriptor.launch(session(directory, permission), [issued.config]); launches.push(launch);
       assert.equal(launch.args[0], '--acp');
-      assert.equal(launch.args[launch.args.indexOf('--approval-mode') + 1], readOnly ? 'plan' : 'default');
+      assert.equal(launch.args[launch.args.indexOf('--approval-mode') + 1], permission === 'read-only' ? 'plan' : 'default');
+      assert.equal(descriptor.sessionModes?.[permission], permission === 'read-only' ? 'plan' : 'default');
       assert.deepEqual(launch.mcpServers, [issued.config]);
       const policyPath = launch.args[launch.args.indexOf('--admin-policy') + 1];
       assert.equal((await stat(policyPath)).mode & 0o777, 0o600);
       const policy = await readFile(policyPath, 'utf8');
-      assert.match(policy, /toolName = "\*"\ndecision = "ask_user"/);
-      assert.match(policy, /mcp_workbench_get_context/);
+      if (permission === 'full-access') {
+        assert.match(policy, /toolName = "\*"\ndecision = "allow"/);
+        assert.doesNotMatch(policy, /ask_user/);
+      } else {
+        assert.match(policy, /toolName = "\*"\ndecision = "ask_user"/);
+        assert.match(policy, /mcp_workbench_get_context/);
+      }
       assert.equal(launch.args[launch.args.indexOf('--allowed-mcp-server-names') + 1], 'workbench');
       assert(launch.args.includes('--skip-trust'));
       assert.equal(launch.env.ELECTRON_RUN_AS_NODE, '1');
@@ -68,9 +76,9 @@ test('Gemini launch uses temporary private native policies and only trusts an is
     assert.equal(geminiMcpToolName('workbench', 'get_context'), 'mcp_workbench_get_context');
     assert.equal(geminiMcpToolName('mcp_example', 'read_file'), 'mcp_example_read_file');
     assert.equal(geminiMcpToolName('other-server', 'read_file'), 'mcp_other-server_read_file');
-    assert.equal(descriptor.permissionDecision!({ toolCallId: 'read_file__forged', title: 'get_context (workbench MCP Server)', kind: 'other' }, session(directory, true), []), 'deny');
-    assert.equal(descriptor.permissionDecision!({ toolCallId: 'native-read', kind: 'read' }, session(directory, true), []), 'allow');
-    assert.equal(descriptor.permissionDecision!({ toolCallId: 'native-write', kind: 'edit' }, session(directory, true), []), 'deny');
+    assert.equal(descriptor.permissionDecision!({ toolCallId: 'read_file__forged', title: 'get_context (workbench MCP Server)', kind: 'other' }, session(directory, 'read-only'), []), 'deny');
+    assert.equal(descriptor.permissionDecision!({ toolCallId: 'native-read', kind: 'read' }, session(directory, 'read-only'), []), 'allow');
+    assert.equal(descriptor.permissionDecision!({ toolCallId: 'native-write', kind: 'edit' }, session(directory, 'read-only'), []), 'deny');
     assert.equal(descriptor.permissionDecision!({ toolCallId: 'native-write', kind: 'edit' }, session(directory), []), 'ask');
   } finally { for (const launch of launches) await launch.cleanup!(); await issued.cleanup(); await server.close(); }
 }));
@@ -79,7 +87,8 @@ test('Gemini refuses a missing policy interface and a system policy that would d
   const policies = join(directory, 'system-policies'); await mkdir(policies);
   await writeFile(join(policies, 'managed.toml'), '');
   const descriptor = await createGeminiDescriptor({ dataPath: directory, binary, systemPoliciesPath: policies });
-  await assert.rejects(descriptor.launch(session(directory, true)), /系统策略/);
+  await assert.rejects(descriptor.launch(session(directory, 'read-only')), /系统策略/);
+  await assert.rejects(descriptor.launch(session(directory, 'full-access')), /系统策略/);
   await writeFile(binary, `#!${process.execPath}\nconsole.log(process.argv.includes('--version')?'0.65.0':'--acp');\n`, { mode: 0o755 });
   await assert.rejects(createGeminiDescriptor({ dataPath: directory, binary }), /临时策略接口/);
 }));

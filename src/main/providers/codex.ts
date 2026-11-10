@@ -9,6 +9,7 @@ import { abortError, asError, JsonRpcProcess, RpcError, type RpcExit, type RpcNo
 import type { DeliveryReconciliation, ProviderAdapter, TurnContext } from './types';
 import type { MessageDelivery, ProviderModel, Session } from '../../shared/types';
 import type { DisplayText } from '../../shared/display-text';
+import { SESSION_PERMISSION_TIERS } from '../../shared/session-permissions';
 import { attachmentText, emitProcess, processStatus, processText } from './provider-events';
 import { codexMcpConfiguration } from './mcp-configuration';
 import { answerCodexElicitation } from './codex-elicitation';
@@ -21,10 +22,16 @@ type JsonObject = Record<string, unknown>;
 interface CodexTurn { id: string; status: string; error?: { message?: string } | null; items?: JsonObject[]; itemsView?: string }
 interface CodexThreadResult { thread: { id: string; status?: { type: string } } }
 
-export function codexApprovalPolicy(session: Session): 'on-request' | { granular: { sandbox_approval: false; rules: false; mcp_elicitations: true; request_permissions: false; skill_approval: false } } {
-  return session.settings?.permission === 'read-only'
-    ? { granular: { sandbox_approval: false, rules: false, mcp_elicitations: true, request_permissions: false, skill_approval: false } }
-    : 'on-request';
+const MCP_ELICITATIONS_ONLY = { granular: { sandbox_approval: false, rules: false, mcp_elicitations: true, request_permissions: false, skill_approval: false } } as const;
+const CODEX_PERMISSIONS = {
+  review: { sandbox: 'workspace-write', approvalPolicy: 'on-request', sandboxPolicy: undefined },
+  'read-only': { sandbox: 'read-only', approvalPolicy: MCP_ELICITATIONS_ONLY, sandboxPolicy: { type: 'readOnly', networkAccess: true } },
+  'full-access': { sandbox: 'danger-full-access', approvalPolicy: MCP_ELICITATIONS_ONLY, sandboxPolicy: { type: 'dangerFullAccess' } },
+} as const;
+
+function codexPermissionParams(session: Session) {
+  const { sandbox, approvalPolicy, sandboxPolicy } = CODEX_PERMISSIONS[session.settings?.permission ?? 'review'];
+  return { thread: { sandbox, approvalPolicy, approvalsReviewer: 'user' }, turn: { approvalPolicy, sandboxPolicy } };
 }
 
 interface TurnHandlers {
@@ -163,7 +170,7 @@ export async function createCodexProvider(): Promise<CodexProvider> {
     tracksDelivery: true,
     info: {
       id: 'codex', name: 'Codex', source: 'builtin', available: false, detail, detailI18n,
-      capabilities: { resume: true, approvals: true, images: true, rewind: true, permissions: true, effort: true },
+      capabilities: { resume: true, approvals: true, images: true, rewind: true, permissions: true, permissionTiers: SESSION_PERMISSION_TIERS, effort: true },
     },
     async refreshInfo() {
       let protocolReady: boolean | undefined;
@@ -240,7 +247,7 @@ export async function createCodexProvider(): Promise<CodexProvider> {
         connection = new CodexSessionConnection(binary, session.cwd);
         sessions.set(session.id, connection);
         await connection.initialize(new AbortController().signal);
-        const resumed = await connection.rpc.request<CodexThreadResult>('thread/resume', { threadId: session.externalId, cwd: session.cwd, excludeTurns: true });
+        const resumed = await connection.rpc.request<CodexThreadResult>('thread/resume', { threadId: session.externalId, cwd: session.cwd, excludeTurns: true, ...codexPermissionParams(session).thread });
         if (resumed.thread?.id !== session.externalId) throw new Error('Codex 恢复了不同的原生会话，已停止回退。');
         connection.threadId = resumed.thread.id;
       }
@@ -304,6 +311,7 @@ async function reconcileCodexDelivery(rpc: JsonRpcProcess, threadId: string, del
 }
 
 async function runCodex(connection: CodexSessionConnection, context: TurnContext): Promise<void> {
+  const permissions = codexPermissionParams(context.session);
   let threadId = connection.threadId;
   let turnId: string | undefined;
   let terminalCompletion = false;
@@ -455,7 +463,7 @@ async function runCodex(connection: CodexSessionConnection, context: TurnContext
         response = await rpc.request<CodexThreadResult>(method, {
           ...(context.session.externalId ? { threadId: context.session.externalId, excludeTurns: true } : {}),
           cwd: context.session.cwd,
-          approvalPolicy: codexApprovalPolicy(context.session), approvalsReviewer: 'user', sandbox: context.session.settings?.permission === 'read-only' ? 'read-only' : 'workspace-write',
+          ...permissions.thread,
           ...(context.session.modelId ? { model: context.session.modelId } : {}),
           ...(context.mcpServers?.length ? { config: { mcp_servers: codexMcpConfiguration(context.mcpServers) } } : {}),
         }, { signal: context.signal });
@@ -481,7 +489,7 @@ async function runCodex(connection: CodexSessionConnection, context: TurnContext
       ...(context.userMessageId ? { clientUserMessageId: context.userMessageId } : {}),
       ...(context.session.modelId ? { model: context.session.modelId } : {}),
       ...(context.session.settings?.effort ? { effort: context.session.settings.effort } : {}),
-      ...(context.session.settings?.permission === 'read-only' ? { approvalPolicy: codexApprovalPolicy(context.session), sandboxPolicy: { type: 'readOnly', networkAccess: true } } : {}),
+      ...permissions.turn,
     }, { signal: context.signal });
     if (!started.turn?.id) throw new Error('Codex 未返回任务 id');
     turnId = started.turn.id;

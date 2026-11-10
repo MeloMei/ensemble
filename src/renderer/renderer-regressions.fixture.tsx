@@ -9,6 +9,7 @@ import { EditorView } from '@codemirror/view';
 import { i18n, translate } from '../shared/i18n';
 import type { DiagnosticEntry, FileContent, McpSettingsView, Message, PromptInput, ProviderInfo, Session, Snapshot, UnsavedFileSummary, Workflow, WorkflowInput, Workspace, WorkspaceManagement } from '../shared/types';
 import type { BackendConnectionState, SessionHistoryWindow } from '../shared/backend';
+import { SESSION_PERMISSION_TIERS, type SessionPermission } from '../shared/session-permissions';
 import { SettingsDialog } from './SettingsDialog';
 import { LanguageProvider } from './language';
 import { OverlayProvider } from './overlays';
@@ -2021,7 +2022,7 @@ const cases: Record<string, () => Promise<void>> = {
     const writes: Record<string, unknown>[] = [];
     let sends = 0;
     let draftChanges = 0;
-    const configuredProvider: ProviderInfo = { ...provider, models: [
+    const configuredProvider: ProviderInfo = { ...provider, capabilities: { ...provider.capabilities, permissionTiers: SESSION_PERMISSION_TIERS }, models: [
       { id: 'model-a', name: 'Model A', free: false },
       { id: 'model-b', name: 'Alternate', free: false, efforts: ['low'] },
       { id: 'model-c', name: 'Fast model', free: true, efforts: [] },
@@ -2073,7 +2074,7 @@ const cases: Record<string, () => Promise<void>> = {
     window.workbench = {
       listSkills: async () => [{ id: 'skill', name: 'Skill', path: '/skill', description: '', scope: 'project', editable: true }],
       sendPrompt: async () => { sends++; },
-      updateSession: async (_id: string, patch: { modelId?: string | null; settings?: { effort?: string | null; permission?: 'review' | 'read-only' }; skillAssignment?: unknown }) => {
+      updateSession: async (_id: string, patch: { modelId?: string | null; settings?: { effort?: string | null; permission?: SessionPermission }; skillAssignment?: unknown }) => {
         writes.push(structuredClone(patch));
         if (patch.skillAssignment) return { skillIds: ['skill'], updatedAt: '2026-11-04T01:00:00Z' };
         if (holdWrite) await holdWrite.promise;
@@ -2107,8 +2108,11 @@ const cases: Record<string, () => Promise<void>> = {
     await key('Escape', 27);
     await waitFor(() => !picker() && document.activeElement === trigger(), 'Escape did not close the picker and restore trigger focus');
     assert(writes.length === 0, 'Canceling the picker changed a setting');
+    await chooseOption(permission(), 'full-access');
+    await waitFor(() => permission().textContent?.includes(translate('workspace:chat.fullAccessPermission')) === true, 'Full access did not persist in the permissions menu');
     await chooseOption(permission(), 'read-only');
     await waitFor(() => !document.querySelector('.composer-select-menu') && document.activeElement === permission(), 'The permissions menu did not restore focus');
+    const permissionWrites = writes.length;
 
     const persistentPanel = await open();
     const persistentTitle = persistentPanel.querySelector('h2');
@@ -2133,12 +2137,12 @@ const cases: Record<string, () => Promise<void>> = {
     const percent = () => parseFloat(rail.style.getPropertyValue('--slider-position'));
     await waitFor(() => rail.hasAttribute('data-dragging') && percent() > 79 && percent() < 85,
       () => `The slider did not track the pointer at 82% during drag (position ${percent()}%)`, 10);
-    assert(Number(writes.length) === 1, 'The slider saved during a pointer drag');
+    assert(writes.length === permissionWrites, 'The slider saved during a pointer drag');
     assert(getComputedStyle(rail.querySelector('.discrete-slider-thumb')!).transitionDuration === '0s', 'The thumb was eased during a pointer drag');
     holdWrite = deferred<void>();
     await drag('mouseReleased', .82);
     assertStable('pointer release');
-    assert(percent() === 100 && !rail.hasAttribute('data-dragging') && Number(writes.length) === 2, 'Pointer release did not snap and commit once');
+    assert(percent() === 100 && !rail.hasAttribute('data-dragging') && writes.length === permissionWrites + 1, 'Pointer release did not snap and commit once');
     await show({ pending: new Set([`session-settings-${session.id}`]) });
     assertStable('pending settings write');
     assert(button('workspace:chat.sendTask').disabled, 'A settings write leaves Send available');
@@ -2191,7 +2195,7 @@ const cases: Record<string, () => Promise<void>> = {
     assert(picker() === persistentPanel && !slider() && !trigger().querySelector('.composer-model-effort'), 'A model without reasoning support displayed the effort control');
     await expand(); await choose('Fast model'); await settle();
     assert(JSON.stringify(writes) === JSON.stringify([
-      { settings: { permission: 'read-only' } }, { settings: { effort: 'high' } },
+      { settings: { permission: 'full-access' } }, { settings: { permission: 'read-only' } }, { settings: { effort: 'high' } },
       { modelId: 'model-b', settings: { effort: null } }, { settings: { effort: 'low' } },
       { modelId: null }, { settings: { effort: null } }, { modelId: 'model-c' },
     ]), `A stale or duplicate setting was sent: ${JSON.stringify(writes)}`);

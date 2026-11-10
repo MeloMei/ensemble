@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import { sessionPermissionSchema } from '../shared/session-permissions';
 import { WorkbenchEngine } from './engine';
 import { StateStore } from './store';
 import { createCodexProvider } from './providers/codex';
@@ -41,7 +42,7 @@ const idSchema = z.string().min(1).max(200);
 const cwdSchema = z.string().min(1).max(4096);
 const promptSchema = z.string().trim().min(1).max(PROMPT_TEXT_LIMIT);
 const modelIdSchema = z.string().min(1).max(1000).optional();
-const settingsSchema = z.object({ effort: z.string().min(1).max(100).nullable().optional(), permission: z.enum(['review', 'read-only']).nullable().optional(), skillIds: z.array(idSchema).max(8).nullable().optional() }).strict();
+const settingsSchema = z.object({ effort: z.string().min(1).max(100).nullable().optional(), permission: sessionPermissionSchema.nullable().optional(), skillIds: z.array(idSchema).max(8).nullable().optional() }).strict();
 const sessionUpdateSchema = z.object({
   title: z.string().trim().min(1).max(200).optional(), archived: z.boolean().optional(),
   modelId: modelIdSchema.nullable(), settings: settingsSchema.optional(),

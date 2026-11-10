@@ -25,7 +25,7 @@ async function fixture(run: (context: TurnContext) => Promise<void> = async cont
   const store = new StateStore(join(cwd, 'data', 'state.json')); await store.load();
   const engine = new WorkbenchEngine(store, join(cwd, 'plugins'), () => {});
   const adapter: ProviderAdapter = { info: { id: 'fixture', name: 'Controlled', source: 'plugin', available: true, detail: 'no model',
-    capabilities: { resume: true, approvals: true, permissions: true } }, run };
+    capabilities: { resume: true, approvals: true, permissions: true, permissionTiers: ['review', 'read-only', 'full-access'] } }, run };
   engine.setProviders([adapter], [], []);
   const core = new CollaborationCore(store, engine);
   return { cwd, store, engine, core,
@@ -115,16 +115,34 @@ test('a managed caller yields its physical turn and resumes its original native 
 
 test('an ordinary read-only session cannot grant itself writable workers by creating a run', async () => {
   let core!: CollaborationCore;
+  let holding = false;
   const f = await fixture(async context => {
+    if (context.prompt === 'hold') {
+      holding = true;
+      await new Promise<void>(resolve => context.signal.addEventListener('abort', () => resolve(), { once: true }));
+      return;
+    }
+    assert.equal(context.session.settings?.permission, 'read-only');
     await assert.rejects(core.call({ kind: 'session', sessionId: context.session.id, attemptId: context.session.attempts!.at(-1)!.id }, 'create_run', {
       requestId: 'no-escalation', name: 'attempted', cwd: f.cwd, callerParticipantId: 'source', start: true, relationships: [],
       participants: [{ ...participant('source'), settings: { permission: 'read-only' }, permissions: { ...permissions, workspace: { cwd: f.cwd, access: 'read-only' } } }, participant('writable')],
     }), /不能通过创建协作扩大执行权限/);
+    await assert.rejects(core.call({ kind: 'session', sessionId: context.session.id, attemptId: context.session.attempts!.at(-1)!.id }, 'create_run', {
+      requestId: 'no-full-access-grant', name: 'attempted', cwd: f.cwd, relationships: [],
+      participants: [{ ...participant('executor'), settings: { permission: 'full-access' } }],
+    }), /完全访问权限只能由用户/);
     context.emit({ type: 'text', itemId: 'result', text: 'permission preserved' });
   }); core = f.core;
   try {
     const id = await f.engine.createSession({ title: 'read-only', providerId: 'fixture', cwd: f.cwd });
-    f.engine.updateSession(id, { settings: { permission: 'read-only' } }); f.engine.sendMessage(id, 'try delegation');
+    f.engine.updateSession(id, { settings: { permission: 'read-only' } });
+    f.engine.sendMessage(id, 'hold');
+    await until(() => holding);
+    f.engine.sendMessage(id, 'try delegation');
+    f.engine.cancelSession(id);
+    await f.engine.waitSession(id);
+    f.engine.updateSession(id, { settings: { permission: 'review' } });
+    f.engine.setSessionQueuePaused(id, false);
     await until(() => f.engine.getSession(id).status === 'completed'); assert.equal(f.store.state.collaboration.runs.length, 0);
   } finally { await f.close(); }
 });

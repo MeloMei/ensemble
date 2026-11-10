@@ -98,6 +98,14 @@ test('DeepSeek descriptor caps isolated runtime output and selects only an adver
     }
     assert.equal(first.env.DSH_HOME, '/fixture-existing-harness-home');
     assert.equal(first.env.DSH_PERMISSION_MODE, 'workspace-write');
+    await assert.rejects(first.waitUntilReady!(new AbortController().signal, 'native-id'), /未确认所选会话权限/);
+    const full = await descriptor.launch({ ...session, settings: { permission: 'full-access' }, externalId: 'native-id' });
+    try {
+      assert.equal(full.env.DSH_PERMISSION_MODE, 'danger-full-access');
+      const ready = join(dirname(full.args[3]), 'permission-ready.json');
+      await writeFile(ready, JSON.stringify({ sessionId: 'another-id', sandbox: 'danger-full-access', approval: 'never' }));
+      await assert.rejects(full.waitUntilReady!(new AbortController().signal, 'native-id'), /未确认所选会话权限/);
+    } finally { await full.cleanup?.(); }
     assert.equal(first.env.DEEPSEEK_API_KEY, 'fixture-existing-key');
     assert.equal(process.env.DSH_PERMISSION_MODE, 'danger-full-access');
     await first.cleanup?.();

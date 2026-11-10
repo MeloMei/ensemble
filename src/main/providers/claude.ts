@@ -8,6 +8,7 @@ import { delimiter, join } from 'node:path';
 import { promisify } from 'node:util';
 import type { ApprovalInput, ProviderModel } from '../../shared/types';
 import type { DisplayText } from '../../shared/display-text';
+import { SESSION_PERMISSION_TIERS } from '../../shared/session-permissions';
 import { createNdjsonDecoder } from './ndjson';
 import { signalProcessTree } from './process-tree';
 import type { ProviderAdapter, TurnContext } from './types';
@@ -20,6 +21,7 @@ const execute = promisify(execFile);
 const TURN_TIMEOUT_MS = 60 * 60 * 1_000;
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 const MODEL_ALIASES = ['haiku', 'sonnet', 'opus'] as const;
+const CLAUDE_PERMISSION_MODES = { review: 'manual', 'read-only': 'plan', 'full-access': 'bypassPermissions' } as const;
 type ObjectValue = Record<string, unknown>;
 type PendingControl = { resolve(value: ObjectValue): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> };
 type StreamBlock = { type: string; text: string };
@@ -84,7 +86,7 @@ export async function createClaudeProvider(): Promise<ProviderAdapter> {
   return {
     info: {
       id: 'claude', name: 'Claude Code', source: 'builtin', available: Boolean(binary && version), detail, detailI18n,
-      capabilities: { resume: true, approvals: true, images: true, rewind: false, permissions: true, effort: true },
+      capabilities: { resume: true, approvals: true, images: true, rewind: false, permissions: true, permissionTiers: SESSION_PERMISSION_TIERS, effort: true },
       efforts: EFFORTS,
       models: models.length ? models : undefined,
       health: discoveryHealth({ binary: Boolean(binary), catalog: models.length ? true : undefined, source: 'claude-local-configuration' }),
@@ -101,8 +103,9 @@ async function runClaude(binary: string, context: TurnContext): Promise<void> {
   if (context.session.settings?.effort && !EFFORTS.includes(context.session.settings.effort)) throw new Error('Claude Code 不支持所选思考档。');
   const sessionId = context.session.externalId ?? randomUUID();
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId)) throw new Error('Claude 会话 ID 无效，无法恢复');
+  const permissionMode = CLAUDE_PERMISSION_MODES[context.session.settings?.permission ?? 'review'];
   const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
-    '--include-partial-messages', '--forward-subagent-text', '--permission-prompt-tool', 'stdio', '--permission-mode', context.session.settings?.permission === 'read-only' ? 'plan' : 'manual',
+    '--include-partial-messages', '--forward-subagent-text', '--permission-prompt-tool', 'stdio', '--permission-mode', permissionMode,
     context.session.externalId ? `--resume=${sessionId}` : `--session-id=${sessionId}`];
   if (context.session.modelId) args.push('--model', context.session.modelId);
   if (context.session.settings?.effort) args.push('--effort', context.session.settings.effort);
@@ -399,7 +402,11 @@ async function runClaude(binary: string, context: TurnContext): Promise<void> {
         if (frame.type === 'stream_event') { onPartial(frame, channel); return; }
         if (frame.type === 'assistant') { onAssistant(frame, channel); return; }
         if (frame.type === 'system') {
-          if (frame.subtype === 'init' && typeof frame.model === 'string') context.emit({ type: 'activity', text: `Claude 原生模型：${frame.model}` });
+          if (frame.subtype === 'init') {
+            const reportedMode = frame.permissionMode === 'default' ? 'manual' : frame.permissionMode;
+            if (typeof reportedMode === 'string' && reportedMode !== permissionMode) throw new Error(`Claude 未启用所选权限模式（期望 ${permissionMode}，收到 ${reportedMode}）`);
+            if (typeof frame.model === 'string') context.emit({ type: 'activity', text: `Claude 原生模型：${frame.model}` });
+          }
           if (frame.subtype === 'session_state_changed') {
             if (typeof frame.state !== 'string') throw new Error('Claude 会话状态无效');
             sessionState = frame.state;

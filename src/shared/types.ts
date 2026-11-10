@@ -4,6 +4,7 @@ import type { DisplayText } from './display-text';
 import type { BackendConnectionState, SessionHistoryPage, TerminalOutputEvent } from './backend';
 import type { ProviderCapabilities } from './provider-capabilities';
 import type { AppUpdateState } from './application-updates';
+import type { SessionPermission } from './session-permissions';
 export type { ProviderCapabilities } from './provider-capabilities';
 
 export type SessionStatus = 'idle' | 'queued' | 'running' | 'waiting_approval' | 'waiting_children' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
@@ -401,7 +402,7 @@ export interface CreateSessionInput {
 export interface SessionContinuationTarget { providerId: string; modelId?: string }
 export interface CurrencyBalance { currency: string; total: string; granted: string; toppedUp: string }
 export interface DeepSeekBalance extends CurrencyBalance { balances: CurrencyBalance[]; checkedAt: string }
-export interface SessionSettings { effort?: string; permission?: 'review' | 'read-only'; skillIds?: string[] }
+export interface SessionSettings { effort?: string; permission?: SessionPermission; skillIds?: string[] }
 export type SessionSettingsPatch = { [K in keyof SessionSettings]?: SessionSettings[K] | null };
 export interface SessionUpdate { title?: string; archived?: boolean; settings?: SessionSettingsPatch; modelId?: string | null }
 export interface SessionSkillAssignment { skillId: string; enabled: boolean }

@@ -7,6 +7,7 @@ import { delimiter, dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { gte, valid } from 'semver';
 import type { ToolCallUpdate } from '@agentclientprotocol/sdk';
+import { SESSION_PERMISSION_TIERS } from '../../shared/session-permissions';
 import type { McpServerConfig, Session } from '../../shared/types';
 import { isIssuedWorkbenchMcpServer, waitForWorkbenchMcpReady } from '../collaboration-server';
 import { claudeMcpConfiguration, WORKBENCH_MCP_TOOLS } from './mcp-configuration';
@@ -41,6 +42,7 @@ function nativeToolName(tool: ToolCallUpdate): string | undefined {
 }
 
 export function qoderPermissionDecision(tool: ToolCallUpdate, session: Session, servers: McpServerConfig[]): 'allow' | 'deny' | 'ask' {
+  if (session.settings?.permission === 'full-access') return 'allow';
   const name = nativeToolName(tool);
   if (!name) return 'deny';
   if (name.startsWith('mcp__')) {
@@ -78,7 +80,9 @@ export async function createQoderDescriptor(options: { binary?: string } = {}): 
   }
   return {
     id: 'qoder', name: 'Qoder CLI', version, detail: `${version} · ${command}`,
-    tracksDelivery: true, usageScope: 'turn', sessionModes: { review: 'default', 'read-only': 'default' },
+    tracksDelivery: true, usageScope: 'turn',
+    permissionTiers: SESSION_PERMISSION_TIERS,
+    sessionModes: { review: 'default', 'read-only': 'default', 'full-access': 'default' },
     permissionDecision: qoderPermissionDecision,
     selectModel(choices, modelId) {
       const selected = choices.find(choice => choice.value === modelId);
@@ -86,23 +90,27 @@ export async function createQoderDescriptor(options: { binary?: string } = {}): 
       return selected;
     },
     async launch(session, servers = []) {
+      const permission = session.settings?.permission ?? 'review';
       requireUnambiguousMcpNames(servers);
       const directory = await mkdtemp(join(tmpdir(), 'ensemble-qoder-'));
       const settingsPath = join(directory, 'settings.json');
       const mcpPath = join(directory, 'mcp.json');
       const cleanup = () => rm(directory, { recursive: true, force: true });
       try {
+        const restrictedTools = permission !== 'full-access' ? {
+          skills: { enabled: false, loadFromAgentsDirectory: false },
+          permissions: { ask: ['*'] },
+        } : {};
         await Promise.all([
           writeFile(settingsPath, JSON.stringify({ general: { enableAutoUpdate: false }, plugins: { autoUpdate: false },
-            disableAllHooks: true, skills: { enabled: false, loadFromAgentsDirectory: false },
-            security: { disableYoloMode: true }, mcp: { lazyLoad: false }, permissions: { ask: ['*'] } }), { mode: 0o600, flag: 'wx' }),
+            disableAllHooks: true, security: { disableYoloMode: true }, mcp: { lazyLoad: false }, ...restrictedTools }), { mode: 0o600, flag: 'wx' }),
           writeFile(mcpPath, JSON.stringify(claudeMcpConfiguration(servers)), { mode: 0o600, flag: 'wx' }),
         ]);
       } catch (error) { await cleanup(); throw error; }
-      const tools = session.settings?.permission === 'read-only' ? READ_TOOLS : REVIEW_TOOLS;
+      const tools = permission === 'read-only' ? READ_TOOLS : REVIEW_TOOLS;
       return { command, args: ['--acp', '--permission-mode', 'default', '--setting-sources=user', '--settings', settingsPath,
         '--strict-mcp-config', '--mcp-config', mcpPath, '--allowed-mcp-server-names', servers.map(server => server.name).join(',') || `ensemble-none-${randomUUID()}`,
-        '--tools', tools.join(',')],
+        ...(permission === 'full-access' ? [] : ['--tools', tools.join(',')])],
         env: { ...env, ELECTRON_RUN_AS_NODE: '1', QODER_MCP_LAZY: '0' }, mcpServers: servers,
         async waitUntilReady(signal) { await Promise.all(servers.filter(isIssuedWorkbenchMcpServer).map(server => waitForWorkbenchMcpReady(server, signal))); }, cleanup };
     },

@@ -1,6 +1,7 @@
 import { translate } from '../shared/i18n';
 import type { CollaborationDefinition, CollaborationParticipant, CollaborationTaskTemplate } from '../shared/collaboration';
 import type { ProviderInfo } from '../shared/types';
+import { permissionTiersFor } from '../shared/session-permissions';
 
 export type CollaborationDraft = Pick<CollaborationDefinition, 'name' | 'cwd' | 'participants' | 'relationships' | 'limits' | 'completion'> & {
   steps: CollaborationTaskTemplate[];
@@ -8,8 +9,9 @@ export type CollaborationDraft = Pick<CollaborationDefinition, 'name' | 'cwd' | 
 
 export function participantPermissionIssue(participant: CollaborationParticipant, provider?: ProviderInfo): string | undefined {
   if (participant.mode === 'external' || !provider) return;
-  if ((participant.permissions.workspace?.access === 'read-only' || participant.settings?.permission === 'read-only') && !provider.capabilities.permissions) {
-    return translate('collaboration:permission.unsupported', { name: provider.name });
+  const permission = participant.permissions.workspace?.access === 'read-only' ? 'read-only' : participant.settings?.permission;
+  if (permission && !permissionTiersFor(provider.capabilities).includes(permission)) {
+    return translate(permission === 'read-only' ? 'collaboration:permission.unsupported' : 'collaboration:permission.tierUnsupported', { name: provider.name });
   }
 }
 
@@ -31,7 +33,7 @@ export function createImplementationReviewDraft(input: {
       id: 'implementer', name: translate('collaboration:template.implementer'), mode: 'managed', roles: [translate('collaboration:template.implementationRole')],
       providerId: input.implementer?.id, modelId: input.implementerModelId,
       instructions: translate('collaboration:template.implementationInstructions'),
-      settings: input.implementer?.capabilities.permissions ? { permission: 'review' } : {},
+      settings: permissionTiersFor(input.implementer?.capabilities).includes('review') ? { permission: 'review' } : {},
       permissions: { submitTasks: false, sendMessages: false, configureRun: false, publishArtifacts: false, workspace: { cwd: input.cwd, access: 'read-write' } },
     },
     {

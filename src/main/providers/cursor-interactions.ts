@@ -76,9 +76,11 @@ export async function approveCursorPlan(value: unknown, context: TurnContext, si
   try {
     const plan = planSchema.parse(value);
     const readonly = context.session.settings?.permission === 'read-only';
+    const notice = readonly ? '只读回合仅展示计划，不创建 Cursor 计划文件。'
+      : '批准后 Cursor 会将原生计划保存到 ~/.cursor/plans/。';
+    const editApproval = !readonly && context.session.settings?.permission !== 'full-access' ? '后续文件修改仍需单独批准。' : '';
     const choice = await context.approve({ title: plan.name || 'Cursor 请求确认计划',
-      detail: [plan.overview, plan.plan, readonly ? '只读回合仅展示计划，不创建 Cursor 计划文件。'
-        : '批准后 Cursor 会将原生计划保存到 ~/.cursor/plans/。后续文件修改仍需单独批准。'].filter(Boolean).join('\n\n'),
+      detail: [plan.overview, plan.plan, notice + editApproval].filter(Boolean).join('\n\n'),
       choices: readonly ? [{ id: 'read', label: '已阅读' }, { id: 'close', label: '关闭' }]
         : [{ id: 'accept', label: '批准并保存计划' }, { id: 'reject', label: '拒绝计划' }] }, signal);
     if (signal.aborted || context.signal.aborted || choice === 'cancel') return { outcome: { outcome: 'cancelled' } };

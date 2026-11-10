@@ -37,6 +37,7 @@ import { measureConversationRow, useReadingAnchor, useSessionReadingPosition } f
 import { WorkspaceFileNavigation, workspaceFileReference } from './workspace-file-reference';
 import { diffLines } from './review-notes';
 import { questionExcerpt } from '../shared/side-question';
+import { permissionTiersFor, sessionPermissionSchema } from '../shared/session-permissions';
 import { SideQuestion, SideQuestionAction, useAnswerQuestionSelection, type SideQuestionOrigin } from './SideQuestion';
 import { DraftEvidenceCards } from './DraftEvidence';
 import { useWorkspaceFileMention, WorkspaceFileMention } from './WorkspaceFileMention';
@@ -367,6 +368,11 @@ function ComposerSettings({ session, provider, disabled, saving, perform }: {
 }) {
   const { t } = useTranslation('workspace');
   const hint = saving ? t('chat.savingSettings') : t('chat.settingsAfterTask');
+  const tiers = permissionTiersFor(provider?.capabilities);
+  const permission = session.settings?.permission ?? (tiers.includes('review') ? 'review' : undefined);
+  const permissionLabels = { review: t('chat.reviewPermissionShort'), 'read-only': t('common.readOnly'), 'full-access': t('chat.fullAccessPermission') };
+  const permissionDescriptions = { review: t('chat.reviewPermission'), 'read-only': undefined, 'full-access': t('chat.fullAccessPermissionDescription') };
+  const permissionLabel = permission ? permissionLabels[permission] : t('chat.runtimeDefault');
   const change = async (patch: Parameters<typeof window.workbench.updateSession>[1]) => {
     let accepted = false;
     await perform(`session-settings-${session.id}`, async () => {
@@ -377,10 +383,10 @@ function ComposerSettings({ session, provider, disabled, saving, perform }: {
   };
   return <>
     <ComposerModelPicker session={session} provider={provider} disabled={disabled} saving={saving} hint={hint} onChange={change} />
-    {provider?.capabilities.permissions && <AppSelect compact side="top" menuClassName="composer-select-menu" label={t('chat.permissions')} icon={<ShieldCheck size={13} />}
-      value={session.settings?.permission ?? 'review'} display={session.settings?.permission === 'read-only' ? t('common.readOnly') : t('chat.reviewPermissionShort')}
-      disabled={disabled || saving} hint={hint} onChange={value => void change({ settings: { permission: value as 'review' | 'read-only' } })}
-      options={[{ value: 'review', label: t('chat.reviewPermission') }, { value: 'read-only', label: t('common.readOnly') }]} />}
+    {tiers.length > 0 && <AppSelect compact side="top" menuClassName="composer-select-menu" label={t('chat.permissions')} icon={<ShieldCheck size={13} />}
+      value={permission ?? ''} display={permission && !tiers.includes(permission) ? `${permissionLabel} · ${t('chat.modelUnavailable')}` : permissionLabel}
+      disabled={disabled || saving} hint={hint} onChange={value => void change({ settings: { permission: sessionPermissionSchema.parse(value) } })}
+      options={tiers.map(value => ({ value, label: permissionLabels[value], description: permissionDescriptions[value] }))} />}
     {saving && <span className="composer-settings-saving" role="status" aria-label={t('chat.savingSettings')}><LoaderCircle size={13} className="spin" /></span>}
   </>;
 }

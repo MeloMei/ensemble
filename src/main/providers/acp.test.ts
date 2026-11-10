@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { SESSION_PERMISSION_TIERS } from '../../shared/session-permissions';
 import type { ApprovalInput, Session } from '../../shared/types';
 import { createAcpProvider } from './acp';
 import type { AcpRuntimeDescriptor } from './acp-types';
@@ -63,8 +64,8 @@ const permission = () => {
   } });
   send({ id: 'permission-opaque', method: 'session/request_permission', params: {
     sessionId, toolCall: { toolCallId: 'tool-1', status: 'pending' }, options: [
-      { optionId: 'opaque-remember', name: 'Always', kind: 'allow_always' },
-      { optionId: 'opaque-allow', name: 'Once', kind: 'allow_once' },
+      { optionId: mode === 'approval-duplicate' ? 'opaque-allow' : 'opaque-remember', name: 'Always', kind: 'allow_always' },
+      ...(mode === 'approval-permanent-only' ? [] : [{ optionId: 'opaque-allow', name: 'Once', kind: 'allow_once' }]),
       { optionId: 'opaque-reject', name: 'Reject', kind: 'reject_once' },
     ],
   } });
@@ -94,6 +95,7 @@ createInterface({ input: process.stdin }).on('line', line => {
   if (['session/new', 'session/resume', 'session/load'].includes(frame.method)) {
     if (mode === 'resume-rejected') { send({ id: frame.id, error: { code: -32602, message: 'saved session unavailable' } }); return; }
     sessionId = frame.params.sessionId || sessionId;
+    if (frame.params.sessionId) sessionMode = 'plan';
     chunk('history', 'historical output');
     if (mode.startsWith('legacy')) {
       respond(frame.id, { ...(frame.method === 'session/new' ? { sessionId } : {}), models: { currentModelId: model, availableModels: [{ modelId: 'runtime-free', name: 'Free' }, { modelId: 'runtime-review', name: 'Review' }] },
@@ -115,7 +117,7 @@ createInterface({ input: process.stdin }).on('line', line => {
   if (frame.method === 'session/close') { respond(frame.id, {}); return; }
   if (frame.method === 'session/cancel') {
     cancelled = true;
-    if (permissionAnswered || !['approval', 'dispose', 'vendor-abort'].includes(mode)) finish('cancelled');
+    if (permissionAnswered || !(mode.startsWith('approval') || ['dispose', 'vendor-abort'].includes(mode))) finish('cancelled');
     return;
   }
   if (frame.method === 'session/prompt') {
@@ -138,7 +140,7 @@ createInterface({ input: process.stdin }).on('line', line => {
       process.stdout.write('', () => process.exit(7)); return;
     }
     if (mode === 'exit-zero' || mode === 'exit-error') { process.exit(mode === 'exit-zero' ? 0 : 7); }
-    if (mode === 'approval' || mode === 'dispose') { permission(); return; }
+    if (mode.startsWith('approval') || mode === 'dispose') { permission(); return; }
     if (mode === 'empty') { finish('end_turn'); return; }
     if (mode === 'limited') { chunk('answer', 'partial output'); finish('max_tokens'); return; }
     stream();
@@ -208,6 +210,8 @@ test('ACP native form elicitation uses the user approval UI and returns typed or
   const f = await fixture('form');
   let approvals = 0;
   try {
+    f.descriptor.permissionTiers = SESSION_PERMISSION_TIERS;
+    f.context.session.settings = { permission: 'full-access' };
     f.context.approve = async approval => {
       approvals++;
       assert.equal(approval.title, 'Controlled ACP 需要你的回答');
@@ -257,6 +261,8 @@ test('ACP legacy model and mode acknowledgments use native catalogs without repl
 test('ACP extension requests receive the active context and the exact user reply', async () => {
   const f = await fixture('vendor');
   try {
+    f.descriptor.permissionTiers = SESSION_PERMISSION_TIERS;
+    f.context.session.settings = { permission: 'full-access' };
     let asked = 0;
     f.context.approve = async input => { asked++; assert.equal(input.title, 'Native extension'); return 'confirm'; };
     f.descriptor.clientRequests = { 'fixture/confirm': async (params, context, signal) => {
@@ -272,6 +278,8 @@ test('ACP extension requests receive the active context and the exact user reply
 test('ACP runtime permission decisions deny operations without asking and delivery failures remain distinguishable', async () => {
   const denied = await fixture('approval');
   try {
+    denied.descriptor.permissionTiers = SESSION_PERMISSION_TIERS;
+    denied.context.session.settings = { permission: 'full-access' };
     denied.descriptor.permissionDecision = () => 'deny';
     await assert.rejects(denied.provider.run(denied.context), { name: 'AbortError' });
     assert.deepEqual((await denied.trace()).find(frame => frame.id === 'permission-opaque' && !frame.method)?.result,
@@ -303,10 +311,15 @@ test('ACP refuses to dispatch while a native MCP initialization gate has failed'
   const f = await fixture();
   const launch = f.descriptor.launch;
   f.descriptor.tracksDelivery = true;
-  f.descriptor.launch = async (...args) => ({ ...await launch(...args), async waitUntilReady() { throw new Error('MCP initialization incomplete'); } });
+  f.descriptor.launch = async (...args) => ({ ...await launch(...args), async waitUntilReady(signal, nativeSessionId) {
+    assert.equal(signal, f.context.signal);
+    assert.equal(nativeSessionId, 'fixture-native');
+    throw new Error('MCP initialization incomplete');
+  } });
   try {
     await assert.rejects(f.provider.run(f.context), /MCP initialization incomplete/);
-    assert(!(await f.trace()).some(frame => frame.method === 'session/prompt'));
+    assert(!(await f.trace()).some(frame => frame.method === 'session/prompt' || frame.method === 'session/set_config_option'));
+    assert(!f.events.some(event => event.type === 'external-id'));
     assert(f.events.some(event => event.type === 'delivery' && event.status === 'rejected'));
   } finally { await f.cleanup(); }
 });
@@ -451,6 +464,36 @@ test('ACP approvals preserve tool input and expose only exact single-use choices
     assert.deepEqual(frames.find(frame => frame.id === 'foreign-approval' && !frame.method)?.result,
       { outcome: { outcome: 'cancelled' } });
   } finally { await f.cleanup(); }
+});
+
+test('ACP full access restores a writable mode and only grants unambiguous one-time tool permissions', { timeout: 8000 }, async () => {
+  for (const mode of ['approval', 'approval-permanent-only', 'approval-duplicate']) {
+    const f = await fixture(mode);
+    try {
+      f.context.session.settings = { permission: 'full-access' };
+      await assert.rejects(f.provider.run(f.context), /不支持所选权限档位/);
+      assert.deepEqual(await f.trace(), []);
+
+      f.descriptor.permissionTiers = SESSION_PERMISSION_TIERS;
+      f.descriptor.sessionModes = { review: 'build', 'read-only': 'plan', 'full-access': 'build' };
+      f.descriptor.permissionDecision = () => 'ask';
+      f.context.session.externalId = 'resumed-plan';
+      await f.provider.refreshInfo();
+      assert.deepEqual(f.provider.info.capabilities.permissionTiers, SESSION_PERMISSION_TIERS);
+      if (mode === 'approval') await f.provider.run(f.context);
+      else await assert.rejects(f.provider.run(f.context), mode === 'approval-duplicate' ? /无效的审批选项/ : { name: 'AbortError' });
+
+      const frames = await f.trace();
+      const resume = frames.findIndex(frame => frame.method === 'session/resume' && frame.params?.sessionId === 'resumed-plan');
+      const setMode = frames.findIndex(frame => frame.method === 'session/set_config_option' && frame.params?.configId === 'mode' && frame.params.value === 'build');
+      const prompt = frames.findIndex(frame => frame.method === 'session/prompt');
+      assert(resume >= 0 && resume < setMode && setMode < prompt);
+      assert.deepEqual(frames.find(frame => frame.id === 'permission-opaque' && !frame.method)?.result,
+        { outcome: mode === 'approval' ? { outcome: 'selected', optionId: 'opaque-allow' } : { outcome: 'cancelled' } });
+      assert.deepEqual(frames.find(frame => frame.id === 'foreign-approval' && !frame.method)?.result,
+        { outcome: { outcome: 'cancelled' } });
+    } finally { await f.cleanup(); }
+  }
 });
 
 test('ACP rejection returns the offered reject id and a cancelled outcome', { timeout: 8000 }, async () => {
