@@ -2751,6 +2751,142 @@ const cases: Record<string, () => Promise<void>> = {
     await click('workspace:chat.returnLatest'); await frames(5);
     assert(document.querySelector('[data-message-id="message-1000"]'), 'Returning to latest lost the live tail');
   },
+  'RUNTIME-SWITCH: the next runtime waits for the old turn and preserves the same conversation and draft': async () => {
+    const target: ProviderInfo = { ...provider, id: 'claude', name: 'Claude Code', capabilities: { ...provider.capabilities, rewind: true } };
+    const source: ProviderInfo = { ...provider, available: false, capabilities: { ...provider.capabilities, rewind: true } };
+    const unavailable: ProviderInfo = { ...provider, id: 'unavailable', name: 'Unavailable', available: false };
+    const attachment = { id: 'runtime-attachment', name: 'runtime-note.txt', kind: 'text' as const, ownedPath: '/runtime-note.txt',
+      mimeType: 'text/plain', size: 4, sha256: 'a'.repeat(64) };
+    const previousPrompt: Message = { id: 'runtime-previous-prompt', role: 'user', text: 'An earlier prompt', createdAt: session.createdAt, nativeTurnId: 'old-turn' };
+    const tool = (id: string): Message => ({ id, role: 'activity', text: id, createdAt: session.createdAt,
+      event: { id, kind: 'tool', title: id, status: 'completed' } });
+    const outgoingTool = tool('old-runtime-tool'), incomingTool = tool('new-runtime-tool');
+    const previousMessages = [...messageRange(0, 32), previousPrompt, outgoingTool];
+    const queue = [{ id: 'runtime-queue-item', commandId: 'queued', input: { text: 'Keep in Codex' },
+      createdAt: session.createdAt, updatedAt: session.updatedAt }];
+    const approval = { id: 'runtime-approval', sessionId: session.id, title: 'Approve Codex work', detail: '', choices: [{ id: 'allow', label: 'Allow' }] };
+    const request = deferred<void>();
+    const switches: string[][] = [];
+    const sends: { value: PromptInput; providerId?: string }[] = [];
+    let draft: PromptInput = { text: 'Keep this draft', attachments: [attachment] };
+    let current: Session = { ...session, status: 'running', queue, messages: previousMessages };
+    let sourceProvider = source;
+    let rejectSend = false;
+    window.workbench = {
+      switchSessionRuntime: async (...args: string[]) => {
+        switches.push(args);
+        if (switches.length === 1) return request.promise;
+        throw new Error('Runtime is no longer available');
+      },
+      sendPrompt: async (_id: string, value: PromptInput, _commandId?: string, providerId?: string) => {
+        sends.push({ value, providerId });
+        return rejectSend ? { rejected: 'runtime-changed' } : undefined;
+      },
+    } as unknown as Window['workbench'];
+    function EditableSession() {
+      const [value, setValue] = React.useState(draft);
+      return chat({ session: current, provider: current.providerId === source.id ? sourceProvider : target, providers: [sourceProvider, target, unavailable], draft: value,
+        onDraftChange: next => { draft = next; setValue(next); } });
+    }
+    const show = () => render(<React.StrictMode><div style={{ display: 'flex', width: 760, height: 570 }}><EditableSession /></div></React.StrictMode>);
+    const runtime = () => button('workspace:chat.runtime');
+    const send = () => button('workspace:chat.sendTask');
+    const runtimeNote = () => document.querySelector('.composer-area [role=status][id]')?.textContent;
+    const key = async (name: string, windowsVirtualKeyCode: number) => {
+      await act(async () => {
+        for (const type of ['keyDown', 'keyUp']) await rendererInput({ type, key: name, code: name, windowsVirtualKeyCode });
+      });
+    };
+    const chooseRuntime = async (direction: 'ArrowDown' | 'ArrowUp', inspect?: (menu: HTMLElement) => void) => {
+      runtime().focus();
+      await key('Enter', 13);
+      const menu = () => document.querySelector<HTMLElement>('[role=listbox][data-state=open]');
+      await waitFor(() => Boolean(menu()), 'The Runtime picker did not open from the keyboard');
+      inspect?.(menu()!);
+      await key(direction, direction === 'ArrowDown' ? 40 : 38);
+      await key('Enter', 13);
+      await waitFor(() => !menu() && document.activeElement === runtime(), 'The Runtime picker did not close and return keyboard focus');
+    };
+    await show();
+    const composer = input('.composer textarea');
+    const chip = document.querySelector('.composer .attachment-chip');
+    assert(runtime().textContent?.includes(source.name), 'The unready current runtime disappeared from the composer');
+    await chooseRuntime('ArrowDown', menu => assert(
+      [...menu.querySelectorAll<HTMLElement>('[role=option]')].map(option => option.dataset.value).join() === 'codex,claude'
+      && menu.textContent?.includes(translate('workspace:chat.runtimeCurrentUnavailable')), 'The Runtime picker listed an unready alternative or hid the current runtime'));
+    sourceProvider = { ...source, available: true };
+    await show();
+    assert(runtimeNote()?.includes(target.name) && runtime().textContent?.includes(source.name) && !button('workspace:common.stop').disabled
+      && send().disabled && !composer.disabled && document.querySelector('.queue-item-content')?.textContent?.includes('Keep in Codex')
+      && switches.length === 0, 'Selecting the next runtime changed the active runtime, hid queue controls, locked editing or sent a request');
+    composer.focus();
+    await change(composer, 'Edited while waiting');
+    await key('Enter', 13);
+    assert(sends.length === 0, 'Enter sent a new task while the runtime was waiting');
+    await chooseRuntime('ArrowUp');
+    assert(!runtimeNote() && !send().disabled && switches.length === 0, 'Selecting the current runtime did not cancel the pending switch');
+    await chooseRuntime('ArrowDown');
+    current = { ...current, status: 'completed' };
+    await show();
+    assert(switches.length === 0, 'The completed turn released a switch while an old task was still queued');
+    current = { ...current, queue: [], approvals: [approval] };
+    await show();
+    assert(switches.length === 0 && !button('Allow').disabled, 'The switch ignored an outstanding approval or hid its action');
+    const unknown: Message = { ...previousPrompt, delivery: { id: 'old-delivery', clientUserMessageId: previousPrompt.id,
+      status: 'unknown', createdAt: session.createdAt, updatedAt: session.updatedAt } };
+    current = { ...current, approvals: [], messages: [...previousMessages.slice(0, -2), unknown, outgoingTool] };
+    await show();
+    assert(switches.length === 0 && runtimeNote()?.includes('receipt'), 'An unresolved message delivery did not keep the switch waiting');
+    current = { ...current, messages: previousMessages };
+    await show();
+    await waitFor(() => switches.length === 1, 'The deferred switch did not start once the old runtime was idle');
+    assert(switches[0].join() === `${session.id},claude,codex` && send().disabled, 'The switch used the wrong session or runtime guard');
+    await act(async () => { request.resolve(); await tick(); });
+    await settle();
+    assert(send().disabled && runtime().textContent?.includes(source.name), 'The RPC response enabled sending before the new runtime snapshot');
+
+    const viewport = document.querySelector<HTMLElement>('.message-scroll')!;
+    const readAt = async (top: number) => {
+      await act(async () => {
+        viewport.dispatchEvent(new WheelEvent('wheel', { bubbles: true }));
+        viewport.scrollTop = top;
+        viewport.dispatchEvent(new Event('scroll'));
+        await tick();
+      });
+      await frames(4);
+    };
+    await readAt(viewport.scrollHeight / 2);
+    const offset = viewport.scrollTop;
+    const marker: Message = { id: 'runtime-switch-marker', role: 'activity', text: '', createdAt: session.createdAt,
+      runtimeSwitch: { fromProviderId: source.id, toProviderId: target.id, permissionResetToReview: true } };
+    current = { ...current, providerId: target.id, runtimeContinuity: { parked: [{ providerId: source.id }] },
+      messages: [...previousMessages, marker, incomingTool, { id: 'new-runtime-answer', role: 'assistant', text: 'New answer', createdAt: session.createdAt }] };
+    await show(); await frames(4);
+    assert(input('.composer textarea') === composer && composer.value === 'Edited while waiting' && document.querySelector('.composer .attachment-chip') === chip
+      && document.querySelector('.message-scroll') === viewport && Math.abs(viewport.scrollTop - offset) < 5 && document.activeElement === runtime()
+      && runtime().textContent?.includes(target.name) && !send().disabled && Number(switches.length) === 1, 'The switch moved the reader, replaced the draft, lost focus or sent twice');
+    assert([...document.querySelectorAll('.assistant-heading strong')].every(node => node.textContent === source.name), 'Earlier replies were relabeled with the new runtime');
+    await readAt(viewport.scrollHeight);
+    assert(document.querySelector('.runtime-switch-marker')?.textContent === translate('workspace:chat.runtimeSwitchedWithReview', { from: source.name, to: target.name })
+      && document.querySelectorAll('.trace-heading').length === 2 && document.querySelector('[data-message-id="new-runtime-answer"] .assistant-heading strong')?.textContent === target.name
+      && document.querySelector('[data-message-id="runtime-previous-prompt"]') && !document.querySelector('.message-user .message-tools'),
+      'The timeline omitted the marker, grouped traces across it, misattributed the reply or exposed native rewind');
+    composer.focus();
+    await key('Enter', 13);
+    await settle();
+    assert(Number(sends.length) === 1 && sends[0].value.text === 'Edited while waiting' && sends[0].value.attachments?.[0].id === attachment.id
+      && sends[0].providerId === target.id, 'After switching, keyboard send lost the draft, attachment or runtime guard');
+    await change(composer, 'Keep this after a rejection');
+    await chooseRuntime('ArrowDown');
+    await settle();
+    assert(Number(switches.length) === 2 && errors.some(error => error.includes('Runtime is no longer available'))
+      && String(composer.value) === 'Keep this after a rejection' && !send().disabled && !runtimeNote(),
+      'A rejected switch did not report the error and restore normal sending');
+    rejectSend = true;
+    await click('workspace:chat.sendTask'); await settle();
+    assert(document.querySelector('.composer-area [role=alert]')?.textContent === translate('workspace:chat.runtimeChangedBeforeSend')
+      && String(composer.value) === 'Keep this after a rejection', 'A stale send did not explain the runtime change or retain the draft');
+  },
   'UI-08: queued sends reuse an uncertain command and preserve composition and later drafts': async () => {
     const gate = deferred<void>(), laterGate = deferred<void>();
     const sends: { id?: string; input: unknown }[] = [], edits: unknown[] = [], removals: string[] = [], pauses: boolean[] = [];

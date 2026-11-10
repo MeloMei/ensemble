@@ -8,8 +8,8 @@ export interface BackendEndpoint {
   stoppedAt?: string;
 }
 
-export interface BackendReply<T = unknown> { result?: T; error?: string; errorCode?: 'workspace-unavailable' }
-import type { Message, Session, Snapshot } from './types';
+export interface BackendReply<T = unknown> { result?: T; error?: string; errorCode?: SendPromptRejectionReason }
+import type { Message, SendPromptRejectionReason, Session, Snapshot } from './types';
 
 export const BACKEND_STREAM_VERSION = 2;
 

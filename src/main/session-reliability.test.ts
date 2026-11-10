@@ -24,6 +24,14 @@ function adapter(run: (context: TurnContext) => Promise<void>, id = 'test'): Pro
     defaultModelId: 'm1', models: [{ id: 'm1', name: 'm1', free: true, efforts: ['low'] }, { id: 'm2', name: 'm2', free: true }] }, run };
 }
 
+function assertHandoff(prompt: string, current: string, history: { role: string; text: string }[]): void {
+  const reference = prompt.match(/<ensemble-history>\n(.+)\n<\/ensemble-history>\n\n(.+)$/s);
+  assert(reference, 'The received prompt separates history from the current request');
+  assert.deepEqual(reference[1].split('\n').map(line => JSON.parse(line)), history);
+  assert.equal(reference[2], current);
+  assert.equal(prompt.split(current).length - 1, 1);
+}
+
 test('first-task creation atomically saves a draft without starting a provider and replays after restart', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'ensemble-first-task-'));
   const store = new StateStore(join(directory, 'state.json'));
@@ -302,6 +310,146 @@ test('revoking full access restricts already queued turns after restart', async 
     await engine.shutdown();
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('runtime switching preserves the session and resumes each native thread with only unseen conversation', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'ensemble-runtime-switch-'));
+  const store = new StateStore(join(directory, 'state.json'));
+  const engine = new WorkbenchEngine(store, '', () => {});
+  const seen: { providerId: string; externalId?: string; prompt: string }[] = [];
+  const permissions: (string | undefined)[] = [];
+  const providers = ['runtime-a', 'runtime-b', 'runtime-c'].map(providerId => ({
+    ...adapter(async context => {
+      const { externalId } = context.session;
+      seen.push({ providerId, externalId, prompt: context.prompt });
+      permissions.push(context.session.settings?.permission);
+      const nativeThreadId = `${providerId}-thread`;
+      context.emit({ type: 'external-id', id: nativeThreadId });
+      context.emit({ type: 'delivery', status: 'accepted', nativeThreadId, nativeTurnId: `turn-${seen.length}` });
+      context.emit({ type: 'text', itemId: 'answer', text: `${providerId} answer ${seen.length}` });
+    }, providerId),
+    tracksDelivery: true,
+  }));
+  providers[0].info.capabilities.permissionTiers = ['review', 'read-only', 'full-access'];
+  providers[1].info.capabilities.permissionTiers = ['review', 'read-only', 'full-access'];
+  providers[2].info.capabilities.resume = false;
+  providers[2].info.capabilities.permissions = false;
+  engine.setProviders(providers, [], []);
+  const draft = { text: '  Keep the unsent draft\n' };
+  const fullLengthRequest = 'x'.repeat(PROMPT_TEXT_LIMIT);
+  let restarted: WorkbenchEngine | undefined;
+  try {
+    const id = await engine.createSession({ title: 'Same conversation', providerId: 'runtime-a', cwd: directory });
+    const workspaces = structuredClone(store.state.workspaces);
+    engine.updateSession(id, { modelId: 'm2', settings: { effort: 'low', permission: 'read-only' } });
+    engine.saveSessionDraft(id, draft);
+    engine.sendMessage(id, 'Original request');
+    await engine.waitSession(id);
+    assert.deepEqual(seen, [{ providerId: 'runtime-a', externalId: undefined, prompt: 'Original request' }]);
+
+    engine.setSessionQueuePaused(id, true);
+    engine.sendMessage(id, 'Queued request');
+    const beforeRejectedSwitch = engine.getSession(id);
+    assert.equal(beforeRejectedSwitch.queue?.length, 1);
+    await assert.rejects(engine.switchSessionRuntime(id, 'runtime-b', 'runtime-a'), /已排队消息/);
+    assert.deepEqual(engine.getSession(id), beforeRejectedSwitch);
+    assert.equal(seen.length, 1);
+    engine.setSessionQueuePaused(id, false);
+    await engine.waitSession(id);
+    assert.deepEqual(seen[1], { providerId: 'runtime-a', externalId: 'runtime-a-thread', prompt: 'Queued request' });
+
+    await engine.switchSessionRuntime(id, 'runtime-b', 'runtime-a');
+    const afterSwitch = engine.getSession(id);
+    assert.equal(afterSwitch.externalId, undefined);
+    assert.deepEqual(afterSwitch.draft, draft);
+    assert.equal(afterSwitch.modelId, 'm1');
+    assert.deepEqual(afterSwitch.settings, { permission: 'read-only' });
+    assert.throws(() => engine.sendPrompt(id, { text: 'Stale request for A' }, 'stale-send', 'runtime-a'), /运行时已/);
+    assert.equal(engine.commandReceipt('stale-send'), undefined);
+    assert.deepEqual(engine.getSession(id), afterSwitch);
+    assert.equal(seen.length, 2);
+    engine.sendMessage(id, 'First request for B');
+    await engine.waitSession(id);
+    assert.equal(seen[2]?.providerId, 'runtime-b');
+    assert.equal(seen[2]?.externalId, undefined);
+    assertHandoff(seen[2].prompt, 'First request for B', [
+      { role: 'user', text: 'Original request' },
+      { role: 'assistant', text: 'runtime-a answer 1' },
+      { role: 'user', text: 'Queued request' },
+      { role: 'assistant', text: 'runtime-a answer 2' },
+    ]);
+
+    await engine.shutdown();
+    const restored = new StateStore(store.path);
+    await restored.load();
+    restarted = new WorkbenchEngine(restored, '', () => {});
+    restarted.setProviders(providers, [], []);
+    const beforeStaleSwitch = restarted.getSession(id);
+    assert.equal(beforeStaleSwitch.providerId, 'runtime-b');
+    assert.equal(beforeStaleSwitch.externalId, 'runtime-b-thread');
+    assert.deepEqual(beforeStaleSwitch.draft, draft);
+    await assert.rejects(restarted.switchSessionRuntime(id, 'runtime-a', 'runtime-a'), /其他窗口切换/);
+    assert.deepEqual(restarted.getSession(id), beforeStaleSwitch);
+
+    await restarted.switchSessionRuntime(id, 'runtime-a', 'runtime-b');
+    assert.equal(restarted.getSession(id).externalId, 'runtime-a-thread');
+    assert.equal(restarted.getSession(id).modelId, 'm2');
+    assert.deepEqual(restarted.getSession(id).settings, { effort: 'low', permission: 'read-only' });
+    restarted.sendMessage(id, fullLengthRequest);
+    await restarted.waitSession(id);
+    assert.equal(seen[3]?.providerId, 'runtime-a');
+    assert.equal(seen[3]?.externalId, 'runtime-a-thread');
+    assertHandoff(seen[3].prompt, fullLengthRequest, [
+      { role: 'user', text: 'First request for B' },
+      { role: 'assistant', text: 'runtime-b answer 3' },
+    ]);
+    restarted.sendMessage(id, 'Another request for A');
+    await restarted.waitSession(id);
+    assert.equal(seen.length, 5);
+    assert.deepEqual(seen[4], { providerId: 'runtime-a', externalId: 'runtime-a-thread', prompt: 'Another request for A' });
+
+    const finalSession = restarted.getSession(id);
+    assert.equal(restored.state.sessions.length, 1);
+    assert.equal(finalSession.id, id);
+    assert.equal(finalSession.cwd, workspaces[0].cwd);
+    assert.equal(finalSession.title, 'Same conversation');
+    assert.equal(finalSession.status, 'completed');
+    assert.deepEqual(finalSession.draft, draft);
+    assert.deepEqual(restored.state.workspaces, workspaces);
+    assert.deepEqual(finalSession.messages.flatMap(message => message.runtimeSwitch ?? []), [
+      { fromProviderId: 'runtime-a', toProviderId: 'runtime-b' },
+      { fromProviderId: 'runtime-b', toProviderId: 'runtime-a' },
+    ]);
+    assert.deepEqual(finalSession.messages.filter(message => message.role === 'user').map(message => message.text),
+      ['Original request', 'Queued request', 'First request for B', fullLengthRequest, 'Another request for A']);
+
+    await assert.rejects(restarted.switchSessionRuntime(id, 'runtime-c', 'runtime-a'), /不能保留.*权限/);
+    assert.deepEqual(restarted.getSession(id), finalSession);
+    restarted.updateSession(id, { settings: { permission: null } });
+    await restarted.switchSessionRuntime(id, 'runtime-c', 'runtime-a');
+    restarted.sendMessage(id, 'First stateless request');
+    await restarted.waitSession(id);
+    restarted.sendMessage(id, 'Second stateless request');
+    await restarted.waitSession(id);
+    assert.deepEqual(seen.slice(5).map(({ providerId, externalId }) => [providerId, externalId]),
+      [['runtime-c', undefined], ['runtime-c', undefined]]);
+    assert.match(seen[6].prompt, /First stateless request/);
+    assert.equal(restarted.getSession(id).externalId, undefined);
+
+    await restarted.switchSessionRuntime(id, 'runtime-a', 'runtime-c');
+    assert.equal(restarted.getSession(id).settings?.permission, undefined);
+    restarted.updateSession(id, { settings: { permission: 'full-access' } });
+    const beforePermissionChange = restarted.getSession(id);
+    await assert.rejects(restarted.switchSessionRuntime(id, 'runtime-c', 'runtime-a'), /不能保留.*权限/);
+    assert.deepEqual(restarted.getSession(id), beforePermissionChange);
+    await restarted.switchSessionRuntime(id, 'runtime-b', 'runtime-a');
+    assert.deepEqual(restarted.getSession(id).messages.at(-1)?.runtimeSwitch,
+      { fromProviderId: 'runtime-a', toProviderId: 'runtime-b', permissionResetToReview: true });
+    restarted.sendMessage(id, 'Use review in the next runtime');
+    await restarted.waitSession(id);
+    assert.equal(seen.at(-1)?.providerId, 'runtime-b');
+    assert.equal(permissions.at(-1), 'review');
+  } finally { await restarted?.shutdown(); await engine.shutdown(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test('approval and cancellation replays never resolve or cancel a later live request', async () => {

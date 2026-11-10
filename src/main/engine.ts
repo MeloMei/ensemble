@@ -4,7 +4,7 @@ import { isAbsolute, relative, sep } from 'node:path';
 import { z } from 'zod';
 import type {
   AgentMail, ApprovalInput, CollaborationCaller, CreateSessionInput, DraftEvidence, McpServerConfig, PromptInput, ProviderInfo,
-  Session, SessionAttempt, SessionCommandReceipt, SessionContinuationTarget, SessionQueueItem, SessionSettings, SessionSkillAssignment, SessionSkillAssignmentReceipt, SessionStatus, SessionUpdate, SideQuestionInput, SideQuestionReceipt, Snapshot, TerminalInfo, Workflow,
+  ParkedSessionRuntime, SendPromptRejectionReason, Session, SessionAttempt, SessionCommandReceipt, SessionContinuationTarget, SessionQueueItem, SessionSettings, SessionSkillAssignment, SessionSkillAssignmentReceipt, SessionStatus, SessionUpdate, SideQuestionInput, SideQuestionReceipt, Snapshot, TerminalInfo, Workflow,
   WorkflowInput, Workspace, WorkspaceManagement, WorkspaceSplitInput, WorkspaceTab,
 } from '../shared/types';
 import type { LoadedPromptAttachment, ProviderAdapter, ProviderEvent } from './providers/types';
@@ -21,9 +21,10 @@ import { recordSessionAttention } from './attention';
 import { addDraftEvidence, draftPromptText, hasPromptInput, samePromptDraft } from '../shared/draft-evidence';
 import { attachmentLimitIssue, supportsPromptAttachment } from '../shared/prompt-attachments';
 import { permissionTiersFor } from '../shared/session-permissions';
+import { runtimeHandoff } from './runtime-handoff';
 
-export class WorkspaceUnavailableError extends Error {
-  constructor() { super('项目执行目录尚未就绪，请检查目录是否仍然存在且可访问。'); }
+export class WorkbenchCommandRejection extends Error {
+  constructor(readonly errorCode: SendPromptRejectionReason, message: string) { super(message); }
 }
 
 const now = () => new Date().toISOString();
@@ -40,6 +41,7 @@ function selectProviderModel(provider: ProviderInfo, requestedModelId?: string):
 const MAX_WORKERS = 4;
 const MAX_PHYSICAL_TURNS = 8;
 const QUEUE_EDIT_LEASE_MS = 45_000;
+const RUNTIME_HANDOFF_LIMIT = 12_000;
 
 export interface EnrichedTurn {
   prompt?: string; attachments?: LoadedPromptAttachment[]; mcpServers?: McpServerConfig[];
@@ -151,7 +153,7 @@ export class WorkbenchEngine {
 
   private executionKey(cwd: string): string {
     const key = this.executionKeys.get(cwd);
-    if (key === undefined) throw new WorkspaceUnavailableError();
+    if (key === undefined) throw new WorkbenchCommandRejection('workspace-unavailable', '项目执行目录尚未就绪，请检查目录是否仍然存在且可访问。');
     return key;
   }
 
@@ -582,6 +584,70 @@ export class WorkbenchEngine {
     if (input.skillAssignment) return { skillIds: [...(session.settings?.skillIds ?? [])], updatedAt: session.updatedAt };
   }
 
+  async switchSessionRuntime(id: string, targetProviderId: string, expectedProviderId: string): Promise<void> {
+    this.assertOpen();
+    const session = this.session(id);
+    if (session.providerId === targetProviderId) return;
+    await this.prepareSessionExecution(id);
+    this.assertOpen();
+    const fromProviderId = session.providerId;
+    if (fromProviderId === targetProviderId) return;
+    if (fromProviderId !== expectedProviderId) throw new Error('运行时已在其他窗口切换，请重新选择。');
+    if (session.archived || this.store.state.workspaces.some(workspace => workspace.cwd === session.cwd && workspace.archived)) {
+      throw new Error('请先恢复已归档的会话或项目。');
+    }
+    if (this.active.has(id) || session.queue?.length || session.approvals.length) {
+      throw new Error('请等当前回合和已排队消息结束后再切换运行时。');
+    }
+    this.assertProjectAdmission(session.cwd);
+    this.assertDeliveryResolved(session);
+    const collaboration = this.store.state.collaboration;
+    const isBound = (definition: (typeof collaboration.definitions)[number]) =>
+      definition.participants.some(participant => participant.binding?.sessionId === id);
+    if (session.parentSessionId || collaboration.definitions.some(isBound)
+      || collaboration.runs.some(run => run.status === 'running' && isBound(run.definitionSnapshot))) {
+      throw new Error('这个会话已绑定到协作任务，不能在原会话切换运行时。');
+    }
+    const target = this.adapters.get(targetProviderId)?.info;
+    if (!target?.available) throw new Error('目标运行时目前不可用。');
+    const currentPermission = session.settings?.permission;
+    const permissionReset = currentPermission === 'full-access';
+    const targetPermission = permissionReset ? 'review' : currentPermission;
+    if (targetPermission && !permissionTiersFor(target.capabilities).includes(targetPermission)) {
+      throw new Error('目标运行时不能保留当前会话的权限设置。');
+    }
+    const continuity = session.runtimeContinuity;
+    const previous = continuity?.parked.find(binding => binding.providerId === targetProviderId);
+    const modelId = selectProviderModel(target, target.models?.find(model => model.id === previous?.modelId)?.id);
+    const settings = { ...session.settings };
+    if (permissionReset) settings.permission = 'review';
+    const efforts = target.models?.find(model => model.id === modelId)?.efforts ?? target.efforts;
+    if (target.capabilities.effort && previous?.effort && (!efforts || efforts.includes(previous.effort))) settings.effort = previous.effort;
+    else delete settings.effort;
+    const externalId = target.capabilities.resume ? previous?.externalId : undefined;
+    const outgoing: ParkedSessionRuntime = {
+      providerId: fromProviderId, externalId: session.externalId, modelId: session.modelId,
+      effort: session.settings?.effort, usage: session.usage,
+      seenMessageId: continuity ? continuity.seenMessageId
+        : session.externalId && session.status === 'completed' ? session.messages.at(-1)?.id : undefined,
+    };
+    this.store.atomic(() => {
+      session.runtimeContinuity = {
+        parked: [...(continuity?.parked.filter(binding => binding.providerId !== targetProviderId) ?? []), outgoing],
+        seenMessageId: externalId ? previous?.seenMessageId : undefined,
+      };
+      session.providerId = targetProviderId;
+      session.externalId = externalId;
+      session.modelId = modelId;
+      session.settings = settings;
+      session.usage = previous?.usage;
+      session.updatedAt = new Date(Math.max(Date.now(), Date.parse(session.updatedAt) + 1)).toISOString();
+      session.messages.push({ id: randomUUID(), role: 'activity', text: '', createdAt: session.updatedAt,
+        runtimeSwitch: { fromProviderId, toProviderId: targetProviderId, ...(permissionReset ? { permissionResetToReview: true } : {}) } });
+    });
+    this.publish(this.liveSnapshot());
+  }
+
   async forkSession(id: string, beforeMessageId?: string, target?: SessionContinuationTarget, beside = false): Promise<string> {
     const original = this.session(id);
     return this.createSessionInWorkspace({
@@ -621,6 +687,7 @@ export class WorkbenchEngine {
 
   async rewindSession(id: string, userMessageId: string): Promise<PromptInput> {
     const session = this.session(id);
+    if (session.runtimeContinuity) throw new Error('这条会话已切换过运行时，可从目标消息分叉继续。');
     if (this.active.has(id)) throw new Error('请先停止任务再回退。');
     const index = session.messages.findIndex(message => message.id === userMessageId && message.role === 'user');
     const message = session.messages[index];
@@ -629,8 +696,9 @@ export class WorkbenchEngine {
     const owner = `rewind:${id}`;
     await this.prepareSessionExecution(id);
     this.assertOpen();
+    if (session.runtimeContinuity) throw new Error('这条会话已切换过运行时，可从目标消息分叉继续。');
     if (this.active.has(id)) throw new Error('请先停止任务再回退。');
-    const release = this.claimProject(session.cwd, owner);
+    const release = this.claimProject(session.cwd, owner, 'mutation');
     try {
       await adapter.rewind(structuredClone(session), message.nativeTurnId);
       session.messages.splice(index);
@@ -644,6 +712,7 @@ export class WorkbenchEngine {
   private acceptEvent(session: Session, task: LogicalTask, job: QueuedTurn, turnKey: string, event: ProviderEvent): void {
     if (this.active.get(session.id) !== task || !task.executing || task.turnKey !== turnKey || (task.controller.signal.aborted && event.type !== 'delivery')) return;
     if (event.type === 'external-id') {
+      if (session.runtimeContinuity && !this.adapters.get(session.providerId)?.info.capabilities.resume) return;
       if (session.externalId && session.externalId !== event.id) throw new Error('运行时改变了原生会话 id，已停止该任务。');
       this.store.atomic(() => { session.externalId = event.id; });
     } else if (event.type === 'native-turn') {
@@ -754,11 +823,14 @@ export class WorkbenchEngine {
 
   sendMessage(id: string, prompt: string, commandId?: string): void { this.sendPrompt(id, { text: prompt }, commandId); }
 
-  sendPrompt(id: string, input: PromptInput, commandId?: string): void {
+  sendPrompt(id: string, input: PromptInput, commandId?: string, expectedProviderId?: string): void {
     this.assertOpen();
     const payload = { sessionId: id, input };
     if (previousSessionCommand(this.store, 'send-prompt', commandId, payload)) return;
     const session = this.session(id);
+    if (expectedProviderId !== undefined && session.providerId !== expectedProviderId) {
+      throw new WorkbenchCommandRejection('runtime-changed', '运行时已切换，请确认当前运行时后重新发送。');
+    }
     if (!hasPromptInput(input)) throw new Error('请输入任务。');
     this.assertProjectAdmission(session.cwd);
     if (!this.adapters.get(session.providerId)?.info.available) throw new Error('这个 Agent 目前不可用。');
@@ -1062,11 +1134,13 @@ export class WorkbenchEngine {
       if (!adapter?.info.available) throw new Error('这个 Agent 目前不可用。');
       const permission = task.settings?.permission;
       if (permission && !permissionTiersFor(adapter.info.capabilities).includes(permission)) throw new Error('这个运行时不支持所选权限档位，任务未发送。');
+      const input = enrichment?.prompt ?? job.input.text;
+      const prompt = runtimeHandoff(session, job.userMessageId, RUNTIME_HANDOFF_LIMIT) + input;
       this.observe({ type: 'input', sessionId: session.id, attemptId: task.attempt.id, turnId: turnKey, userMessageId: job.userMessageId,
         providerIdentity: { id: adapter.info.id, detail: adapter.info.detail },
-        prompt: enrichment?.prompt ?? job.input.text, attachments: (enrichment?.attachments ?? []).map(({ data: _data, text: _text, ...attachment }) => attachment) });
+        prompt, attachments: (enrichment?.attachments ?? []).map(({ data: _data, text: _text, ...attachment }) => attachment) });
       providerInvoked = true;
-      await adapter.run({ session: { ...structuredClone(session), modelId: task.modelId, settings: structuredClone(task.settings) }, prompt: enrichment?.prompt ?? job.input.text,
+      await adapter.run({ session: { ...structuredClone(session), modelId: task.modelId, settings: structuredClone(task.settings) }, prompt,
         userMessageId: job.userMessageId, attachments: enrichment?.attachments, mcpServers: enrichment?.mcpServers,
         signal: task.controller.signal,
         emit: event => this.acceptEvent(session, task, job, turnKey, event),
@@ -1083,6 +1157,10 @@ export class WorkbenchEngine {
       delivery.status = providerInvoked ? 'unknown' : 'rejected'; delivery.updatedAt = now();
       delivery.reason = providerInvoked ? '尚未收到原生投递确认，请核对原生历史。' : '尚未调用运行时，消息未发送。';
     });
+    const continuity = session.runtimeContinuity;
+    if (continuity && session.externalId && !failure && !task.controller.signal.aborted && (!delivery || delivery.status === 'accepted')) {
+      this.store.atomic(() => { continuity.seenMessageId = session.messages.at(-1)?.id; });
+    }
     if (task.controller.signal.aborted) await this.finishCancellation(task);
     else if (failure) {
       for (const child of task.children) this.cancelSession(child);

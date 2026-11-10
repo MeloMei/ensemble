@@ -127,6 +127,7 @@ export interface Message {
   nativeTurnId?: string;
   event?: ProcessEvent;
   delivery?: MessageDelivery;
+  runtimeSwitch?: { fromProviderId: string; toProviderId: string; permissionResetToReview?: true };
 }
 
 export interface ApprovalInput {
@@ -150,6 +151,22 @@ export interface Approval extends ApprovalInput {
   sessionId: string;
 }
 
+export interface ParkedSessionRuntime {
+  providerId: string;
+  externalId?: string;
+  modelId?: string;
+  effort?: string;
+  seenMessageId?: string;
+  usage?: UsageRecord[];
+}
+
+export interface SessionRuntimeContinuity {
+  parked: ParkedSessionRuntime[];
+  seenMessageId?: string;
+}
+
+export type SendPromptRejectionReason = 'workspace-unavailable' | 'runtime-changed';
+
 export interface Session {
   id: string;
   title: string;
@@ -166,6 +183,7 @@ export interface Session {
   usage?: UsageRecord[];
   draft?: PromptInput;
   externalId?: string;
+  runtimeContinuity?: SessionRuntimeContinuity;
   error?: string;
   messages: Message[];
   approvals: Approval[];
@@ -340,8 +358,9 @@ export interface WorkbenchAPI {
   chooseAttachments(): Promise<PromptAttachment[]>;
   importPastedImage(name: string, bytes: Uint8Array): Promise<PromptAttachment>;
   readImageAttachment(attachment: PromptAttachment): Promise<string>;
-  sendPrompt(sessionId: string, input: PromptInput, commandId?: string): Promise<void | { rejected: 'workspace-unavailable' }>;
+  sendPrompt(sessionId: string, input: PromptInput, commandId?: string, expectedProviderId?: string): Promise<void | { rejected: SendPromptRejectionReason }>;
   saveSessionDraft(sessionId: string, input: PromptInput): Promise<void>;
+  switchSessionRuntime(sessionId: string, targetProviderId: string, expectedProviderId: string): Promise<void>;
   addSessionEvidence(sessionId: string, evidence: DraftEvidence): Promise<PromptInput>;
   updateSession(sessionId: string, input: SessionUpdate & { skillAssignment: SessionSkillAssignment }): Promise<SessionSkillAssignmentReceipt>;
   updateSession(sessionId: string, input: SessionUpdate): Promise<void>;

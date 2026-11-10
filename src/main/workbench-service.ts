@@ -344,8 +344,11 @@ export async function createWorkbenchService(options: {
     });
     handle('workbench:git-state', (_event, workspaceId: unknown) => workspaceFiles.gitState(engine.workspace(idSchema.parse(workspaceId)).cwd));
     handle('workbench:file-diff', (_event, workspaceId: unknown, path: unknown) => workspaceFiles.diff(engine.workspace(idSchema.parse(workspaceId)).cwd, z.string().min(1).max(4096).parse(path)));
-    handle('workbench:send-prompt', (_event, id, input, commandId) => engine.sendPrompt(idSchema.parse(id), promptInputSchema.parse(input), commandIdSchema.parse(commandId)));
+    handle('workbench:send-prompt', (_event, id, input, commandId, expectedProviderId) =>
+      engine.sendPrompt(idSchema.parse(id), promptInputSchema.parse(input), commandIdSchema.parse(commandId), idSchema.optional().parse(expectedProviderId)));
     handle('workbench:save-session-draft', (_event, id, input) => engine.saveSessionDraft(idSchema.parse(id), draftInputSchema.parse(input)));
+    handle('workbench:switch-session-runtime', (_event, id, targetProviderId, expectedProviderId) =>
+      engine.switchSessionRuntime(idSchema.parse(id), idSchema.parse(targetProviderId), idSchema.parse(expectedProviderId)));
     handle('workbench:add-session-attachment', async (_event, id, input) => {
       const sessionId = idSchema.parse(id);
       const attachment = attachmentMetadataSchema.parse(input);

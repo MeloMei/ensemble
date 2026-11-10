@@ -778,6 +778,11 @@ interface TraceChoices {
   groups: ReadonlyMap<string, TraceChoice>;
   events: ReadonlySet<string>;
 }
+interface RuntimeSelection {
+  from: string;
+  to: string;
+  requested?: boolean;
+}
 const traceChoicesBySession = new Map<string, TraceChoices>();
 
 export function SessionChat({
@@ -817,6 +822,9 @@ export function SessionChat({
   const promptLengthIssue = Boolean(draft.evidence?.length && draftPromptText(draft).length > PROMPT_TEXT_LIMIT);
   const [attachmentError, setAttachmentError] = useState('');
   const [importingAttachments, setImportingAttachments] = useState(false);
+  const [runtimeSelection, setRuntimeSelection] = useState<RuntimeSelection>();
+  const submittedRuntime = useRef<RuntimeSelection>(undefined);
+  const runtimeStatusId = useId();
   const supportsAttachment = (kind: PromptAttachment['kind']) => supportsPromptAttachment(provider, kind);
   const attachmentsSupported = supportsAttachment('image') || supportsAttachment('text');
   const unsupportedAttachments = attachments.some(attachment => !supportsAttachment(attachment.kind));
@@ -851,9 +859,41 @@ export function SessionChat({
   const active = activeStatuses.has(session.status);
   const historyReady = session.historyLoaded !== false;
   const queuesNextTurn = active || session.queuePaused || Boolean(session.queue?.length);
-  const canAskSideQuestion = !readOnly && !session.archived && connected && historyReady && Boolean(provider?.available);
   const busy = pending.has(`send-${session.id}`);
   const settingsBusy = pending.has(`session-settings-${session.id}`);
+  const runtimeSwitchKey = `switch-runtime-${session.id}`;
+  const selectedRuntime = runtimeSelection?.from === session.providerId ? runtimeSelection : undefined;
+  const switchingRuntime = Boolean(selectedRuntime?.requested || pending.has(runtimeSwitchKey));
+  const runtimeChangePending = Boolean(selectedRuntime || switchingRuntime);
+  const unresolvedDelivery = session.messages.some(message => message.delivery?.status === 'unknown' || message.delivery?.status === 'pending');
+  const canRequestRuntime = !readOnly && !session.archived && connected && historyReady
+    && !active && !session.queue?.length && !session.approvals.length && !unresolvedDelivery && !busy && !settingsBusy;
+  const providerName = (id: string) => providers?.find(item => item.id === id)?.name ?? (provider?.id === id ? provider.name : id);
+  const runtimeStatus = selectedRuntime && t(selectedRuntime.requested ? 'chat.runtimeSwitching'
+    : unresolvedDelivery ? 'chat.runtimeWaitDelivery' : 'chat.runtimeWaiting', { runtime: providerName(selectedRuntime.to) });
+  const canAskSideQuestion = !runtimeChangePending && !readOnly && !session.archived && connected && historyReady && Boolean(provider?.available);
+  const canRewind = !readOnly && !active && !runtimeChangePending && !session.runtimeContinuity && provider?.capabilities.rewind;
+
+  useEffect(() => {
+    if (!runtimeSelection) return;
+    if (!selectedRuntime || session.archived) {
+      setRuntimeSelection(undefined);
+      return;
+    }
+    if (!canRequestRuntime || switchingRuntime || sendLock.current || submittedRuntime.current === selectedRuntime) return;
+    submittedRuntime.current = selectedRuntime;
+    const request = { ...selectedRuntime, requested: true };
+    setRuntimeSelection(request);
+    void perform(runtimeSwitchKey, async () => {
+      try {
+        await window.workbench.switchSessionRuntime(session.id, request.to, request.from);
+      } catch (error) {
+        setRuntimeSelection(current => current === request ? undefined : current);
+        throw error;
+      }
+    });
+  }, [runtimeSelection, selectedRuntime, session.archived, canRequestRuntime, switchingRuntime, session.id, runtimeSwitchKey, perform]);
+
   const history = useSessionHistory(session);
   const messages = history.messages;
   const activity = history.activities;
@@ -1001,7 +1041,8 @@ export function SessionChat({
       if (!row) return 80 + session.approvals.length * 240;
       if (row.kind === 'trace') return 42;
       if (row.kind === 'event') return 35;
-      return Math.min(1000, 100 + Math.ceil(messages.at(row.start)!.text.length / 100) * 22);
+      const message = messages.at(row.start)!;
+      return message.runtimeSwitch ? 36 : Math.min(1000, 100 + Math.ceil(message.text.length / 100) * 22);
     },
     overscan: 5,
     paddingStart: 20,
@@ -1203,18 +1244,19 @@ export function SessionChat({
     return () => document.removeEventListener('pointerdown', dismiss);
   }, [showActivity, activityId]);
 
+  const sendDisabled = readOnly || !hasPromptInput(draft) || unsupportedAttachments || Boolean(attachmentIssue) || promptLengthIssue
+    || !connected || !historyReady || busy || settingsBusy || importingAttachments || !provider?.available || runtimeChangePending;
   const send = () => {
-    if (readOnly || !hasPromptInput(draft) || unsupportedAttachments || attachmentIssue || promptLengthIssue
-      || !connected || !historyReady || busy || settingsBusy || sendLock.current || attachmentLock.current || !provider?.available) return;
+    if (sendDisabled || sendLock.current || attachmentLock.current) return;
     sendLock.current = true;
     setSendError(undefined);
     void perform(`send-${session.id}`, async () => {
       try {
         const input = promptCommandInput(draft);
         await runSessionCommand(`send:${session.id}`, input, async commandId => {
-          const result = await window.workbench.sendPrompt(session.id, input, commandId);
-          if (result?.rejected === 'workspace-unavailable') {
-            const error = new SessionCommandRejectedError(t('chat.workspaceUnavailable'));
+          const result = await window.workbench.sendPrompt(session.id, input, commandId, session.providerId);
+          if (result?.rejected) {
+            const error = new SessionCommandRejectedError(t(result.rejected === 'runtime-changed' ? 'chat.runtimeChangedBeforeSend' : 'chat.workspaceUnavailable'));
             setSendError({ message: error.message, rejected: true });
             throw error;
           }
@@ -1337,6 +1379,9 @@ export function SessionChat({
         {virtualizer.getVirtualItems().map(item => {
           const row = chatRows.at(item.index);
           const message = row?.kind === 'message' || row?.kind === 'event' ? messages.at(row.start) : undefined;
+          const author = message?.role === 'assistant' && row
+            ? conversation.runtimeAt(row.start) ?? history.runtimeFallback
+            : undefined;
           return <div className="virtual-conversation-row" data-index={item.index} key={item.key} ref={virtualizer.measureElement}
             style={{ transform: `translateY(${item.start}px)` }}>
           {row?.kind === 'trace' ? <TraceHeading trace={row} live={row.key === liveTrace?.key}
@@ -1357,6 +1402,12 @@ export function SessionChat({
             }) : undefined}
             onQuote={onChooseEvidence && message.event.status === 'failed' && message.event.output?.trim() ? () =>
               quoteMessage(message, `${session.title} · ${message.event!.title}`, message.event!.output!.trim()) : undefined} />
+        : message?.runtimeSwitch ? <div className="messages"><div className="runtime-switch-marker" data-message-id={message.id}>
+            <ArrowRightLeft size={13} aria-hidden="true" />
+            <span>{t(message.runtimeSwitch.permissionResetToReview ? 'chat.runtimeSwitchedWithReview' : 'chat.runtimeSwitched', {
+              from: providerName(message.runtimeSwitch.fromProviderId), to: providerName(message.runtimeSwitch.toProviderId),
+            })}</span>
+          </div></div>
         : message ? <div className="messages"><article data-message-id={message.id}
               className={`message message-${message.role}${selectedMatch?.id === message.id || inspectedMessageId === message.id ? ' conversation-match' : ''}`}>
               {message.role === 'user'
@@ -1366,14 +1417,14 @@ export function SessionChat({
                       <DraftEvidenceCards evidence={message.evidence} onOpen={onOpenEvidence} />
                     </div>
                     <DeliveryState message={message} sessionId={session.id} connected={connected} readOnly={readOnly} pending={pending} perform={perform} />
-                    {!readOnly && !active && provider?.capabilities.rewind && message.nativeTurnId && <div className="message-tools">
+                    {canRewind && message.nativeTurnId && <div className="message-tools">
                       <button onClick={() => setRewindMessage(message.id)}><ArrowUpLeft size={12} />{t('chat.rewindBefore')}</button>
                     </div>}
                   </>
                   : <>
                     <div className="assistant-heading">
                       <span className="assistant-symbol"><PanelsTopLeft size={13} /></span>
-                      <strong>{provider?.name ?? session.providerId}</strong>
+                      <strong>{author ? providerName(author) : t('shell:common.agent')}</strong>
                       <time dateTime={message.createdAt}>{formatDate(message.createdAt, { hour: '2-digit', minute: '2-digit' })}</time>
                     </div>
                     <div className="markdown-message">
@@ -1477,12 +1528,26 @@ export function SessionChat({
                 {importingAttachments ? <LoaderCircle className="spin" size={16} /> : <Paperclip size={16} />}
               </IconButton>
               <span className="composer-divider" />
-              <ComposerSettings session={session} provider={provider} disabled={!historyReady || !connected || active || busy}
+              {providers && <Tooltip label={runtimeStatus ?? t('chat.runtimeHint')}><span className="composer-runtime">
+                <AppSelect compact side="top" menuClassName="composer-select-menu" label={t('chat.runtime')} icon={<AgentIcon providerId={session.providerId} size={14} />}
+                  value={selectedRuntime?.to ?? session.providerId} display={providerName(session.providerId)}
+                  disabled={!historyReady || !connected || session.archived} aria-describedby={runtimeStatus ? runtimeStatusId : undefined}
+                  options={[
+                    { value: session.providerId, label: providerName(session.providerId),
+                      description: provider?.available ? t('chat.runtimeCurrent') : t('chat.runtimeCurrentUnavailable'), disabled: switchingRuntime },
+                    ...providers.filter(item => item.available && item.id !== session.providerId)
+                      .map(item => ({ value: item.id, label: item.name, disabled: switchingRuntime })),
+                  ]}
+                  onChange={id => {
+                    if (!switchingRuntime) setRuntimeSelection(id === session.providerId ? undefined : { from: session.providerId, to: id });
+                  }} />
+              </span></Tooltip>}
+              <ComposerSettings key={session.providerId} session={session} provider={provider} disabled={!historyReady || !connected || active || busy || runtimeChangePending}
                 saving={settingsBusy} perform={perform} />
             </div>
-            <Tooltip label={queuesNextTurn ? t('chat.queueNextTurn') : t('chat.sendTask')}><motion.button className="send-button" aria-label={t('chat.sendTask')}
+            <Tooltip label={runtimeStatus ?? (queuesNextTurn ? t('chat.queueNextTurn') : t('chat.sendTask'))}><motion.button className="send-button" aria-label={t('chat.sendTask')}
               title={queuesNextTurn ? t('chat.queueNextTurn') : t('chat.sendTask')}
-              disabled={!hasPromptInput(draft) || unsupportedAttachments || Boolean(attachmentIssue) || promptLengthIssue || !historyReady || !connected || busy || settingsBusy || importingAttachments || !provider?.available}
+              disabled={sendDisabled}
               whileTap={reducedMotion ? undefined : { scale: 0.98 }} transition={transition} onClick={send}>
               {busy ? <LoaderCircle className="spin" size={17} /> : <ArrowUp size={18} />}
             </motion.button></Tooltip>
@@ -1492,8 +1557,11 @@ export function SessionChat({
         <div className="composer-caption">
           <span className="composer-project" title={session.cwd}><FolderOpen size={12} />{pathName(session.cwd)}</span>
           <UsageBadge records={session.usage} />
-          <span className="composer-shortcut"><CornerDownLeft size={11} />{queuesNextTurn ? t('chat.queueNextTurn') : t('chat.send')}<span>·</span>{t('chat.newLine')}</span>
+          {!runtimeChangePending && <span className="composer-shortcut"><CornerDownLeft size={11} />{queuesNextTurn ? t('chat.queueNextTurn') : t('chat.send')}<span>·</span>{t('chat.newLine')}</span>}
         </div>
+        {runtimeStatus && <p className="composer-note" id={runtimeStatusId} role="status">
+          {selectedRuntime?.requested ? <LoaderCircle className="spin" size={13} aria-hidden="true" /> : <Clock3 size={13} aria-hidden="true" />}{runtimeStatus}
+        </p>}
         {!connected && <p className="composer-note" role="status"><CircleAlert size={13} />{t('chat.connectionUnavailable')}</p>}
         {sendError && <p className="composer-note" role="alert"><CircleAlert size={13} />{sendError.rejected ? sendError.message : t('chat.sendUnconfirmed', { error: sendError.message })}</p>}
         {draftError && <p className="composer-note" role="alert"><CircleAlert size={13} />{t('chat.draftError', { error: draftError })}<button className="text-button" onClick={() => onDraftChange(draft)}>{t('chat.retrySave')}</button></p>}
@@ -1508,7 +1576,7 @@ export function SessionChat({
     {!readOnly && sideQuestion && <SideQuestion sessionId={session.id} origin={sideQuestion} enabled={canAskSideQuestion}
       onClose={closeSideQuestion} locateSource={locateSideQuestionSource} openSession={openSession}
       canOpenSession={id => connected && sessions.some(item => item.id === id)} />}
-    {!readOnly && rewindMessage && <Modal title={t('chat.rewindTitle')} subtitle={t('chat.rewindDescription')}
+    {canRewind && rewindMessage && <Modal title={t('chat.rewindTitle')} subtitle={t('chat.rewindDescription')}
       onClose={() => setRewindMessage(undefined)}>
       <div className="modal-actions">
         <button className="button" onClick={() => setRewindMessage(undefined)}>{t('common.cancel')}</button>

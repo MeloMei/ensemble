@@ -10,10 +10,12 @@ export interface TraceEntry extends TraceCounts {
   kind: 'trace'; key: string; start: number;
 }
 export type ConversationEntry = { kind: 'message'; key: string; start: number } | TraceEntry;
+type RuntimeBoundary = NonNullable<Message['runtimeSwitch']> & { index: number };
 export interface ConversationPage {
   messageCount: number;
   spans: ConversationEntry[];
   messageSpans: number[];
+  runtimeBoundaries: RuntimeBoundary[];
 }
 
 function firstDiffPath(patch?: string): string | undefined {
@@ -24,9 +26,10 @@ function firstDiffPath(patch?: string): string | undefined {
 export function conversationPage(messages: Message[], nextTraceKey?: string): ConversationPage {
   const spans: ConversationEntry[] = [];
   const messageSpans: number[] = [];
+  const runtimeBoundaries: RuntimeBoundary[] = [];
   for (const [index, message] of messages.entries()) {
     const previous = spans.at(-1);
-    if (message.event) {
+    if (message.event && !message.runtimeSwitch) {
       const trace: TraceEntry = previous?.kind === 'trace' ? previous : {
         kind: 'trace', key: `trace:${message.id}`, start: index, length: 0, failures: 0,
       };
@@ -38,13 +41,14 @@ export function conversationPage(messages: Message[], nextTraceKey?: string): Co
         trace.lastFailure = { id: message.id, title: message.event.title.trim() };
       }
     } else {
+      if (message.runtimeSwitch) runtimeBoundaries.push({ ...message.runtimeSwitch, index });
       spans.push({ kind: 'message', key: message.id, start: index });
     }
     messageSpans.push(spans.length - 1);
   }
   const tail = spans.at(-1);
   if (nextTraceKey && tail?.kind === 'trace') tail.key = nextTraceKey;
-  return { messageCount: messages.length, spans, messageSpans };
+  return { messageCount: messages.length, spans, messageSpans, runtimeBoundaries };
 }
 
 interface IndexedPage {
@@ -67,6 +71,7 @@ export function indexConversation(pages: ConversationPage[]) {
   const messagePages: IndexedPage[] = [];
   const rowPages: IndexedPage[] = [];
   const mergedTraces = new Map<number, TraceCounts>();
+  const runtimeBoundaries: RuntimeBoundary[] = [];
   let messageCount = 0, length = 0;
   let tail: { row: number; trace: TraceEntry } | undefined;
   for (const page of pages) {
@@ -76,6 +81,9 @@ export function indexConversation(pages: ConversationPage[]) {
     const continuation = head.kind === 'trace' ? tail : undefined;
     const skipped = Number(Boolean(continuation));
     const indexed = { page, messageStart: messageCount, rowStart: length, continuedRow: continuation?.row };
+    for (const boundary of page.runtimeBoundaries) {
+      runtimeBoundaries.push({ ...boundary, index: messageCount + boundary.index });
+    }
     if (continuation && head.kind === 'trace') {
       const earlier = mergedTraces.get(continuation.row) ?? continuation.trace;
       mergedTraces.set(continuation.row, {
@@ -95,6 +103,10 @@ export function indexConversation(pages: ConversationPage[]) {
 
   return {
     length,
+    runtimeAt(messageIndex: number): string | undefined {
+      return lastBefore(runtimeBoundaries, messageIndex, boundary => boundary.index)?.toProviderId
+        ?? runtimeBoundaries[0]?.fromProviderId;
+    },
     at(index: number): ConversationEntry | undefined {
       if (index < 0 || index >= length) return;
       const indexed = lastBefore(rowPages, index, entry => entry.rowStart)!;

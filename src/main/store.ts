@@ -49,6 +49,11 @@ const stepStatus = z.enum(['pending', 'running', 'completed', 'failed', 'blocked
 const attachmentSchema = record({ id: z.string(), name: z.string(), kind: z.enum(['image', 'text']), mimeType: z.string(), size: z.number(), sha256: z.string(), ownedPath: z.string() });
 const promptInputSchema = record({ text: z.string(), attachments: z.array(attachmentSchema).optional(), evidence: draftEvidenceListSchema.optional() });
 const sessionSettingsSchema = record({ effort: z.string().optional(), permission: sessionPermissionSchema.optional(), skillIds: z.array(z.string()).optional() });
+const usageSchema = record({
+  id: z.string(), source: z.string(), scope: z.enum(['turn', 'cumulative', 'context']),
+  inputTokens: z.number().optional(), outputTokens: z.number().optional(), cachedTokens: z.number().optional(),
+  contextUsed: z.number().optional(), contextSize: z.number().optional(), cost: z.number().optional(), currency: z.string().optional(), createdAt: z.string(),
+});
 const eventSchema = record({
   id: z.string(), kind: z.enum(['tool', 'plan', 'task', 'subagent', 'diff']), title: z.string(),
   status: z.enum(['pending', 'running', 'completed', 'failed']), nativeId: z.string().optional(),
@@ -59,6 +64,7 @@ const messageSchema = record({
   id: z.string(), role: z.enum(['user', 'assistant', 'activity']), text: z.string(), createdAt: z.string(),
   attachments: z.array(attachmentSchema).optional(), nativeTurnId: z.string().optional(), event: eventSchema.optional(),
   evidence: draftEvidenceListSchema.optional(), originalPrompt: z.string().optional(),
+  runtimeSwitch: record({ fromProviderId: z.string(), toProviderId: z.string(), permissionResetToReview: z.literal(true).optional() }).optional(),
   delivery: z.object({ id: z.string(), clientUserMessageId: z.string(), status: z.enum(['pending', 'accepted', 'rejected', 'unknown']),
     createdAt: z.string(), updatedAt: z.string(), nativeThreadId: z.string().optional(), nativeTurnId: z.string().optional(),
     nativeItemId: z.string().optional(), reason: z.string().optional() }).strict().optional(),
@@ -85,8 +91,16 @@ const savedSchema = record({
       reason: z.enum(['approval', 'result', 'failure']), updatedAt: z.string(), sourceId: z.string().optional(), messageId: z.string().optional() }).strict().optional(),
     attempts: z.array(record({ id: z.string(), status: sessionStatus, prompt: z.string(), userMessageId: z.string(), retryOf: z.string().optional(), startedAt: z.string(), endedAt: z.string().optional(), error: z.string().optional(),
       modelId: z.string().optional(), settings: sessionSettingsSchema.optional(), queueItemId: z.string().optional(), commandId: z.string().optional() })).optional(),
-    usage: z.array(record({ id: z.string(), source: z.string(), scope: z.enum(['turn', 'cumulative', 'context']), inputTokens: z.number().optional(), outputTokens: z.number().optional(), cachedTokens: z.number().optional(), contextUsed: z.number().optional(), contextSize: z.number().optional(), cost: z.number().optional(), currency: z.string().optional(), createdAt: z.string() })).optional(),
+    usage: z.array(usageSchema).optional(),
     externalId: z.string().optional(), error: z.string().optional(), messages: z.array(messageSchema),
+    runtimeContinuity: record({
+      parked: z.array(record({
+        providerId: z.string(), externalId: z.string().optional(), modelId: z.string().optional(),
+        effort: z.string().optional(), seenMessageId: z.string().optional(),
+        usage: z.array(usageSchema).optional(),
+      })),
+      seenMessageId: z.string().optional(),
+    }).optional(),
     approvals: z.array(record({ id: z.string(), sessionId: z.string(), title: z.string(), detail: z.string(), choices: z.array(record({ id: z.string(), label: z.string() })), questions: z.array(record({ id: z.string(), question: z.string(), header: z.string(), options: z.array(record({ label: z.string(), description: z.string().optional() })), multiSelect: z.boolean() })).optional() })),
     createdAt: z.string(), updatedAt: z.string(),
   })),
