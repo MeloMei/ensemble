@@ -147,6 +147,7 @@ const api: WorkbenchAPI = {
   previewDraftEvidence: tabId => ipcRenderer.invoke('workbench:preview-draft-evidence', tabId),
   listFiles: (workspaceId, path) => ipcRenderer.invoke('workbench:list-files', workspaceId, path),
   findWorkspaceFiles: (workspaceId, query) => ipcRenderer.invoke('workbench:find-workspace-files', workspaceId, query),
+  searchWorkspaceText: (workspaceId, query) => ipcRenderer.invoke('workbench:search-workspace-text', workspaceId, query),
   readFile: (workspaceId, path) => ipcRenderer.invoke('workbench:read-file', workspaceId, path),
   gitState: workspaceId => ipcRenderer.invoke('workbench:git-state', workspaceId),
   gitBranchRefs: workspaceId => ipcRenderer.invoke('workbench:git-branch-refs', workspaceId),

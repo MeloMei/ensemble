@@ -108,6 +108,8 @@ export interface TerminalService { host: '127.0.0.1' | '::1'; port: number }
 
 export interface FileEntry { path: string; name: string; kind: 'file' | 'directory'; size: number }
 export interface WorkspaceFileMatch { path: string; name: string }
+export interface WorkspaceTextMatch { path: string; line: number; column: number; preview: string }
+export interface WorkspaceTextSearch { matches: WorkspaceTextMatch[]; limited: boolean }
 export interface FileContent { path: string; content: string; size: number; language: string; revision: string }
 export interface GitChange { path: string; status: string; staged: boolean; additions: number; deletions: number }
 export interface GitState { available: boolean; branch: string; changes: GitChange[]; error?: string }
@@ -356,6 +358,7 @@ export interface WorkbenchAPI {
   previewDraftEvidence(tabId: string): Promise<Record<string, DraftEvidence[]>>;
   listFiles(workspaceId: string, relativePath?: string): Promise<FileEntry[] | null>;
   findWorkspaceFiles(workspaceId: string, query: string): Promise<WorkspaceFileMatch[]>;
+  searchWorkspaceText(workspaceId: string, query: string): Promise<WorkspaceTextSearch>;
   readFile(workspaceId: string, relativePath: string): Promise<FileContent | null>;
   gitState(workspaceId: string): Promise<GitState>;
   gitBranchRefs(workspaceId: string): Promise<string[]>;

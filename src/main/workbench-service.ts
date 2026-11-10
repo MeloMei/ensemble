@@ -346,6 +346,8 @@ export async function createWorkbenchService(options: {
     });
     handle('workbench:find-workspace-files', (_event, workspaceId, query) =>
       workspaceFiles.find(engine.workspace(idSchema.parse(workspaceId)).cwd, z.string().max(4096).parse(query)));
+    handle('workbench:search-workspace-text', (_event, workspaceId, query) =>
+      workspaceFiles.searchText(engine.workspace(idSchema.parse(workspaceId)).cwd, z.string().max(4096).parse(query)));
     handle('workbench:read-file', async (_event, workspaceId: unknown, path: unknown) => {
       try { return await workspaceFiles.read(engine.workspace(idSchema.parse(workspaceId)).cwd, z.string().min(1).max(4096).parse(path)); }
       catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }

@@ -1,15 +1,17 @@
-import { Fragment, useId, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
+import { Fragment, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { FileDiff } from '../shared/types';
+import type { FileReference } from './workspace-file-reference';
 import {
-  diffLines, diffPosition, diffRangeAtRow, diffRangeLines, nextDiffPosition,
+  diffLines, diffPosition, diffRangeAtRow, diffRangeLines, diffRowForFileLine, nextDiffPosition,
   type DiffNoteDraft, type DiffPosition, type DiffRange,
 } from './review-notes';
 
 const sides = ['original', 'modified'] as const;
 
-export function DiffReview({ diff, busy, draft, onDraftChange, onSave }: {
+export function DiffReview({ diff, location, busy, draft, onDraftChange, onSave }: {
   diff: FileDiff;
+  location?: FileReference;
   busy: boolean;
   draft?: DiffNoteDraft;
   onDraftChange: (draft: DiffNoteDraft | undefined) => void;
@@ -18,6 +20,7 @@ export function DiffReview({ diff, busy, draft, onDraftChange, onSave }: {
   const { t } = useTranslation('workspace');
   const hintId = useId();
   const scroller = useRef<HTMLDivElement>(null);
+  const locatedLine = useRef<HTMLDivElement>(null);
   const gesture = useRef<{ pointerId: number; range: DiffRange } | null>(null);
   const [preview, setPreview] = useState<DiffRange>();
   const lines = useMemo(() => diff.binary ? [] : diffLines(diff.patch), [diff.binary, diff.patch]);
@@ -25,6 +28,11 @@ export function DiffReview({ diff, busy, draft, onDraftChange, onSave }: {
   const current = canAnnotate && draft?.revision === diff.revision ? draft : undefined;
   const range = preview ?? current?.range;
   const inlineRow = current ? Math.max(current.range.anchor.row, current.range.end.row) : undefined;
+  const referenceLine = location?.path === diff.path ? location.line : undefined;
+  const referenceRow = referenceLine === undefined || diff.truncated ? undefined : diffRowForFileLine(lines, referenceLine);
+  useLayoutEffect(() => {
+    locatedLine.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [referenceRow, location]);
 
   const select = (range: DiffRange) => {
     if (!canAnnotate || busy || !diff.revision) return;
@@ -103,12 +111,15 @@ export function DiffReview({ diff, busy, draft, onDraftChange, onSave }: {
         onPointerMove={move} onPointerUp={event => finish(event, true)}
         onPointerCancel={event => finish(event, false)} onLostPointerCapture={event => finish(event, false)}>
         {canAnnotate && lines.some(line => line.hunk !== undefined) && <p id={hintId} className="review-diff-hint">{t('files.selectDiffLines')}</p>}
+        {referenceLine !== undefined && !diff.truncated && referenceRow === undefined &&
+          <p className="review-diff-hint" role="status">{t('files.referenceLineOutsideDiff', { line: referenceLine })}</p>}
         {lines.map((line, row) => {
           const points = sides.map(side => diffPosition(line, row, side));
           const selected = range && row >= Math.min(range.anchor.row, range.end.row) && row <= Math.max(range.anchor.row, range.end.row)
             ? points.find(point => point?.side === range.anchor.side && point.hunk === range.anchor.hunk) : undefined;
           return <Fragment key={row}>
-            <div className={`review-diff-line ${line.kind}`} data-diff-row={row} data-selected={selected ? '' : undefined}>
+            <div className={`review-diff-line ${line.kind}`} data-diff-row={row} data-selected={selected ? '' : undefined}
+              data-reference={row === referenceRow || undefined} ref={row === referenceRow ? locatedLine : undefined}>
               <div className="review-diff-gutter">{points.map((point, index) => !point || !canAnnotate
                 ? <span key={sides[index]}>{point?.line}</span>
                 : <button key={point.side} type="button" data-side={point.side}

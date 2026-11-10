@@ -7,13 +7,19 @@ import { constants } from 'node:fs';
 import { lstat, open, opendir, realpath, rename, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { TextDecoder } from 'node:util';
-import type { FileContent, FileDiff, FileEntry, GitBranchComparison, GitCommitPreview, GitMutation, GitState, WorkspaceFileMatch } from '../shared/types';
+import type { FileContent, FileDiff, FileEntry, GitBranchComparison, GitCommitPreview, GitMutation, GitState,
+  WorkspaceFileMatch, WorkspaceTextMatch, WorkspaceTextSearch } from '../shared/types';
 import { parsePorcelainV1Records, type PorcelainV1Record } from './vendor/orca/porcelain-v1-records';
 
 const FILE_LIMIT = 1024 * 1024;
 const ENTRY_LIMIT = 2000;
 const GIT_TIMEOUT_MS = 5000;
 const GIT_OUTPUT_LIMIT = 2 * 1024 * 1024;
+
+class WorkspaceBoundaryError extends Error {}
+class NonRegularFileError extends Error {}
+class BinaryFileError extends Error {}
+class GitTimeoutError extends Error {}
 
 function within(root: string, target: string): boolean {
   const relative = path.relative(root, target);
@@ -37,12 +43,12 @@ async function workspaceRoot(cwd: string): Promise<string> {
 async function scopedPath(root: string, relativePath: string, allowMissing = false): Promise<string> {
   normalizedRelative(relativePath);
   const candidate = path.resolve(root, relativePath);
-  if (!within(root, candidate)) throw new Error('Path is outside the workspace');
+  if (!within(root, candidate)) throw new WorkspaceBoundaryError('Path is outside the workspace');
   let existing = candidate;
   for (;;) {
     try {
       const canonical = await realpath(existing);
-      if (!within(root, canonical)) throw new Error('Path resolves outside the workspace');
+      if (!within(root, canonical)) throw new WorkspaceBoundaryError('Path resolves outside the workspace');
       return existing === candidate ? canonical : candidate;
     } catch (error) {
       if (!allowMissing || (error as NodeJS.ErrnoException).code !== 'ENOENT' || existing === root) throw error;
@@ -56,8 +62,6 @@ async function scopedPath(root: string, relativePath: string, allowMissing = fal
   }
 }
 
-class BinaryFileError extends Error {}
-
 function digest(...parts: (string | Buffer)[]): string {
   const hash = createHash('sha256');
   for (const part of parts) hash.update(part).update('\0');
@@ -66,12 +70,12 @@ function digest(...parts: (string | Buffer)[]): string {
 
 async function fileBytes(file: string) {
   const before = await stat(file);
-  if (!before.isFile()) throw new Error('Only regular files can be opened');
+  if (!before.isFile()) throw new NonRegularFileError('Only regular files can be opened');
   if (before.size > FILE_LIMIT) throw new Error('File exceeds the 1 MiB limit');
   const handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   try {
     const initial = await handle.stat({ bigint: true });
-    if (!initial.isFile()) throw new Error('Only regular files can be opened');
+    if (!initial.isFile()) throw new NonRegularFileError('Only regular files can be opened');
     const buffer = Buffer.alloc(FILE_LIMIT + 1);
     let size = 0;
     while (size < buffer.length) {
@@ -90,13 +94,17 @@ async function fileBytes(file: string) {
   } finally { await handle.close(); }
 }
 
-async function textFile(file: string): Promise<{ content: string; size: number; revision: string }> {
-  const { bytes, size, revision } = await fileBytes(file);
+function decodeText(bytes: Buffer): string {
   if (bytes.some((byte) => byte === 0 || (byte < 32 && ![9, 10, 12, 13].includes(byte)))) {
     throw new BinaryFileError('Binary files cannot be opened as text');
   }
-  try { return { content: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes), size, revision }; }
+  try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); }
   catch { throw new BinaryFileError('Binary or non-UTF-8 files cannot be opened as text'); }
+}
+
+async function textFile(file: string): Promise<{ content: string; size: number; revision: string }> {
+  const { bytes, size, revision } = await fileBytes(file);
+  return { content: decodeText(bytes), size, revision };
 }
 
 const mutations = new Map<string, Promise<unknown>>();
@@ -151,9 +159,13 @@ function git(cwd: string, args: string[], allowedCodes = [0], allowTruncated = f
       const code = typeof error?.code === 'number' ? error.code : error ? -1 : 0;
       if ((truncated && allowTruncated) || (!truncated && allowedCodes.includes(code))) {
         resolve({ stdout, stderr, code, truncated });
+      } else if (error?.code === 'ENOENT') {
+        reject(error);
+      } else if (!truncated && error?.killed) {
+        reject(new GitTimeoutError(`Git operation exceeded ${timeout / 1000} seconds`));
       } else {
         reject(new Error(truncated ? 'Git output exceeds the 2 MiB limit; select a smaller workspace' :
-          error?.killed ? `Git operation exceeded ${timeout / 1000} seconds` : stderr.trim() || stdout.trim() || error?.message || `Git exited ${code}`));
+          stderr.trim() || stdout.trim() || error?.message || `Git exited ${code}`));
       }
     });
   });
@@ -183,7 +195,7 @@ const diffOptions = [...diffSafetyOptions, '--relative'];
 
 const branchRefPattern = /^refs\/(?:heads|remotes)\//;
 const commitShaPattern = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
-const branchReadEnvironment: NodeJS.ProcessEnv = {
+const workspaceReadEnvironment: NodeJS.ProcessEnv = {
   GIT_DIR: undefined, GIT_COMMON_DIR: undefined, GIT_WORK_TREE: undefined, GIT_INDEX_FILE: undefined,
   GIT_NO_REPLACE_OBJECTS: '1', GIT_NO_LAZY_FETCH: '1', GIT_ALLOW_PROTOCOL: '',
 };
@@ -191,7 +203,7 @@ const branchReadEnvironment: NodeJS.ProcessEnv = {
 function branchGit(root: string, args: string[], { allowedCodes = [0], allowTruncated = false, attributes }: {
   allowedCodes?: number[]; allowTruncated?: boolean; attributes?: string;
 } = {}) {
-  return git(root, args, allowedCodes, allowTruncated, GIT_TIMEOUT_MS, { ...branchReadEnvironment, GIT_ATTR_SOURCE: attributes });
+  return git(root, args, allowedCodes, allowTruncated, GIT_TIMEOUT_MS, { ...workspaceReadEnvironment, GIT_ATTR_SOURCE: attributes });
 }
 
 async function branchRefs(root: string, patterns: string[]) {
@@ -219,26 +231,70 @@ async function statusRecords(root: string): Promise<{ repoRoot: string; records:
 export class MissingWorkspaceDirectoryError extends Error {}
 
 const FILE_SEARCH_EXCLUDED = new Set(['.git', '.hg', '.svn', 'node_modules', '.worktrees', '.venv']);
+const DIRECTORY_SEARCH_ENTRY_LIMIT = 30_000;
+const TEXT_SEARCH_TIMEOUT_MS = 3000;
+const TEXT_SEARCH_FILE_LIMIT = 5000;
+const TEXT_SEARCH_BYTE_LIMIT = 64 * 1024 * 1024;
+const TEXT_SEARCH_MATCH_LIMIT = 200;
+const TEXT_SEARCH_PREVIEW_LIMIT = 240;
 
-async function plainWorkspacePaths(root: string): Promise<string[]> {
-  const files: string[] = [];
+type WorkspacePaths = { paths: string[]; limited: boolean };
+
+function searchExcluded(relativePath: string): boolean {
+  return relativePath.split('/').some(part => FILE_SEARCH_EXCLUDED.has(part));
+}
+
+async function plainWorkspacePaths(root: string, deadline: number): Promise<WorkspacePaths> {
+  const paths: string[] = [];
   const directories = [''];
   let examined = 0;
+  let limited = false;
   for (const directory of directories) {
+    if (performance.now() >= deadline) return { paths, limited: true };
     const entries = await opendir(path.join(root, directory)).catch(error => {
-      if (['ENOENT', 'EACCES'].includes((error as NodeJS.ErrnoException).code ?? '')) return undefined;
+      if (directory && ['ENOENT', 'EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '')) {
+        limited = true;
+        return undefined;
+      }
       throw error;
     });
     if (!entries) continue;
     for await (const entry of entries) {
-      if (++examined > 30_000) return files;
+      if (++examined > DIRECTORY_SEARCH_ENTRY_LIMIT || performance.now() >= deadline) return { paths, limited: true };
       if (FILE_SEARCH_EXCLUDED.has(entry.name)) continue;
       const relativePath = path.join(directory, entry.name);
       if (entry.isDirectory()) directories.push(relativePath);
-      else if (entry.isFile()) files.push(normalizedRelative(relativePath));
+      else if (entry.isFile()) paths.push(normalizedRelative(relativePath));
     }
   }
-  return files;
+  return { paths, limited };
+}
+
+async function workspacePaths(root: string, { deadline = Infinity, fallbackOnGitError = false } = {}): Promise<WorkspacePaths> {
+  try {
+    const gitFiles = await git(root, ['ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', '.'],
+      [0, 128], true, Math.max(1, Math.min(GIT_TIMEOUT_MS, Math.ceil(deadline - performance.now()))),
+      { ...workspaceReadEnvironment, LC_ALL: 'C' });
+    if (gitFiles.truncated || gitFiles.code === 0) {
+      const paths = new Set(gitFiles.stdout.split('\0').slice(0, -1).filter(relativePath => !searchExcluded(relativePath)));
+      return { paths: [...paths], limited: gitFiles.truncated || Boolean(gitFiles.stderr.trim()) };
+    }
+    if (!/^fatal: not a git repository\b/m.test(gitFiles.stderr)) throw new Error(gitFiles.stderr.trim() || 'Could not list workspace files');
+  } catch (error) {
+    if (!fallbackOnGitError && (error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      if (error instanceof GitTimeoutError) return { paths: [], limited: true };
+      throw error;
+    }
+  }
+  return plainWorkspacePaths(root, deadline);
+}
+
+function textMatchPreview(line: string, index: number): string {
+  if (line.length <= TEXT_SEARCH_PREVIEW_LIMIT) return line;
+  const start = Math.max(0, index - 60);
+  const end = Math.min(line.length, start + TEXT_SEARCH_PREVIEW_LIMIT - 2);
+  const excerpt = line.slice(start, end).replace(/^[\udc00-\udfff]|[\ud800-\udbff]$/g, '');
+  return `${start ? '…' : ''}${excerpt}${end < line.length ? '…' : ''}`;
 }
 
 export class WorkspaceFiles {
@@ -246,11 +302,9 @@ export class WorkspaceFiles {
     let root: string;
     try { root = await workspaceRoot(cwd); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
-    const gitFiles = await git(root, ['ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', '.'], [0, 128], true).catch(() => undefined);
-    const paths = !gitFiles || gitFiles.code === 128 ? await plainWorkspacePaths(root) : gitFiles.stdout.split('\0').slice(0, -1);
+    const { paths } = await workspacePaths(root, { fallbackOnGitError: true });
     const needle = query.trim().toLowerCase();
-    const candidates = [...new Set(paths)].flatMap(relativePath => {
-      if (relativePath.split('/').some(part => FILE_SEARCH_EXCLUDED.has(part))) return [];
+    const candidates = paths.flatMap(relativePath => {
       const name = path.basename(relativePath);
       const file = name.toLowerCase();
       const match = relativePath.toLowerCase().indexOf(needle);
@@ -265,6 +319,47 @@ export class WorkspaceFiles {
       if (matches.length === 30) break;
     }
     return matches;
+  }
+
+  async searchText(cwd: string, query: string): Promise<WorkspaceTextSearch> {
+    const matches: WorkspaceTextMatch[] = [];
+    if (!query || /[\r\n]/.test(query)) return { matches, limited: false };
+    const deadline = performance.now() + TEXT_SEARCH_TIMEOUT_MS;
+    const root = await workspaceRoot(cwd);
+    const candidates = await workspacePaths(root, { deadline });
+    const needle = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'iu');
+    let limited = candidates.limited;
+    let examined = 0;
+    let scannedBytes = 0;
+    for (const relativePath of candidates.paths.sort()) {
+      if (++examined > TEXT_SEARCH_FILE_LIMIT || scannedBytes >= TEXT_SEARCH_BYTE_LIMIT || performance.now() >= deadline) {
+        return { matches, limited: true };
+      }
+      let content: string;
+      try {
+        const file = await scopedPath(root, relativePath);
+        if (file !== path.resolve(root, relativePath)) continue;
+        const { bytes, size } = await fileBytes(file);
+        scannedBytes += size;
+        content = decodeText(bytes);
+      } catch (error) {
+        if (error instanceof BinaryFileError || error instanceof WorkspaceBoundaryError || error instanceof NonRegularFileError ||
+          (error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        limited = true;
+        continue;
+      }
+      const separator = content.includes('\r\n') ? '\r\n' : content.includes('\r') ? '\r' : '\n';
+      let lineNumber = 0;
+      for (const line of content.split(separator)) {
+        if (lineNumber % 256 === 0 && performance.now() >= deadline) return { matches, limited: true };
+        lineNumber++;
+        const index = line.search(needle);
+        if (index < 0) continue;
+        if (matches.length >= TEXT_SEARCH_MATCH_LIMIT) return { matches, limited: true };
+        matches.push({ path: relativePath, line: lineNumber, column: index + 1, preview: textMatchPreview(line, index) });
+      }
+    }
+    return { matches, limited };
   }
 
   async list(cwd: string, relativePath = ''): Promise<FileEntry[]> {

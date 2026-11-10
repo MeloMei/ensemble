@@ -25,7 +25,7 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-.command-palette-trigger kbd, .command-palette-hints kbd {
+.command-palette-trigger kbd, .command-palette-scopes kbd, .command-palette-hints kbd {
   display: inline-grid;
   flex-shrink: 0;
   place-items: center;
@@ -42,7 +42,7 @@
   --search-picker-results-height: min(42dvh, 300px);
   display: flex;
   flex-direction: column;
-  width: 540px;
+  width: 580px;
   padding: 14px;
 }
 .command-palette .modal-heading {
@@ -51,6 +51,30 @@
   padding-inline: 4px;
 }
 .command-palette .modal-heading h2 { font-size: 14px; }
+.command-palette-scopes {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin-top: 6px;
+  padding: 3px 0 6px;
+  border-bottom: 1px solid var(--border);
+}
+.command-palette-scopes > button {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding-inline: 7px;
+  border-radius: var(--radius-control);
+  color: var(--muted);
+  font-size: 12px;
+}
+.command-palette-scopes > button:hover { background: var(--hover); }
+.command-palette-scopes > button[aria-selected=true] {
+  background: var(--accent-soft);
+  color: var(--text);
+}
 .command-palette-hints {
   display: flex;
   flex: 0 0 auto;
@@ -66,3 +90,5 @@
   align-items: center;
   gap: 4px;
 }
+.command-palette-hints > .command-palette-file-status { margin-inline-start: auto; }
+.command-palette-file-status:empty { position: absolute; }

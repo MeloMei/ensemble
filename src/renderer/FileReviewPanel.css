@@ -164,6 +164,7 @@
 .review-diff-gutter > button:focus-visible { outline-offset: -2px; }
 .review-diff-gutter > button:hover:not(:disabled), .review-diff-gutter > button[aria-pressed=true] { color: var(--accent); background: var(--accent-soft); }
 .review-diff-line[data-selected] { background: color-mix(in srgb, var(--accent-soft) 72%, var(--diff-line-bg)); }
+.review-diff-line[data-reference] { box-shadow: inset 2px 0 var(--accent); background: color-mix(in srgb, var(--accent-soft) 55%, var(--diff-line-bg)); }
 .review-diff-line > code { padding: 0 11px; white-space: pre; }
 .review-diff-line.added { --diff-line-bg: var(--success-soft); color: var(--success); }
 .review-diff-line.removed { --diff-line-bg: var(--danger-soft); color: var(--danger); }

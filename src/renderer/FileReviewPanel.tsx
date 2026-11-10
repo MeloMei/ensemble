@@ -160,7 +160,8 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
       setDiff(patch);
       if (file?.path !== filePath) setLoadedPath(null);
     }
-    setSelected({ path: filePath, mode }); setDiscard(null); setLocation(reference);
+    setSelected({ path: filePath, mode }); setDiscard(null);
+    setLocation(current => reference ?? (current?.path === filePath ? current : undefined));
     if (reference) setView('files');
   };
 
@@ -182,7 +183,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
   }, [request, busy, workspace.id]);
 
   useEffect(() => {
-    setMissingDirectory(false); setGit(null); setSelected(null); setLoadedPath(null); setDiff(null);
+    setMissingDirectory(false); setGit(null); setSelected(null); setLoadedPath(null); setDiff(null); setLocation(undefined);
     setPreview(null); setReview(null); setNotes({ workspaceId: workspace.id, items: persistedNotes(workspace.id) });
     setNoteDrafts(new Map());
     return () => { directoryGeneration.current++; fileGeneration.current++; };
@@ -293,7 +294,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
     {selected && <section className="file-inspector review-inspector" hidden={view === 'pr'}>
       <div className="inspector-title"><FileCode2 size={14} /><span title={selected.path}>{selected.path}</span>{dirty && <span className="review-unsaved" title={t('files.unsavedTitle')}>{t('files.unsaved')}</span>}
         <IconButton label={expanded ? t('files.restorePanel') : t('files.expandPanel')} onClick={() => setExpanded(value => !value)}>{expanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}</IconButton>
-        <IconButton label={t('files.close')} disabled={dirty || !!busy} onClick={() => { fileGeneration.current++; setSelected(null); setLoadedPath(null); setDiff(null); setExpanded(false); }}><X size={13} /></IconButton>
+        <IconButton label={t('files.close')} disabled={dirty || !!busy} onClick={() => { fileGeneration.current++; setSelected(null); setLoadedPath(null); setDiff(null); setLocation(undefined); setExpanded(false); }}><X size={13} /></IconButton>
       </div>
       <div className="inspector-tabs">
         <button className={selected.mode === 'content' ? 'active' : ''} disabled={!!busy || dirty} onClick={() => run('open', () => load(selected.path, 'content'))}>{t('files.edit')}</button>
@@ -307,7 +308,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
         }} language={file.language} readOnly={!!busy} location={location} />
       </div>}
       {diff && <>
-        <DiffReview key={JSON.stringify([selected.path, diff.revision])} diff={diff} busy={busy} draft={noteDrafts.get(selected.path)}
+        <DiffReview key={JSON.stringify([selected.path, diff.revision])} diff={diff} location={location} busy={busy} draft={noteDrafts.get(selected.path)}
           onDraftChange={draft => updateNoteDraft(selected.path, () => draft)} onSave={addNote} />
         {diff.patch && diff.revision && !diff.truncated && git?.changes.some(change => change.path === selected.path && change.status[1] !== ' ' && change.status[1] !== '?') && <div className="review-discard">
           {discard === selected.path ? <><span>{t('files.discardQuestion')}</span><button className="danger" disabled={!!busy} onClick={() => mutate('discard', selected.path, diff.revision)}>{t('files.confirmDiscard')}</button><button onClick={() => setDiscard(null)}>{t('common.cancel')}</button></> : <button onClick={() => setDiscard(selected.path)}>{t('files.discard')}</button>}
