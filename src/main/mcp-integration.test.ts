@@ -11,7 +11,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { startBackend } from './backend-server';
 import { BackendClient, connectBackend } from './backend-client';
 import type { ProviderAdapter, TurnContext } from './providers/types';
-import type { CollaborationArtifactVersion, CollaborationEvent, CollaborationParticipant, CollaborationRun, CollaborationTask } from '../shared/collaboration';
+import type { CollaborationArtifactVersion, CollaborationEvent, CollaborationParticipant, CollaborationRun, CollaborationTask, SessionCollaborationMessage } from '../shared/collaboration';
 
 interface IssuedConnection {
   identity: { id: string; name: string };
@@ -198,17 +198,25 @@ test('official HTTP and stdio MCP clients share authenticated tasks, immutable a
   }), { timeout: 5_000 }), error => error instanceof StreamableHTTPError && error.code === 403);
 });
 
-test('ordinary cross-runtime MCP messages require a user grant and return only their own reply', { timeout: 25_000 }, async t => {
+test('ordinary cross-runtime MCP messages require a user grant and can continue the sender once with their exact reply', { timeout: 25_000 }, async t => {
   const directory = await mkdtemp(join(tmpdir(), 'workbench-session-message-'));
   const cwd = await realpath(directory);
   const sourceTitle = 'Sender chat';
   const targetTitle = 'Recipient chat';
-  const text = 'Check this change\nKeep the reply in this chat';
-  const reply = 'The change has been checked.';
+  const text = `Check this change\n\n${'Inspect the changed files and include the result for each affected path. '.repeat(5).trim()}`;
+  const reply = `The change has been checked.\n\n${'The recipient checked the changed files and confirmed the expected behavior. '.repeat(5).trim()}`;
   const laterPrompt = 'A separate request from the user';
   const laterReply = 'This reply belongs to a separate turn.';
   const firstPrompt = 'Contact the other chat';
+  const followUpPrompt = 'Read the reply from the other chat';
+  const staleHandoffPrompt = 'Ask for a review before I switch tasks';
+  const newerPrompt = 'Start a different task';
+  const permissionHandoffPrompt = 'Ask for a review before I change permissions';
+  const sourceDraft = 'User draft to keep for later';
+  const nativeSourceId = 'fixture-native-sender';
   const targetPrompts: string[] = [];
+  let grantedLinkId = '';
+  let handoffId = '';
   const provider = (id: string, run: ProviderAdapter['run']): ProviderAdapter => ({
     info: { id, name: id, source: 'plugin', available: true, detail: 'Controlled fixture',
       capabilities: { resume: true, approvals: false, permissions: true, permissionTiers: ['read-only', 'review', 'full-access'] },
@@ -235,9 +243,18 @@ test('ordinary cross-runtime MCP messages require a user grant and return only t
     const lookup = { requestId: outgoing.requestId };
     const queued = { ...lookup, toSessionId: outgoing.toSessionId, status: 'queued', turnMustFinish: true };
     if (context.prompt === firstPrompt) {
+      context.emit({ type: 'external-id', id: nativeSourceId });
       assert.deepEqual(await tool(client, 'list_session_targets', {}), []);
       await expectDenied(client, 'send_session_message', outgoing, /权限/);
       await updateGrant(true);
+      const link = onlyLink();
+      assert.ok(link.id);
+      grantedLinkId = link.id;
+      assert.deepEqual(link.participants.map(item => [item.sessionId, item.title, item.providerId]).sort(), [
+        [sourceId, sourceTitle, sender.info.id], [targetId, targetTitle, recipient.info.id],
+      ].sort());
+      assert.deepEqual(link.grants, [{ fromSessionId: sourceId, toSessionId: targetId }]);
+      assert.deepEqual(link.messages, []);
       engine.updateSession(targetId, { settings: { permission: 'full-access' } });
       assert.deepEqual(await tool(client, 'list_session_targets', {}), []);
       await expectDenied(client, 'send_session_message', outgoing, /权限更高/);
@@ -245,13 +262,16 @@ test('ordinary cross-runtime MCP messages require a user grant and return only t
       assert.deepEqual(await tool(client, 'list_session_targets', {}), [{
         sessionId: outgoing.toSessionId, title: targetTitle, providerId: 'target-runtime', status: 'idle', available: true,
       }]);
-      assert.deepEqual(await tool(client, 'send_session_message', outgoing), queued);
-      assert.deepEqual(await tool(client, 'send_session_message', outgoing), queued);
+      assert.deepEqual(await tool(client, 'send_session_message', handoffRequest), queued);
+      handoffId = onlyHandoff('queued', 'waiting').id;
+      assert.ok(handoffId);
+      assert.deepEqual(await tool(client, 'send_session_message', handoffRequest), queued);
+      assert.equal(onlyHandoff('queued', 'waiting').id, handoffId);
       assert.deepEqual(await tool(client, 'get_session_message', lookup), queued);
       assertTargetQueueSize(1);
       assert.equal(engine.getSession(targetId).waitingForProject, true);
       assert.equal(targetPrompts.length, 0);
-    } else {
+    } else if (context.prompt === followUpPrompt) {
       const result = await tool<{ status: string; reply?: string }>(client, 'get_session_message', lookup);
       assert.equal(result.status, 'completed');
       assert.equal(result.reply, reply);
@@ -261,12 +281,33 @@ test('ordinary cross-runtime MCP messages require a user grant and return only t
       assertTargetQueueSize(0);
       assert.equal(engine.getSession(targetId).waitingForProject, undefined);
       await expectDenied(client, 'get_session_message', { requestId: revoked.requestId }, /权限/);
+    } else if (context.prompt === staleHandoffPrompt || context.prompt === permissionHandoffPrompt) {
+      const sent = await tool<{ status: string }>(client, 'send_session_message', { ...handoffRequest, requestId: context.prompt });
+      assert.equal(sent.status, 'paused');
+    } else if (context.prompt !== newerPrompt) {
+      assert.equal(context.session.id, sourceId);
+      assert.equal(context.session.providerId, sender.info.id);
+      assert.equal(context.session.externalId, nativeSourceId);
+      assert.ok(context.prompt.includes(targetTitle));
+      assert.ok(context.prompt.includes(text));
+      assert.ok(context.prompt.includes(reply));
+      assert.ok(context.prompt.includes('Use this reply to continue the original user request.'));
+      const running = onlyHandoff('completed', 'running');
+      assert.equal(running.id, handoffId);
+      const replay = await tool<{ status: string; reply?: string }>(client, 'send_session_message', handoffRequest);
+      assert.equal(replay.status, 'completed');
+      assert.equal(replay.reply, reply);
+      context.emit({ type: 'text', itemId: 'continuation-output', text: 'Continued the original request.' });
     }
   }));
   const recipient = provider('target-runtime', async context => {
     targetPrompts.push(context.prompt);
     const unrelated = context.prompt === laterPrompt;
     if (unrelated) await inTurn(context, client => expectDenied(client, 'get_session_message', { requestId: outgoing.requestId }, /找不到/));
+    else if (targetPrompts.length === 1) {
+      assert.equal(engine.getSession(sourceId).status, 'completed');
+      assert.equal(onlyHandoff('running', 'waiting').id, handoffId);
+    }
     context.emit({ type: 'text', itemId: unrelated ? 'unrelated-output' : 'agent-output', text: unrelated ? laterReply : reply });
   });
   const backend = await startBackend({ dataPath: join(directory, 'data'), command: process.execPath,
@@ -277,26 +318,49 @@ test('ordinary cross-runtime MCP messages require a user grant and return only t
   });
   const engine = backend.service.engine;
   const admin = new BackendClient(backend.endpoint);
-  const sourceId = await engine.createSession({ title: sourceTitle, providerId: sender.info.id, cwd });
+  const sourceId = await engine.createSession({ title: sourceTitle, providerId: sender.info.id, cwd, initialDraft: sourceDraft });
   const targetId = await engine.createSession({ title: targetTitle, providerId: recipient.info.id, cwd, initialDraft: text });
   const outgoing = { requestId: 'contact-recipient', toSessionId: targetId, text };
+  const handoffRequest = { ...outgoing, continueOnReply: true };
   const updateGrant = (enabled: boolean) => admin.call('workbench:update-session', sourceId, { messageTarget: { sessionId: targetId, enabled } });
   const assertTargetQueueSize = (size: number) => assert.equal(engine.getSession(targetId).queue?.length ?? 0, size);
+  const onlyLink = () => {
+    const links = backend.service.snapshot().collaboration?.sessionLinks ?? [];
+    assert.equal(links.length, 1);
+    return links[0];
+  };
+  const onlyHandoff = (status: SessionCollaborationMessage['status'], continuation: SessionCollaborationMessage['continuation']) => {
+    const link = onlyLink();
+    assert.equal(link.id, grantedLinkId);
+    assert.equal(link.messages.length, 1);
+    const message = link.messages[0];
+    assert.equal(message.status, status);
+    assert.equal(message.continuation, continuation);
+    return message;
+  };
   const complete = async (sessionId: string, prompt: string) => {
     await bounded(engine.executeSession(sessionId, { text: prompt }).done);
     const session = engine.getSession(sessionId);
     assert.equal(session.status, 'completed', session.error);
   };
   let stopListening = () => {};
-  const delivered = new Promise<void>(resolve => {
+  const settlementOrder: string[] = [];
+  const continued = new Promise<void>(resolve => {
     stopListening = engine.subscribeExecution(event => {
-      if (event.type === 'settled' && event.sessionId === targetId) resolve();
+      if (event.type !== 'settled') return;
+      settlementOrder.push(event.sessionId);
+      if (settlementOrder.length === 3) resolve();
     });
   });
   try {
     await complete(sourceId, firstPrompt);
-    await bounded(delivered);
+    await bounded(continued);
   } finally { stopListening(); }
+  assert.deepEqual(settlementOrder, [sourceId, targetId, sourceId]);
+  const source = engine.getSession(sourceId);
+  assert.equal(source.status, 'completed', source.error);
+  assert.equal(source.draft?.text, sourceDraft);
+  assert.equal(source.attempts?.length, 2);
   const target = engine.getSession(targetId);
   assert.equal(target.status, 'completed', target.error);
   assert.equal(targetPrompts.length, 1);
@@ -309,7 +373,38 @@ test('ordinary cross-runtime MCP messages require a user grant and return only t
   assert.deepEqual(agentMessages, [{ text, source: { sessionId: sourceId, title: sourceTitle, providerId: sender.info.id } }]);
   await complete(targetId, laterPrompt);
   assert.equal(engine.getSession(targetId).messages.at(-1)?.text, laterReply);
-  await complete(sourceId, 'Read the reply from the other chat');
+  const finalHandoff = onlyHandoff('completed', 'completed');
+  assert.equal(finalHandoff.id, handoffId);
+  const detail = await admin.call<SessionCollaborationMessage>('workbench:collaboration-call', 'get_session_handoff', { id: handoffId });
+  assert.equal(detail.id, handoffId);
+  assert.equal(detail.fromSessionId, sourceId);
+  assert.equal(detail.toSessionId, targetId);
+  assert.equal(detail.text, text);
+  assert.equal(detail.reply, reply);
+  assert.equal(detail.status, 'completed');
+  assert.equal(detail.continuation, 'completed');
+  await complete(sourceId, followUpPrompt);
   assert.deepEqual(targetPrompts.slice(1), [laterPrompt]);
   assert.equal(engine.getSession(targetId).attempts?.length, 2);
+  assert.equal(engine.getSession(sourceId).attempts?.length, 3);
+
+  await updateGrant(true);
+  engine.setSessionQueuePaused(targetId, true);
+  await complete(sourceId, staleHandoffPrompt);
+  await complete(sourceId, newerPrompt);
+  engine.setSessionQueuePaused(targetId, false);
+  await bounded(engine.waitSession(targetId));
+  assert.equal(onlyLink().messages[0].continuation, 'skipped');
+  assert.equal(engine.getSession(sourceId).attempts?.length, 5);
+
+  engine.setSessionQueuePaused(targetId, true);
+  await complete(sourceId, permissionHandoffPrompt);
+  engine.setSessionQueuePaused(sourceId, true);
+  engine.setSessionQueuePaused(targetId, false);
+  await bounded(engine.waitSession(targetId));
+  assert.equal(onlyLink().messages[0].continuation, 'paused');
+  engine.updateSession(sourceId, { settings: { permission: 'read-only' } });
+  engine.setSessionQueuePaused(sourceId, false);
+  assert.equal(onlyLink().messages[0].continuation, 'removed');
+  assert.equal(engine.getSession(sourceId).attempts?.length, 6);
 });

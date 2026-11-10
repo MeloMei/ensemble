@@ -17,7 +17,7 @@ import './SettingsDialog.css';
 
 export type { SettingsSection } from './settings-targets';
 
-export function SettingsDialog({ snapshot, workspace, sessions, session, perform, pending, updates, initialSection, initialTarget, openSession, onClose }: {
+export function SettingsDialog({ snapshot, workspace, sessions, session, perform, pending, updates, initialSection, initialTarget, openSession, openSessionLink, onClose }: {
   snapshot: Snapshot | null;
   workspace?: Workspace;
   sessions: Session[];
@@ -28,6 +28,7 @@ export function SettingsDialog({ snapshot, workspace, sessions, session, perform
   initialSection: SettingsSection;
   initialTarget?: SettingsTarget;
   openSession: (id: string) => void;
+  openSessionLink?: (sourceId: string, targetId: string) => void;
   onClose: () => void;
 }) {
   const { t } = useTranslation('shell');
@@ -174,7 +175,8 @@ export function SettingsDialog({ snapshot, workspace, sessions, session, perform
           {visited.has('session') && <>
             <header className="settings-section-heading"><h3>{t('settings.session')}</h3><p>{session?.title ?? t('settings.sessionEmpty')}</p></header>
             {session && workspace && <div data-setting-anchor="session-skills"><SessionSettingsPanel key={session.id} session={session} workspaceId={workspace.id}
-              visible={section === 'session'} sessions={sessions} providers={snapshot?.providers} perform={perform} openSession={openSession} /></div>}
+              visible={section === 'session'} sessions={sessions} providers={snapshot?.providers} perform={perform} openSession={openSession}
+              openSessionLink={openSessionLink && ((sourceId, targetId) => guardProjectEdits(() => openSessionLink(sourceId, targetId)))} /></div>}
           </>}
         </section>
       </div>
