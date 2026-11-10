@@ -152,8 +152,8 @@ function registerIPC(commands: string[]): void {
     await updates.waitForStartupConfirmation();
     try { return await backend.call(command, ...args); }
     catch (error) {
-      if (command === 'workbench:send-prompt' && error instanceof BackendCommandError && error.errorCode === 'workspace-unavailable') {
-        return { rejected: 'workspace-unavailable' as const };
+      if (command === 'workbench:send-prompt' && error instanceof BackendCommandError && error.errorCode) {
+        return { rejected: error.errorCode };
       }
       throw error;
     }

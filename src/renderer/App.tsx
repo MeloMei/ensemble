@@ -673,7 +673,7 @@ export function App() {
         {page === 'history' && (readingSession ? <section className="history-session-view">
           <header className="history-session-toolbar"><span>{t('history.readOnly')}</span><button className="header-button" onClick={() => setReadingSessionId(null)}><X size={13} />{t('history.closeSession')}</button></header>
           <SessionChat key={readingSession.id} session={readingSession} readOnly connected={connected} sessions={sessions}
-            provider={providers.find(provider => provider.id === readingSession.providerId)} perform={perform} pending={pending}
+            provider={providers.find(provider => provider.id === readingSession.providerId)} providers={providers} perform={perform} pending={pending}
             draft={{ text: '' }} onDraftChange={() => {}} openSession={id => openSession(id, true)}
             onChooseEvidence={connected ? setEvidenceTarget : undefined} onOpenEvidence={openEvidence}
             attentionOpen={attentionOpen?.sessionId === readingSession.id ? attentionOpen : undefined}

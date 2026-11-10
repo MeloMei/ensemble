@@ -70,6 +70,8 @@
 .chat-pane .session-children button > span:not(.status) { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .chat-pane .session-children small { color: var(--dim); font-size: 11px; }
 .chat-pane .messages { display: flow-root; width: min(100%, 850px); padding: 0 28px; margin: 0 auto; }
+.chat-pane .runtime-switch-marker { display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; padding: 4px 0 10px; color: var(--muted); font-size: 11px; text-align: center; overflow-wrap: anywhere; }
+.chat-pane .runtime-switch-marker > svg { flex: 0 0 auto; }
 .chat-pane .message { min-width: 0; margin: 0 0 25px; }
 .chat-pane .message-user { display: flex; flex-direction: column; align-items: flex-end; margin-bottom: 30px; }
 .chat-pane .user-message { max-width: 88%; padding: 12px 16px; border: 0; border-radius: var(--radius-panel); color: var(--text); background: var(--selected); font-size: 14px; line-height: 1.85; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
@@ -289,6 +291,7 @@
 .chat-pane .composer-bottom { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px; padding: 7px 10px 9px; }
 .chat-pane .composer-controls { display: flex; flex: 1; flex-wrap: wrap; align-items: center; gap: 3px; min-width: 0; }
 .chat-pane .composer-controls > .icon-button { width: 29px; height: 29px; border-radius: var(--radius-control); }
+.chat-pane .composer-runtime { display: inline-flex; min-width: 0; max-width: 100%; }
 .chat-pane .composer-divider { width: 1px; height: 14px; margin-right: 3px; background: var(--border); }
 .chat-pane .composer-select { position: relative; display: inline-flex; align-items: center; gap: 5px; max-width: 100%; min-width: 0; height: 29px; padding: 0 6px; border-radius: var(--radius-control); color: var(--muted); font-size: 11px; transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out); }
 .chat-pane .composer-select > svg { flex-shrink: 0; }

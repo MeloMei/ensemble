@@ -155,8 +155,13 @@ const api: WorkbenchAPI = {
   chooseAttachments: () => ipcRenderer.invoke('workbench:choose-attachments'),
   importPastedImage: (name, bytes) => ipcRenderer.invoke('workbench:import-pasted-image', name, bytes),
   readImageAttachment: attachment => ipcRenderer.invoke('workbench:read-image-attachment', attachment),
-  sendPrompt: async (id, input, commandId) => { await drafts.flush(id); return ipcRenderer.invoke('workbench:send-prompt', id, input, commandId); },
+  sendPrompt: async (id, input, commandId, expectedProviderId) => {
+    await drafts.flush(id);
+    return ipcRenderer.invoke('workbench:send-prompt', id, input, commandId, expectedProviderId);
+  },
   saveSessionDraft: (id, input) => drafts.save(id, input),
+  switchSessionRuntime: (id, targetProviderId, expectedProviderId) =>
+    ipcRenderer.invoke('workbench:switch-session-runtime', id, targetProviderId, expectedProviderId),
   addSessionEvidence: async (id, reference) => { await drafts.flush(id); return ipcRenderer.invoke('workbench:add-session-evidence', id, reference); },
   updateSession: (id, input) => ipcRenderer.invoke('workbench:update-session', id, input),
   forkSession: (id, before, beside) => ipcRenderer.invoke('workbench:fork-session', id, before, beside),

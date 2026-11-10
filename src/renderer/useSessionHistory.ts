@@ -10,8 +10,8 @@ interface MessagePage {
   conversation: ConversationPage;
 }
 function messagePage(messages: Message[], spill = false, nextTraceKey?: string): MessagePage {
-  const chat = messages.filter(message => message.role !== 'activity' || message.event);
-  const activity = messages.filter(message => message.role === 'activity' && !message.event);
+  const chat = messages.filter(message => message.role !== 'activity' || message.event || message.runtimeSwitch);
+  const activity = messages.filter(message => message.role === 'activity' && !message.event && !message.runtimeSwitch);
   const nativeEvents = new Map<string, ProcessEvent[]>();
   for (const { event } of messages) if (event) {
     for (const id of new Set([event.nativeId, event.parentId])) if (id) nativeEvents.set(id, [...(nativeEvents.get(id) ?? []), event]);
@@ -65,11 +65,11 @@ interface HistoryWindow {
 }
 interface LiveWindow {
   older: MessagePage[]; tail: MessagePage; beforeCursor?: string; hasMore: boolean; version: number;
-  addedEvents?: ReadonlySet<string>;
+  providerId: string; addedEvents?: ReadonlySet<string>;
 }
 const tailWindow = (session: Session): LiveWindow => ({
   older: [], tail: messagePage(session.messages), beforeCursor: session.historyCursor,
-  hasMore: Boolean(session.historyCursor), version: 0,
+  hasMore: Boolean(session.historyCursor), version: 0, providerId: session.providerId,
 });
 
 function tailOverlap(previous: LiveWindow, session: Session): number {
@@ -85,13 +85,13 @@ function replaceTail(previous: LiveWindow, session: Session, reset: boolean): Li
   const incoming = messagePage(session.messages);
   const addedEvents = new Set(incoming.messages.slice(previous.tail.messages.length - overlap)
     .filter(message => message.event).map(message => message.id));
-  if (overlap === 0) return { ...previous, tail: incoming, addedEvents };
+  if (overlap === 0) return { ...previous, tail: incoming, providerId: session.providerId, addedEvents };
   const removed = previous.tail.messages.slice(0, overlap);
   const last = previous.older.at(-1);
   const older = last?.spill && last.messages.length + removed.length <= 200
     ? [...previous.older.slice(0, -1), messagePage([...last.messages, ...removed], true)]
     : [...previous.older, messagePage(removed, true)];
-  return { ...previous, older, tail: incoming, addedEvents, version: previous.version + 1 };
+  return { ...previous, older, tail: incoming, providerId: session.providerId, addedEvents, version: previous.version + 1 };
 }
 
 export function useSessionHistory(session: Session) {
@@ -137,7 +137,7 @@ export function useSessionHistory(session: Session) {
       return;
     }
     setLive(previous => replaceTail(previous, session, changedSession || shortened));
-  }, [session.id, session.messages, session.messageCount, session.historyCursor, session.historyLoaded, invalidatePages, cancelJump]);
+  }, [session.id, session.messages, session.messageCount, session.historyCursor, session.historyLoaded, session.providerId, invalidatePages, cancelJump]);
 
   useEffect(() => () => { pageGeneration.current++; jumpGeneration.current++; }, []);
 
@@ -206,6 +206,7 @@ export function useSessionHistory(session: Session) {
   }, [cancelJump, invalidatePages]);
   return {
     messages, activities, conversation, addedEvents: live.addedEvents,
+    runtimeFallback: history && session.runtimeContinuity ? undefined : live.providerId,
     liveTailStart: history ? -1 : messages.length - live.tail.chat.length,
     beforeCursor: (history ?? live).beforeCursor, hasMore: (history ?? live).hasMore,
     hasAfter: history?.hasAfter ?? false, loading: paging || jumping, error: jumpError || pageError, showingHistory: Boolean(history),
