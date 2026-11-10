@@ -334,12 +334,22 @@ const cases: Record<string, () => Promise<void>> = {
     const snapshot: Snapshot = { ...collaborationSnapshot([]), sessions: [{ ...session, messages: [answer] }],
       providers: [provider], workspaces: [{ ...workspace, tabs: [tab], activeTabId: tab.id }] };
     const reads: string[] = [];
+    const feedback: PromptInput[] = [];
     window.workbench = {
       ...applicationUpdateApi,
       snapshot: async () => snapshot, subscribe: () => () => {},
       getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
       onLanguageChanged: () => () => {}, watchSessions: async () => {},
-      listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {},
+      listFiles: async () => [], gitState: async () => ({ available: false, branch: '', changes: [] }), setUnsavedFiles: () => {},
+      searchWorkspaceText: async (_id: string, query: string) => ({
+        matches: query === 'Line 40' ? [{ path: 'src/view.ts', line: 40, column: 3, preview: 'Line 40' }] : [],
+        limited: false,
+      }),
+      fileDiff: async (_id: string, path: string) => ({
+        path, patch: 'Staged changes\n@@ -40 +40 @@\n-before staged\n+Staged line\nWorking tree changes\n@@ -40 +40 @@\n-before working\n+Line 40',
+        revision: 'reference-diff-r1', binary: false, truncated: false,
+      }),
+      saveSessionDraft: async (_id: string, value: PromptInput) => { feedback.push(value); },
       readFile: async (_id: string, path: string) => {
         reads.push(path);
         return { path, content: fileText, size: fileText.length, language: 'TypeScript', revision: 'file-reference-r1' };
@@ -377,6 +387,23 @@ const cases: Record<string, () => Promise<void>> = {
     assert(editor() === view && reads.length === 1 && document.querySelector('.tab-select[aria-current="page"]')?.textContent?.includes(session.title),
       'File navigation discarded the draft, read an unrelated file, or switched the conversation');
     await act(async () => { view.dispatch({ changes: { from: 0, to: 'Draft: '.length } }); await tick(); });
+    await click('shell:commandPalette.trigger');
+    await change(input('.command-palette input[role=combobox]'), 'Line 40');
+    const hit = () => [...document.querySelectorAll<HTMLElement>('.command-palette [role=option]')]
+      .find(item => item.textContent?.includes('src/view.ts:40:3'));
+    await waitFor(() => !!hit(), 'The text result did not show the exact reference');
+    await act(async () => { hit()?.click(); await tick(); });
+    await waitFor(() => view.state.selection.main.head === view.state.doc.line(40).from + 2, 'The search hit did not restore the line and column');
+    await click('Diff');
+    await waitFor(() => !!document.querySelector('.review-diff-line[data-reference]'), 'Diff did not reveal the search result line');
+    const diffLine = document.querySelector('.review-diff-line[data-reference]');
+    assert(diffLine?.querySelector('code')?.textContent === '+Line 40', 'Diff jumped to the staged line instead of the working tree match');
+    await act(async () => { diffLine?.querySelector<HTMLButtonElement>('button[data-side="modified"]')?.click(); await tick(); });
+    await change(input('.review-note-editor textarea'), 'Please check the matched line');
+    await click('workspace:files.saveNote');
+    await click('workspace:files.notesToDraft');
+    await waitFor(() => feedback.some(value => value.text.includes('Please check the matched line') &&
+      value.text.includes('src/view.ts') && value.text.includes('Diff: working')), 'The anchored note did not reach the active session draft');
   },
   'SIDE-QUESTION: selected answers and Trace titles support a reliable independent follow-up': async () => {
     const response: Message = { id: 'side-answer', role: 'assistant', text: 'An earlier sentence. Quote just this. An extra sentence.', createdAt: session.createdAt };
@@ -1897,6 +1924,11 @@ const cases: Record<string, () => Promise<void>> = {
     const terminals: string[] = [];
     const fileSearch = deferred<{ path: string; name: string }[]>();
     const filePath = 'src/remote result.ts';
+    const contentPath = 'src/content match.ts';
+    const content = 'header\nsecond line\n  searchphrase();';
+    const textSearch = deferred<Awaited<ReturnType<Window['workbench']['searchWorkspaceText']>>>();
+    const oldTextSearch = deferred<Awaited<ReturnType<Window['workbench']['searchWorkspaceText']>>>();
+    const textQueries: string[][] = [];
     const fileReads: string[][] = [];
     window.workbench = {
       ...applicationUpdateApi,
@@ -1906,7 +1938,8 @@ const cases: Record<string, () => Promise<void>> = {
       listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {},
       readFile: async (id: string, path: string) => {
         fileReads.push([id, path]);
-        return { path, content: '', revision: 'r1', size: 0, language: 'typescript' };
+        const text = path === contentPath ? content : '';
+        return { path, content: text, revision: 'r1', size: text.length, language: 'typescript' };
       },
       sessionLocations: async (id: string) => ({
         current: { cwd: (snapshot.workspaces.find(project => project.id === id) ?? workspace).cwd },
@@ -1932,9 +1965,13 @@ const cases: Record<string, () => Promise<void>> = {
         for (const type of ['rawKeyDown', 'keyUp']) await rendererInput({ type, key: name, code, windowsVirtualKeyCode, modifiers });
       });
     };
-    const shortcut = () => key('k', 'KeyK', 75, navigator.platform.startsWith('Mac') ? 4 : 2);
+    const modifier = navigator.platform.startsWith('Mac') ? 4 : 2;
+    const shortcut = () => key('k', 'KeyK', 75, modifier);
+    const scopeShortcut = (index: number) => key(String(index), `Digit${index}`, 48 + index, modifier);
+    const scope = () => modal()?.querySelector('[role=tab][aria-selected=true]');
     const escape = () => key('Escape', 'Escape', 27);
     const enter = () => key('Enter', 'Enter', 13);
+    const closeDialog = () => act(async () => { document.querySelector<HTMLButtonElement>('dialog[open] .modal-heading button')?.click(); });
     const run = async (query: string) => {
       await click('shell:commandPalette.trigger');
       await change(search(), query);
@@ -1965,6 +2002,15 @@ const cases: Record<string, () => Promise<void>> = {
       && panel.offsetTop === bounds[0] && panel.offsetHeight === bounds[1], 'Filtering changed the dialog, focus, or bounds');
     assert(panel.querySelector('[role=status]')?.textContent === translate('shell:commandPalette.empty'), 'Empty search results were not announced');
     await escape();
+    assert(modal() === panel && !search().value && scope()?.textContent?.startsWith('All'), 'Escape did not clear search first');
+    await key('Tab', 'Tab', 9);
+    assert(document.activeElement === scope(), 'Tab did not reach the selected search scope');
+    await key('ArrowRight', 'ArrowRight', 39);
+    assert(document.activeElement === scope() && scope()?.textContent?.startsWith('Sessions')
+      && panel.querySelectorAll('[role=group]').length === 1, 'ArrowRight did not narrow results to sessions');
+    await escape();
+    assert(document.activeElement === search() && scope()?.textContent?.startsWith('All'), 'Escape did not return to All from an empty scope');
+    await escape();
     assert(!modal() && document.activeElement === source, 'Escape did not close and restore the shortcut source');
 
     await run('design-system');
@@ -1989,18 +2035,67 @@ const cases: Record<string, () => Promise<void>> = {
     await enter();
     await waitFor(() => fileReads.some(([id, path]) => id === workspace.id && path === filePath), 'File selection did not open the returned path');
 
+    window.workbench.searchWorkspaceText = async (id, query) => {
+      textQueries.push([id, query]);
+      return query === 'obsolete' ? oldTextSearch.promise : textSearch.promise;
+    };
+    await click('shell:commandPalette.trigger');
+    await change(search(), 'obsolete');
+    await waitFor(() => textQueries.length === 1, 'Content search did not start in All');
+    await scopeShortcut(3);
+    assert(scope()?.textContent?.startsWith('Commands') && document.activeElement === search(), 'The scope shortcut did not keep focus in search');
+    await change(search(), 'searchphrase');
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 150)); });
+    assert(JSON.stringify(textQueries) === JSON.stringify([[workspace.id, 'obsolete']]), 'A hidden Files scope issued a content search');
+    await scopeShortcut(1);
+    await waitFor(() => textQueries.length === 2, 'Returning to All did not search the new text');
+    assert(JSON.stringify(textQueries) === JSON.stringify([[workspace.id, 'obsolete'], [workspace.id, 'searchphrase']]), 'Content search used the wrong workspace or query');
+    await act(async () => {
+      textSearch.resolve({ matches: Array.from({ length: 7 }, (_, index) => ({ path: contentPath, line: index + 3, column: 3, preview: 'searchphrase();' })), limited: true });
+      oldTextSearch.resolve({ matches: [{ path: 'obsolete.ts', line: 1, column: 1, preview: 'obsolete' }], limited: false });
+    });
+    const contentGroup = () => [...modal()!.querySelectorAll('[role=group]')]
+      .find(group => group.getAttribute('aria-label') === translate('shell:commandPalette.fileContents'));
+    assert(contentGroup()?.querySelectorAll('[role=option]').length === 6 && !modal()?.textContent?.includes('obsolete.ts'), 'All did not cap content results or retained a superseded response');
+    assert(active()?.textContent?.includes(`${contentPath}:3:3`), 'A content match did not show its path, line, and column');
+    await key('ArrowUp', 'ArrowUp', 38);
+    assert(active()?.textContent?.startsWith('Show more'), 'The content group did not offer more results to the keyboard');
+    await enter();
+    assert(scope()?.textContent?.startsWith('Files') && search().value === 'searchphrase' && document.activeElement === search()
+      && contentGroup()?.querySelectorAll('[role=option]').length === 7 && textQueries.length === 2, 'Show more did not reuse and expose the complete Files result set');
+    assert(modal()?.querySelector('.command-palette-file-status')?.textContent === translate('shell:commandPalette.fileSearchLimited'), 'The limited content search was not announced');
+    await act(async () => { search().dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })); });
+    await enter();
+    assert(modal(), 'Enter selected a match during text composition');
+    await act(async () => { search().dispatchEvent(new CompositionEvent('compositionend', { bubbles: true })); });
+    await enter();
+    await waitFor(() => {
+      const editor = document.querySelector<HTMLElement>('.review-editor .cm-editor');
+      const view = editor && EditorView.findFromDOM(editor);
+      return view?.state.selection.main.head === content.indexOf('searchphrase');
+    }, 'Opening a content result did not move the editor to the matching line and column');
+
     for (const [query, title] of [['new project', 'shell:app.newWorkspace'], ['new agent', 'shell:app.newAgentSession'], ['settings', 'shell:preferences.title']]) {
       await run(query);
       assert(document.querySelector('dialog[open]')?.getAttribute('aria-label') === translate(title), `The palette did not route ${query} to its existing dialog`);
       await shortcut();
       assert(!modal(), 'The shortcut opened a second dialog over a current modal');
-      await escape();
+      await closeDialog();
     }
+    await click('shell:commandPalette.trigger');
+    await scopeShortcut(5);
+    assert(scope()?.textContent?.startsWith('Settings'), 'The Settings shortcut did not select its scope');
+    await change(search(), 'language');
+    assert(active()?.textContent?.includes(translate('shell:preferences.language')), 'The Settings scope did not find the interface language preference');
+    await enter();
+    assert(document.querySelector('dialog[open] [data-setting-anchor="language"].setting-search-highlight'), 'The scoped setting result did not reach its existing setting');
+    await closeDialog();
     await act(async () => { await i18n.changeLanguage('zh-CN'); });
     try {
       await click('shell:commandPalette.trigger');
       await change(search(), '打开文件');
       assert(active()?.textContent?.includes('打开文件'), 'The localized action was not searchable');
+      await escape();
       await escape();
     } finally { await act(async () => { await i18n.changeLanguage('en'); }); }
   },

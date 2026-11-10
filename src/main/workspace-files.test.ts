@@ -59,6 +59,63 @@ test('file reader rejects binary, non-UTF-8 and larger files without returning t
   await assert.rejects(files.read(root, 'large.txt'), /1 MiB/);
 });
 
+test('workspace search returns literal matches from the current files in scope', async () => {
+  const root = await repository();
+  const project = path.join(root, 'nested project');
+  await mkdir(path.join(project, 'node_modules'), { recursive: true });
+  await writeFile(path.join(root, '.gitignore'), 'ignored.txt\n');
+  await writeFile(path.join(root, 'outside.txt'), 'find.[ME]');
+  await writeFile(path.join(project, 'tracked.txt'), 'indexed find.[ME]');
+  await writeFile(path.join(project, 'removed.txt'), 'find.[ME]');
+  await writeFile(path.join(project, 'node_modules', 'dependency.txt'), 'find.[ME]');
+  await symlink(path.join(root, 'outside.txt'), path.join(project, 'outside-link.txt'));
+  await symlink(path.join(project, 'ignored.txt'), path.join(project, 'ignored-link.txt'));
+  git(root, 'add', '.');
+  await unlink(path.join(project, 'removed.txt'));
+  await writeFile(path.join(project, 'tracked.txt'), 'findXMe\r\n🙂 FIND.[me] find.[me]\r\nfind.[Me]');
+  await writeFile(path.join(project, 'untracked.txt'), '中文find.[ME]');
+  await writeFile(path.join(project, 'ignored.txt'), 'find.[ME]');
+  await writeFile(path.join(project, 'binary.txt'), 'find.[ME]\0');
+  await writeFile(path.join(project, 'invalid.txt'), Buffer.concat([Buffer.from('find.[ME]'), Buffer.from([0xff])]));
+
+  assert.deepEqual(await files.searchText(project, 'find.[me]'), { limited: false, matches: [
+    { path: 'tracked.txt', line: 2, column: 4, preview: '🙂 FIND.[me] find.[me]' },
+    { path: 'tracked.txt', line: 3, column: 1, preview: 'find.[Me]' },
+    { path: 'untracked.txt', line: 1, column: 3, preview: '中文find.[ME]' },
+  ] });
+  assert.deepEqual(await files.find(project, 'track'), [
+    { path: 'tracked.txt', name: 'tracked.txt' }, { path: 'untracked.txt', name: 'untracked.txt' },
+  ]);
+});
+
+test('plain workspace search reports incomplete scans and root failures', async () => {
+  const root = await directory();
+  await writeFile(path.join(root, 'large.txt'), Buffer.alloc(1024 * 1024 + 1, 65));
+  await writeFile(path.join(root, 'text.txt'), `${'a'.repeat(300)}needle${'b'.repeat(300)}\n`);
+  const result = await files.searchText(root, 'needle');
+  assert.equal(result.limited, true);
+  assert.equal(result.matches.length, 1);
+  assert.equal(result.matches[0].column, 301);
+  assert(result.matches[0].preview.length <= 240);
+  assert.match(result.matches[0].preview, /^…a+needleb+…$/);
+  await unlink(path.join(root, 'large.txt'));
+  await writeFile(path.join(root, 'text.txt'), 'needle\n'.repeat(201));
+  const capped = await files.searchText(root, 'needle');
+  assert.equal(capped.limited, true);
+  assert.equal(capped.matches.length, 200);
+  assert.equal(capped.matches.at(-1)?.line, 200);
+  await assert.rejects(files.searchText(path.join(root, 'missing'), 'needle'), { code: 'ENOENT' });
+  const previousPath = process.env.PATH;
+  process.env.PATH = root;
+  try {
+    const withoutGit = await files.searchText(root, 'needle');
+    assert.deepEqual(withoutGit, capped);
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+  }
+});
+
 test('unborn branches expose real untracked and staged-plus-unstaged file contents', async () => {
   const root = await repository();
   const name = '中文 \n "quoted".txt';

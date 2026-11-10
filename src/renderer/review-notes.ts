@@ -17,6 +17,15 @@ export interface DiffPosition { row: number; line: number; side: ReviewNote['sid
 export interface DiffRange { anchor: DiffPosition; end: DiffPosition }
 export interface DiffNoteDraft { revision: string; range: DiffRange; body: string }
 
+function hunkCoordinates(text: string) {
+  const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(text);
+  if (!match) return;
+  return {
+    oldStart: Number(match[1]), oldCount: Number(match[2] ?? 1),
+    newStart: Number(match[3]), newCount: Number(match[4] ?? 1),
+  };
+}
+
 export function diffLines(patch: string): DiffLine[] {
   let oldLine: number | undefined; let newLine: number | undefined;
   let hunk: number | undefined;
@@ -24,9 +33,9 @@ export function diffLines(patch: string): DiffLine[] {
   return patch.split('\n').map((text, index) => {
     if (text === 'Staged changes') scope = 'staged';
     if (text === 'Working tree changes') scope = 'working';
-    const header = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(text);
+    const header = hunkCoordinates(text);
     if (header) {
-      oldLine = Number(header[1]); newLine = Number(header[2]); hunk = index;
+      oldLine = header.oldStart; newLine = header.newStart; hunk = index;
     } else if (hunk !== undefined && oldLine !== undefined && newLine !== undefined) {
       if (text.startsWith('+')) return { text, scope, hunk, kind: 'added', newLine: newLine++ };
       if (text.startsWith('-')) return { text, scope, hunk, kind: 'removed', oldLine: oldLine++ };
@@ -36,6 +45,28 @@ export function diffLines(patch: string): DiffLine[] {
     }
     return { text, scope, kind: 'header' };
   });
+}
+
+export function diffRowForFileLine(lines: DiffLine[], fileLine: number): number | undefined {
+  const working = lines.filter(line => line.scope === 'working');
+  if (working.filter(line => line.kind === 'header' && line.text.startsWith('diff --git ')).length > 1) return;
+  const direct = lines.findIndex(line => line.scope === 'working' && line.newLine === fileLine);
+  if (direct >= 0) return direct;
+
+  let indexLine = fileLine;
+  for (const line of working) {
+    if (line.kind !== 'header') continue;
+    const hunk = hunkCoordinates(line.text);
+    if (!hunk) continue;
+    const newAfter = hunk.newStart + Math.max(1, hunk.newCount);
+    if (fileLine < newAfter) break;
+    const oldAfter = hunk.oldStart + Math.max(1, hunk.oldCount);
+    indexLine = fileLine + oldAfter - newAfter;
+  }
+  const staged = lines.filter(line => line.scope === 'staged');
+  if (staged.filter(line => line.kind === 'header' && line.text.startsWith('diff --git ')).length > 1) return;
+  const matches = lines.flatMap((line, row) => line.scope === 'staged' && line.newLine === indexLine ? [row] : []);
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 export function diffPosition(line: DiffLine, row: number, side: ReviewNote['side']): DiffPosition | undefined {

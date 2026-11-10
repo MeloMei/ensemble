@@ -584,7 +584,7 @@ export function App() {
   return <WorkspaceFileNavigation.Provider value={fileNavigation}><div className="workbench">
     <aside className="workspace-sidebar"><div className="sidebar-titlebar"><img className="brand-symbol" src={ensembleLogo} alt="" /><span>{PRODUCT_NAME}<span className="brand-period">.</span></span></div>
       <CommandPalette projects={workspaces} sessions={sessions} providers={providers} onSelectProject={selectWorkspace} onSelectSession={openSession}
-        fileWorkspaceId={fileNavigation ? workspace?.id : undefined} onOpenFile={path => fileNavigation?.open({ path })}
+        fileWorkspaceId={fileNavigation ? workspace?.id : undefined} onOpenFile={fileNavigation?.open}
         settings={searchableSettings(t, workspace?.name, activeSession?.title).map(item => ({
           id: `setting:${item.id}`, label: item.title, detail: item.detail, keywords: item.keywords,
           icon: <Settings2 size={16} aria-hidden="true" />, run: () => openSettings(item.section, item),

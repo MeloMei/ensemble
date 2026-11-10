@@ -16,6 +16,7 @@ export interface SearchPickerSection {
   items: readonly SearchPickerItem[];
   prefiltered?: boolean;
   initialLimit?: number;
+  overflow?: { limit: number; item: SearchPickerItem };
 }
 
 export interface SearchPickerProps {
@@ -33,11 +34,12 @@ export interface SearchPickerProps {
   onSelect: (id: string) => void;
   inputRef?: RefObject<HTMLInputElement | null>;
   readOnly?: boolean;
+  filters?: { controls: ReactNode; panelId: string; labelId: string };
 }
 
 export function SearchPicker({
   sections, inputLabel, resultsLabel, showLabel, placeholder, emptyText, loading, loadingText,
-  query: controlledQuery, onQueryChange, selectedId, onSelect, inputRef, readOnly,
+  query: controlledQuery, onQueryChange, selectedId, onSelect, inputRef, readOnly, filters,
 }: SearchPickerProps) {
   const id = useId();
   const inputId = `${id}-input`;
@@ -59,6 +61,9 @@ export function SearchPicker({
     } else if (!tokens.length && section.initialLimit !== undefined) {
       items = items.slice(0, section.initialLimit);
     }
+    if (section.overflow && items.length > section.overflow.limit) {
+      items = [...items.slice(0, section.overflow.limit), section.overflow.item];
+    }
     return { ...section, items };
   }).filter(section => section.items.length > 0);
   const items = results.flatMap(section => section.items);
@@ -77,6 +82,10 @@ export function SearchPicker({
     if (option.top < bounds.top) viewport.scrollTop += option.top - bounds.top;
     else if (option.bottom > bounds.bottom) viewport.scrollTop += option.bottom - bounds.bottom;
   }, [active?.id, activeIndex, query]);
+
+  useLayoutEffect(() => {
+    if (selectedId === undefined && activeId !== active?.id) setActiveId(active?.id);
+  }, [active?.id, activeId, selectedId]);
 
   function select(item: SearchPickerItem) {
     if (readOnly) return;
@@ -110,7 +119,9 @@ export function SearchPicker({
           onQueryChange?.(event.target.value);
         }} />
     </div>
-    <div className="search-picker-results">
+    {filters?.controls}
+    <div className="search-picker-results" id={filters?.panelId}
+      role={filters && 'tabpanel'} aria-labelledby={filters?.labelId}>
       <div id={listId} ref={list} role="listbox" aria-label={resultsLabel} aria-busy={loading || undefined}
         aria-readonly={readOnly || undefined} className="search-picker-list">
         {results.map(section => <div key={section.id} role={section.label ? 'group' : 'presentation'} aria-label={section.label}>
