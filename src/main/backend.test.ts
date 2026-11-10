@@ -369,3 +369,28 @@ test('file artifact versions pass the service attachment enricher, reject tamper
     assert.equal(service.store.state.collaboration.artifacts.find(item => item.id === artifact.id)?.path, artifact.path);
   } finally { release(); await service.shutdown(); await rm(directory, { recursive: true, force: true }); }
 });
+
+
+test('missing project rejects a new send while replaying an existing receipt', async () => {
+  const dataPath = await realpath(await mkdtemp(join(tmpdir(), 'workbench-missing-project-')));
+  const cwd = join(dataPath, 'project'); await mkdir(cwd);
+  let runs = 0;
+  const options = { dataPath, command: process.execPath, bridgePath: join(dataPath, 'bridge.cjs'), publish() {}, providers: [{
+    info: { id: 'controlled', name: 'Controlled', source: 'plugin' as const, available: true, detail: '', capabilities: { resume: true, approvals: false } },
+    async run() { runs++; },
+  }] };
+  let service = await createWorkbenchService(options);
+  try {
+    const id = await service.engine.createSession({ title: 'missing project', providerId: 'controlled', cwd });
+    await service.call('workbench:send-prompt', [id, { text: 'accepted' }, 'accepted']);
+    await service.engine.waitSession(id);
+    await service.call('workbench:save-session-draft', [id, { text: 'keep draft' }]);
+    await service.shutdown(); await rm(cwd, { recursive: true });
+    service = await createWorkbenchService(options);
+    assert.equal(await service.call('workbench:send-prompt', [id, { text: 'accepted' }, 'accepted']), undefined);
+    assert.deepEqual(await service.call('workbench:send-prompt', [id, { text: 'keep draft' }, 'rejected']), { rejected: 'workspace-unavailable' });
+    assert.equal(await service.call('workbench:command-receipt', ['rejected']), undefined);
+    assert.deepEqual(service.engine.getSession(id).draft, { text: 'keep draft' });
+    assert.equal(runs, 1);
+  } finally { await service.shutdown(); await rm(dataPath, { recursive: true, force: true }); }
+});

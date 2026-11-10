@@ -1,3 +1,7 @@
+export class WorkspaceUnavailableError extends Error {
+  constructor() { super('项目执行目录尚未就绪，请检查目录是否仍然存在且可访问。'); }
+}
+
 import { createHash, randomUUID } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, relative, sep } from 'node:path';
@@ -146,7 +150,7 @@ export class WorkbenchEngine {
 
   private executionKey(cwd: string): string {
     const key = this.executionKeys.get(cwd);
-    if (key === undefined) throw new Error('项目执行目录尚未就绪，请检查目录是否仍然存在且可访问。');
+    if (key === undefined) throw new WorkspaceUnavailableError();
     return key;
   }
 

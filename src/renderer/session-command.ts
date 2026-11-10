@@ -1,5 +1,7 @@
 import type { PromptInput, Session } from '../shared/types';
 
+export class SessionCommandRejectedError extends Error {}
+
 interface CommandIntent { fingerprint: string; commandId: string }
 const intents = new Map<string, CommandIntent>();
 const storagePrefix = 'ensemble:command:';
@@ -43,6 +45,12 @@ function rejectAttempt(execution: CommandExecution, error: unknown): void {
   execution.waiting = false; execution.reject(error);
 }
 
+function rejectKnown(execution: CommandExecution, error: SessionCommandRejectedError): void {
+  if (execution.completed) return;
+  execution.completed = true; executions.delete(execution.intent.commandId);
+  retire(execution.key, execution.intent.commandId); rejectAttempt(execution, error);
+}
+
 function unconfirmed(execution: CommandExecution): Error {
   return new Error('上次操作是否被接收尚未确认。再次点击将核对并重试同一命令。', { cause: execution.error });
 }
@@ -58,6 +66,7 @@ function recoverExecution(execution: CommandExecution, manual = false): Promise<
     if (!receipt && !manual) { rejectAttempt(execution, unconfirmed(execution)); return; }
     try { succeed(execution, await execution.operation(execution.intent.commandId)); }
     catch (error) {
+      if (error instanceof SessionCommandRejectedError) { rejectKnown(execution, error); return; }
       execution.error = error; execution.blocked = Boolean(receipt);
       rejectAttempt(execution, receipt ? error : unconfirmed(execution));
     }
@@ -115,6 +124,7 @@ export async function runSessionCommand<T>(scope: string, input: unknown, operat
   try { localStorage.setItem(key, JSON.stringify(intent)); } catch { /* The in-memory intent survives storage limits. */ }
   void Promise.resolve().then(() => operation(intent.commandId)).then(result => succeed(execution, result), error => {
     if (execution.completed) return;
+    if (error instanceof SessionCommandRejectedError) { rejectKnown(execution, error); return; }
     execution.failed = true; execution.error = error; void recoverExecution(execution);
   });
   return promise as Promise<T>;
