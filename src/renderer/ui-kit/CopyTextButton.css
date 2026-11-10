@@ -1,0 +1,27 @@
+.ui-copy-text-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 26px;
+  padding: 3px 7px;
+  border-radius: var(--radius-control);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.ui-copy-text-button:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.ui-copy-text-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}

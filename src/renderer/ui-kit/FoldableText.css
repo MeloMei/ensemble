@@ -1,0 +1,35 @@
+.ui-foldable-text {
+  min-inline-size: 0;
+  line-height: var(--ui-foldable-text-line-height, 1.6);
+}
+
+.ui-foldable-text-viewport[data-collapsed] {
+  max-block-size: calc(var(--ui-foldable-text-lines) * 1lh);
+  overflow: clip;
+}
+
+.ui-foldable-text-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.ui-foldable-text-toggle {
+  display: block;
+  max-inline-size: 100%;
+  margin-block-end: 4px;
+  margin-inline-start: auto;
+  padding: 2px 5px;
+  border-radius: var(--radius-control);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: start;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.ui-foldable-text-toggle:hover {
+  color: var(--text);
+  background: var(--hover);
+}

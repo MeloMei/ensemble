@@ -11,3 +11,9 @@ The picker matches words against the label, detail, and keywords. Use `initialLi
 Arrow keys move the highlight. Enter or a click calls `onSelect` with the item ID. Pass `selectedId` (or `''` before selection) when the caller needs a selection that stays distinct from the highlight. The caller owns confirmation, submission, and dialog closing. Pass `inputRef` to share a dialog's focus target, and `readOnly` to lock changes while keeping the search input focusable.
 
 The results scroll within the picker. Set `--search-picker-results-height` on a surrounding surface to fit its layout.
+
+## Conversation text
+
+Use `FoldableText` for long plain text. It measures the rendered lines and keeps the full text selectable when expanded. Own the expanded state by item ID when the containing list virtualizes rows. Render attachments and actions outside the clipped body.
+
+Use `CodeBlock` with the parsed code text and optional language. It preserves whitespace and provides a scoped copy action. Use `CopyTextButton` for plain text or whole-message copy. Supply localized labels for the action, success, and failure.

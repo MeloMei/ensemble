@@ -92,13 +92,14 @@
 .chat-pane .agent-message-source-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-pane button.agent-message-source { color: var(--accent); }
 .chat-pane button.agent-message-source:hover .agent-message-source-label { text-decoration: underline; }
-.chat-pane .user-message { max-width: 88%; padding: 12px 16px; border: 0; border-radius: var(--radius-panel); color: var(--text); background: var(--selected); font-size: 14px; line-height: 1.85; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.chat-pane .user-message { --ui-foldable-text-line-height: 1.85; max-width: 88%; padding: 12px 16px; border: 0; border-radius: var(--radius-panel); color: var(--text); background: var(--selected); font-size: 14px; line-height: 1.85; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 .chat-pane .assistant-heading { display: flex; align-items: center; gap: 8px; margin: 0 0 13px; }
 .chat-pane .assistant-symbol { display: grid; place-items: center; width: 18px; height: 18px; color: var(--muted); }
 .chat-pane .assistant-heading strong { color: var(--text); font-size: 11px; font-weight: 600; }
 .chat-pane .assistant-heading time { color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; }
 .chat-pane .markdown-message { color: var(--text); font-size: 14px; line-height: 1.9; overflow-wrap: anywhere; user-select: text; }
 .chat-pane .markdown-message p { margin: 0 0 15px; }
+.chat-pane .markdown-message .ui-code-block { margin: 17px 0; }
 .chat-pane .markdown-message > :last-child { margin-bottom: 0; }
 .chat-pane .markdown-message h1,
 .chat-pane .markdown-message h2,
@@ -113,7 +114,7 @@
 .chat-pane .markdown-message li > p { margin: 4px 0; }
 .chat-pane .markdown-message strong { color: var(--text); font-weight: 600; }
 .chat-pane .markdown-message a { color: var(--accent); text-underline-offset: 3px; }
-.chat-pane .markdown-message code { padding: 2px 5px; border: 1px solid var(--border); border-radius: 5px; color: var(--text); background: var(--surface); font-size: .84em; }
+.chat-pane .markdown-message :not(pre) > code { padding: 2px 5px; border: 1px solid var(--border); border-radius: 5px; color: var(--text); background: var(--surface); font-size: .84em; }
 .chat-pane .markdown-message .markdown-file-link {
   max-width: 100%;
   padding: 0;
@@ -125,8 +126,6 @@
   overflow-wrap: anywhere;
 }
 .chat-pane .markdown-message .markdown-file-link code { color: inherit; }
-.chat-pane .markdown-message pre { max-width: 100%; overflow: auto; margin: 17px 0; padding: 16px 18px; border: 1px solid var(--border); border-radius: var(--radius-panel); background: var(--surface); line-height: 1.75; }
-.chat-pane .markdown-message pre code { padding: 0; border: 0; border-radius: 0; color: var(--text); background: none; white-space: pre; font-size: 12px; }
 .chat-pane .markdown-message blockquote { margin: 17px 0; padding: 3px 16px; border-left: 2px solid var(--accent); color: var(--muted); }
 .chat-pane .markdown-message blockquote p:last-child { margin-bottom: 0; }
 .chat-pane .markdown-message table { display: block; max-width: 100%; overflow: auto; margin: 17px 0; border-collapse: collapse; font-size: 12px; }

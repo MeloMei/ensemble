@@ -16,7 +16,7 @@ import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markd
 import remarkGfm from 'remark-gfm';
 import {
   Activity, Archive, ArrowDown, ArrowUp, ArrowUpLeft, Check, ChevronDown,
-  CircleAlert, CircleStop, Clock3, Copy, CornerDownLeft, FileText, FolderOpen,
+  CircleAlert, CircleStop, Clock3, CornerDownLeft, FileText, FolderOpen,
   GitCompareArrows, GitFork, Image, ListChecks, LoaderCircle, MessageCircle, PanelsTopLeft,
   Paperclip, Pause, Play, Plus, Search, ShieldCheck, TerminalSquare, Users, X, ArrowRightLeft,
 } from 'lucide-react';
@@ -30,9 +30,12 @@ import { useSessionHistory, type IndexedMessages } from './useSessionHistory';
 import { promptCommandInput, runSessionCommand, runSessionStopCommand, SessionCommandRejectedError } from './session-command';
 import { sessionAttentionMessage, sessionIsUnread, type SessionAttentionOpen } from './session-attention';
 import { Tooltip } from './Tooltip';
+import { CodeBlock } from './ui-kit/CodeBlock';
+import { CopyTextButton } from './ui-kit/CopyTextButton';
 import { DetailCard } from './ui-kit/DetailCard';
 import { RollingText } from './ui-kit/RollingText';
 import { SearchPicker, type SearchPickerSection } from './ui-kit';
+import { FoldableText } from './ui-kit/FoldableText';
 import { expandConversation, type TraceEntry } from './conversation-index';
 import { measureConversationRow, useReadingAnchor, useSessionReadingPosition } from './useSessionReadingPosition';
 import { WorkspaceFileNavigation, workspaceFileReference } from './workspace-file-reference';
@@ -524,18 +527,9 @@ function ImageAttachmentPreview({ attachment, onClose }: { attachment: PromptAtt
   </Modal>;
 }
 
-function CopyAnswer({ message, perform }: { message: Message; perform: Perform }) {
+function CopyAnswer({ text }: { text: string }) {
   const { t } = useTranslation('workspace');
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    if (!copied) return;
-    const timer = window.setTimeout(() => setCopied(false), 2000);
-    return () => window.clearTimeout(timer);
-  }, [copied]);
-  return <IconButton label={copied ? t('chat.copied') : t('chat.copyAnswer')} onClick={() => void perform(`copy-${message.id}`, async () => {
-    await navigator.clipboard.writeText(message.text);
-    setCopied(true);
-  })}>{copied ? <Check size={14} /> : <Copy size={14} />}</IconButton>;
+  return <CopyTextButton text={text} iconOnly labels={{ copy: t('chat.copyAnswer'), copied: t('chat.copied'), failed: t('chat.copyFailed') }} />;
 }
 
 function AttachmentLimitNotice({ issue }: { issue: ReturnType<typeof attachmentLimitIssue> }) {
@@ -548,6 +542,19 @@ function AttachmentLimitNotice({ issue }: { issue: ReturnType<typeof attachmentL
 
 const markdownPlugins = [remarkGfm];
 const markdownComponents: Components = {
+  pre: function AnswerCodeBlock({ node, children, ...props }) {
+    const { t } = useTranslation('workspace');
+    const code = node?.children[0];
+    if (code?.type !== 'element' || code.tagName !== 'code') return <pre {...props}>{children}</pre>;
+
+    const text = code.children.map(child => child.type === 'text' ? child.value : '').join('');
+    const classes = code.properties.className;
+    const languageClass = Array.isArray(classes)
+      ? classes.find((name): name is string => typeof name === 'string' && name.startsWith('language-'))
+      : undefined;
+    return <CodeBlock text={text} language={languageClass?.slice('language-'.length)}
+      copyLabels={{ copy: t('chat.copyCode'), copied: t('chat.copied'), failed: t('chat.copyFailed') }} />;
+  },
   a: function AnswerLink({ node: _node, children, ...props }) {
     const navigation = useContext(WorkspaceFileNavigation);
     const reference = navigation && props.href && workspaceFileReference(props.href, navigation.cwd, true);
@@ -900,6 +907,7 @@ interface RuntimeSelection {
   requested?: boolean;
 }
 const traceChoicesBySession = new Map<string, TraceChoices>();
+const expandedPromptsBySession = new Map<string, ReadonlySet<string>>();
 
 export function SessionChat({
   session, provider, providers, perform, pending, draft, draftError, onDraftChange, sessions = [], openSession, connected = true, readOnly = false,
@@ -929,6 +937,19 @@ export function SessionChat({
     groups: new Map(), events: new Set(),
   });
   const [revealedMatch, setRevealedMatch] = useState<{ id: string; detail: boolean }>();
+  const [expandedPrompts, setExpandedPrompts] = useState<ReadonlySet<string>>(
+    () => expandedPromptsBySession.get(session.id) ?? new Set(),
+  );
+  const setPromptExpanded = useCallback((id: string, expanded: boolean) => {
+    const saved = expandedPromptsBySession.get(session.id);
+    if (Boolean(saved?.has(id)) === expanded) return;
+    const next = new Set(saved);
+    if (expanded) next.add(id);
+    else next.delete(id);
+    if (next.size) expandedPromptsBySession.set(session.id, next);
+    else expandedPromptsBySession.delete(session.id);
+    setExpandedPrompts(next);
+  }, [session.id]);
   const saveTraceChoices = useCallback((choices: TraceChoices) => {
     traceChoicesBySession.set(session.id, choices);
     setTraceChoices(choices);
@@ -1119,8 +1140,10 @@ export function SessionChat({
   const inspectMessage = (id: string, attention = false) => {
     setRestoredTrace(undefined);
     pauseForNavigation();
-    const trace = conversation.at(conversation.rowOfMessage(messages.indexOf(id)));
+    const index = messages.indexOf(id);
+    const trace = conversation.at(conversation.rowOfMessage(index));
     if (trace?.kind === 'trace') chooseTrace(trace, true);
+    if (index >= 0 && messages.at(index)?.role === 'user') setPromptExpanded(id, true);
     setInspectedMessageId(id);
     setScrollTarget({ id, attention });
   };
@@ -1158,6 +1181,10 @@ export function SessionChat({
       if (row.kind === 'trace') return 42;
       if (row.kind === 'event') return 35;
       const message = messages.at(row.start)!;
+      if (message.role === 'user' && !expandedPrompts.has(message.id)) {
+        const text = message.originalPrompt ?? message.text;
+        return 100 + Math.min(5, Math.ceil(text.length / 100)) * 26;
+      }
       return message.runtimeSwitch ? 36 : Math.min(1000, 100 + Math.ceil(message.text.length / 100) * 22);
     },
     overscan: 5,
@@ -1249,13 +1276,14 @@ export function SessionChat({
     pauseForNavigation();
     void history.locateMessage(selectedMatch.id).then(found => {
       if (active && found) {
+        if (selectedMatch.role === 'user') setPromptExpanded(selectedMatch.id, true);
         setRevealedMatch({ id: selectedMatch.id, detail: true });
         setInspectedMessageId(undefined);
         setScrollTarget({ id: selectedMatch.id });
       }
     });
     return () => { active = false; history.cancelJump(); };
-  }, [session.id, selectedMatch?.id, history.cancelJump, cancelReadingRestore, pauseForNavigation]);
+  }, [session.id, selectedMatch?.id, history.cancelJump, cancelReadingRestore, pauseForNavigation, setPromptExpanded]);
 
   useLayoutEffect(() => {
     if (!attentionOpen || attentionOpen === handledAttention.current) return;
@@ -1529,7 +1557,11 @@ export function SessionChat({
               {message.role === 'user'
                   ? <>
                     {message.agentSource && <AgentMessageAttribution source={message.agentSource} sessions={sessions} openSession={openSession} />}
-                    <div className="user-message">{message.originalPrompt ?? message.text}
+                    <div className="user-message">
+                      {(message.originalPrompt ?? message.text) && <FoldableText text={message.originalPrompt ?? message.text}
+                        expanded={expandedPrompts.has(message.id)}
+                        onExpandedChange={expanded => { markReadingInput(); pauseForNavigation(); setPromptExpanded(message.id, expanded); }}
+                        expandLabel={t('chat.expandPrompt')} collapseLabel={t('chat.collapsePrompt')} />}
                       {message.attachments && <AttachmentChips attachments={message.attachments} />}
                       <DraftEvidenceCards evidence={message.evidence} onOpen={onOpenEvidence} />
                     </div>
@@ -1549,7 +1581,7 @@ export function SessionChat({
                       {!message.text && active && <span className="stream-cursor" />}
                     </div>
                     <div className="message-tools">
-                      <CopyAnswer message={message} perform={perform} />
+                      <CopyAnswer text={message.text} />
                       {answerReference?.messageId === message.id && <>
                         {canAskSideQuestion && <SideQuestionAction onClick={trigger => openSideQuestion({ reference: answerReference, excerpt: answerReference.excerpt, trigger })} />}
                         {onChooseEvidence && <button type="button" onMouseDown={event => event.preventDefault()}

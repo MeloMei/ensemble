@@ -110,18 +110,32 @@ export function useSessionReadingPosition(options: ReadingPositionOptions) {
       }
       return;
     }
-    const frame = requestAnimationFrame(() => {
+    requestedRow.current = undefined;
+    let frame = 0;
+    let alignedOnPreviousFrame = false;
+    const restore = () => {
       if (current.current.anchor !== anchor || !row.isConnected || row.dataset.index !== String(index)) return;
       const rowRect = row.getBoundingClientRect();
       const offset = Math.max(anchor.offset, 1 - rowRect.height);
-      virtualizer.scrollToOffset(element.scrollTop + rowRect.top - element.getBoundingClientRect().top - offset);
+      const relativeTop = rowRect.top - element.getBoundingClientRect().top;
+      const max = Math.max(0, element.scrollHeight - element.clientHeight);
+      const target = Math.max(0, Math.min(max, element.scrollTop + relativeTop - offset));
+      const aligned = Math.abs(target - element.scrollTop) < 1;
+      // Rows can be measured again after the first scroll as their wrapped content settles.
+      if (!aligned || !alignedOnPreviousFrame) {
+        if (!aligned) virtualizer.scrollToOffset(target);
+        alignedOnPreviousFrame = aligned;
+        frame = requestAnimationFrame(restore);
+        return;
+      }
       lastPosition.current = { ...anchor, offset };
       if (lookup.current === anchor) {
         lookup.current = undefined;
         cancelLookup();
       }
       finish();
-    });
+    };
+    frame = requestAnimationFrame(restore);
     return () => cancelAnimationFrame(frame);
   });
 
