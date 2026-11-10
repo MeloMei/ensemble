@@ -22,6 +22,7 @@ import { FileReviewPanel } from './FileReviewPanel';
 import { SessionChat, SessionSettingsPanel } from './SessionChat';
 import { App } from './App';
 import { FirstTask } from './FirstTask';
+import { EvidenceTargetDialog } from './DraftEvidence';
 import { WorkspaceToolsPanel } from './WorkspaceTools';
 import { ApplicationUpdateNotice, ApplicationUpdateSettings, useApplicationUpdates } from './ApplicationUpdates';
 import type { AppUpdateState } from '../shared/application-updates';
@@ -691,6 +692,69 @@ const cases: Record<string, () => Promise<void>> = {
     gate = deferred(); await change(toggle('build'), true);
     await show({ ...session, id: 'other-recipient', status: 'running' }); gate.resolve({ skillIds: ['docs', 'build'], updatedAt: '2026-11-04T01:00:02Z' }); await settle();
     assert(!toggle('build').checked && toggle('build').disabled && row('build').dataset.state === 'disabled', 'A previous Agent response was applied to another active session');
+  },
+  'AGENT-MESSAGE: grants require confirmation and the receiver sees the message origin': async () => {
+    const source: Session = { ...session, status: 'running' };
+    const target: Session = { ...session, id: 'message-target', title: 'Runtime review', providerId: 'claude', cwd: '/other-project' };
+    const archived: Session = { ...target, id: 'archived-target', title: 'Archived review', archived: true };
+    const writes: { sourceId: string; sessionId: string; enabled: boolean }[] = [];
+    const grant = deferred<void>();
+    let opened: string | undefined;
+    let removed: string | undefined;
+    window.workbench = {
+      listSkills: async () => [],
+      updateSession: async (sourceId: string, { messageTarget }: { messageTarget: { sessionId: string; enabled: boolean } }) => {
+        writes.push({ sourceId, ...messageTarget });
+        if (messageTarget.enabled) await grant.promise;
+      },
+      removeQueuedPrompt: async (_id: string, itemId: string) => { removed = itemId; },
+    } as unknown as Window['workbench'];
+    const show = (current: Session) => render(<SettingsDialog snapshot={null} workspace={workspace} session={current}
+      sessions={[current, target, archived]} perform={perform} pending={new Set()} updates={idleUpdates}
+      initialSection="session" openSession={() => {}} onClose={() => {}} />);
+    await show(source);
+    await click('workspace:chat.addMessageTarget');
+    const search = input('.session-message-target-picker [role=combobox]');
+    const options = document.querySelectorAll<HTMLElement>('.session-message-target-picker [role=option]');
+    assert(options.length === 1 && options[0].textContent?.includes(target.title), 'The picker included the current or archived session');
+    await act(async () => {
+      search.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+      await tick();
+    });
+    assert(!writes.at(0) && button('workspace:chat.confirmMessageTarget').disabled, 'Highlighting a conversation enabled or sent a grant');
+    await act(async () => { options[0].click(); await tick(); });
+    assert(!writes.at(0), 'Selecting a conversation granted access without confirmation');
+    const confirm = button(translate('workspace:chat.confirmNamedMessageTarget', { title: target.title }));
+    await act(async () => { confirm.click(); confirm.click(); await tick(); });
+    assert(writes[0]?.sourceId === source.id && writes[0].sessionId === target.id && writes[0].enabled
+      && !writes.at(1) && confirm.disabled, 'Confirmation failed to send exactly one grant to the selected session');
+    grant.resolve();
+    await settle();
+    await show({ ...source, messageTargetIds: [target.id] });
+    const granted = document.querySelector('.session-message-target-list li');
+    assert(granted?.querySelector('.agent-icon') && granted.textContent?.includes(target.title), 'The confirmed grant did not show the target title and Agent');
+    await click(translate('workspace:chat.revokeNamedMessageTarget', { title: target.title }));
+    await settle();
+    assert(writes[1]?.sourceId === source.id && writes[1].sessionId === target.id && !writes[1].enabled, 'Revocation did not target the granted session');
+
+    const known = { sessionId: source.id, title: 'Old sender title', providerId: 'claude' };
+    const missing = { sessionId: 'unknown-source', title: 'Saved sender title', providerId: 'claude' };
+    await render(chat({ sessions: [source], openSession: id => { opened = id; }, session: {
+      ...target, messages: [{ id: 'agent-delivered', role: 'user', text: 'Delivered message', createdAt: target.createdAt, agentSource: known }],
+      queue: [{ id: 'agent-queued', commandId: 'agent-command', input: { text: 'Queued message' }, createdAt: target.createdAt, updatedAt: target.updatedAt, agentSource: missing }],
+    } }));
+    const attribution = document.querySelector<HTMLButtonElement>('[data-message-id="agent-delivered"] > button.agent-message-source');
+    assert(attribution?.textContent === translate('workspace:chat.agentMessageFrom', { title: source.title })
+      && attribution.querySelector('.agent-icon')?.getAttribute('src')?.includes('codex'), 'The delivered message did not use the current sender title and Agent');
+    await act(async () => { attribution.click(); await tick(); });
+    assert(opened === source.id, 'The sender label did not open the source session');
+    const queued = document.querySelector('[data-queue-id="agent-queued"]');
+    assert(queued?.querySelector('span.agent-message-source')?.textContent === translate('workspace:chat.agentMessageFrom', { title: missing.title })
+      && !queued.querySelector('button.agent-message-source'), 'An unavailable sender did not retain its snapshot label as plain text');
+    assert(![...queued.querySelectorAll('button')].some(item => item.textContent === translate('workspace:chat.editQueued')), 'A queued Agent message offered a text edit');
+    await click('workspace:chat.removeQueued');
+    await settle();
+    assert(removed === 'agent-queued', 'A queued Agent message could not be removed');
   },
   'MOTION-RESOURCES: feedback follows actual operations and preserves editors and tab scroll': async () => {
     const project = { ...workspace, id: 'motion-resources' };
@@ -1827,12 +1891,19 @@ const cases: Record<string, () => Promise<void>> = {
     let publish = (_value: Snapshot) => {};
     const opened: string[][] = [];
     const terminals: string[] = [];
+    const fileSearch = deferred<{ path: string; name: string }[]>();
+    const filePath = 'src/remote result.ts';
+    const fileReads: string[][] = [];
     window.workbench = {
       ...applicationUpdateApi,
       snapshot: async () => snapshot, subscribe: (listener: typeof publish) => { publish = listener; return () => {}; },
       getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
       onLanguageChanged: () => () => {}, watchSessions: async () => {}, markSessionSeen: async () => {},
       listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {},
+      readFile: async (id: string, path: string) => {
+        fileReads.push([id, path]);
+        return { path, content: '', revision: 'r1', size: 0, language: 'typescript' };
+      },
       sessionLocations: async (id: string) => ({
         current: { cwd: (snapshot.workspaces.find(project => project.id === id) ?? workspace).cwd },
         worktrees: [], branches: [],
@@ -1882,6 +1953,9 @@ const cases: Record<string, () => Promise<void>> = {
     assert(active() !== initialRow && document.activeElement === initialSearch, 'ArrowDown did not move the active row with focus in search');
     await key('ArrowUp', 'ArrowUp', 38);
     assert(active() === initialRow, 'Moving selection recreated the first row');
+    await key('ArrowUp', 'ArrowUp', 38);
+    assert(active() !== initialRow && (panel.querySelector('[role=listbox]')?.scrollTop ?? 0) > 0 && panel.scrollTop === 0,
+      'Wrapping to the last result did not scroll just the result list');
     await change(initialSearch, 'no matching thing');
     assert(modal() === panel && search() === initialSearch && document.activeElement === initialSearch && !active()
       && panel.offsetTop === bounds[0] && panel.offsetHeight === bounds[1], 'Filtering changed the dialog, focus, or bounds');
@@ -1901,6 +1975,15 @@ const cases: Record<string, () => Promise<void>> = {
     assert(document.querySelector('.file-panel-transition')?.getAttribute('aria-hidden') === 'false', 'Open files did not show the existing file panel');
     await run('open local terminal');
     assert(JSON.stringify(terminals) === JSON.stringify([workspace.id]), 'The terminal command was not routed to the current project');
+
+    window.workbench.findWorkspaceFiles = async (id, query) => id === workspace.id && query === 'oracle' ? fileSearch.promise : [];
+    await click('shell:commandPalette.trigger');
+    await change(search(), 'oracle');
+    assert(modal()?.querySelector('[role=status]')?.textContent === translate('shell:commandPalette.searchingFiles'), 'File search did not announce loading');
+    await act(async () => { fileSearch.resolve([{ path: filePath, name: 'remote result.ts' }]); });
+    await waitFor(() => active()?.textContent?.includes(filePath) === true, 'The workspace match was filtered again or lost its path');
+    await enter();
+    await waitFor(() => fileReads.some(([id, path]) => id === workspace.id && path === filePath), 'File selection did not open the returned path');
 
     for (const [query, title] of [['new project', 'shell:app.newWorkspace'], ['new agent', 'shell:app.newAgentSession'], ['settings', 'shell:preferences.title']]) {
       await run(query);
@@ -2350,6 +2433,93 @@ const cases: Record<string, () => Promise<void>> = {
     await click('shell:common.close');
     await act(async () => { document.querySelector<HTMLButtonElement>('.composer .attachment-remove')!.click(); await tick(); });
     assert(!document.querySelector('.composer .attachment-chip') && sends === 0, 'Review or removal sent the screenshot');
+  },
+  'DRAFT-EVIDENCE: the searchable target requires explicit confirmation and can retry': async () => {
+    const project = { ...workspace, name: 'Release Engineering' };
+    const first = { ...session, title: 'Check release', id: 'matching-prefix-first' };
+    const second = { ...first, id: 'matching-prefix-second' };
+    const archived = { ...session, title: 'Previous release', id: 'archived', archived: true };
+    const reference = { id: 'quote', label: 'Selected text', excerpt: 'Needs review', source: { kind: 'message' as const, sessionId: first.id, messageId: 'reply' } };
+    const failure = deferred<void>();
+    const additions: string[] = [];
+    function QuoteFixture() {
+      const [open, setOpen] = React.useState(false);
+      return <><button onClick={() => setOpen(true)}>Open quote</button>{open && <EvidenceTargetDialog reference={reference}
+        sessions={[first, second, archived]} workspaces={[project]} onClose={() => setOpen(false)} onAdd={async (id, value) => {
+          assert(value === reference, 'The evidence payload changed while selecting its target');
+          additions.push(id);
+          if (additions.length === 1) await failure.promise;
+        }} />}</>;
+    }
+    await render(<QuoteFixture />);
+    const opener = button('Open quote');
+    opener.focus();
+    await click('Open quote');
+    const search = input('dialog input[role=combobox]') as HTMLInputElement;
+    const add = button('workspace:evidence.addToDraft');
+    const options = () => [...document.querySelectorAll<HTMLElement>('dialog [role=option]')];
+    const active = () => document.getElementById(search.getAttribute('aria-activedescendant') ?? '');
+    const key = async (value: string, isComposing = false) => act(async () => {
+      search.dispatchEvent(new KeyboardEvent('keydown', { key: value, isComposing, bubbles: true, cancelable: true }));
+    });
+    assert(document.activeElement === search && add.disabled, 'The target search was not focused or had a preselected destination');
+    await change(search, 'previous release');
+    assert(!options().length && document.querySelector('dialog [role=status]')?.textContent === translate('workspace:evidence.noMatchingSessions'), 'Archived conversations appeared or empty results were not announced');
+    await change(search, 'check engineering /fixture');
+    assert(options().length === 2 && options()[0].textContent?.includes(first.id) && options()[1].textContent?.includes(second.id),
+      'Search by title, project and path did not distinguish the same-named conversations');
+    await key('ArrowDown'); await key('Enter', true);
+    assert(add.disabled && !additions.length, 'IME Enter selected a conversation or added evidence');
+    await key('Enter');
+    assert(!add.disabled && options()[1].getAttribute('aria-selected') === 'true' && !additions.length, 'Enter did not select exactly one target for review');
+    await key('ArrowUp');
+    assert(active() === options()[0] && options()[1].getAttribute('aria-selected') === 'true', 'The keyboard highlight changed the confirmed target');
+    await click('workspace:evidence.addToDraft');
+    assert(add.disabled && search.readOnly && document.activeElement === search && additions.join() === second.id, 'Confirmation did not lock focus and save to the chosen target');
+    await act(async () => { failure.reject(new Error('Unable to save draft')); });
+    assert(document.querySelector('dialog [role=alert]')?.textContent === 'Unable to save draft' && !add.disabled && !search.readOnly
+      && document.activeElement === search, 'A failed save did not keep the selected target available for retry');
+    await click('workspace:evidence.addToDraft');
+    assert(additions.join() === [second.id, second.id].join() && !document.querySelector('dialog[open]') && document.activeElement === opener,
+      'Retry did not save to the chosen target and restore focus');
+  },
+  'DRAFT-CAPTURE: a window capture can be reviewed and added to an eligible draft': async () => {
+    const attachment = { id: 'capture', name: 'Captured window.png', kind: 'image' as const, mimeType: 'image/png', size: 4, sha256: 'a'.repeat(64), ownedPath: '/owned/capture.png' };
+    const imageUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII=';
+    const noImages = { ...provider, id: 'text-only', source: 'plugin' as const };
+    const activeSession = { ...session, title: 'Review window' };
+    const excluded = { ...session, id: 'text-only-session', title: 'Review window without images', providerId: noImages.id };
+    const tab = { kind: 'agent' as const, id: 'capture-tab', sessionId: activeSession.id };
+    const project = { ...workspace, name: 'Window QA', tabs: [tab], activeTabId: tab.id };
+    const snapshot: Snapshot = { ...collaborationSnapshot([]), sessions: [activeSession, excluded], providers: [provider, noImages], workspaces: [project] };
+    let captured = (_attachment: typeof attachment) => {};
+    const saves: [string, typeof attachment][] = [];
+    let sends = 0;
+    window.workbench = {
+      ...applicationUpdateApi,
+      snapshot: async () => snapshot, subscribe: () => () => {},
+      getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
+      onLanguageChanged: () => () => {}, watchSessions: async () => {}, markSessionSeen: async () => {},
+      listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {},
+      onWindowCaptured: (listener: typeof captured) => { captured = listener; return () => {}; },
+      readImageAttachment: async () => imageUrl,
+      addSessionAttachment: async (id: string, value: typeof attachment) => { saves.push([id, value]); return { text: '', attachments: [value] }; },
+      sendPrompt: async () => { sends++; },
+    } as unknown as Window['workbench'];
+    await render(<LanguageProvider initial={{ preference: 'en', language: 'en' }}><App /></LanguageProvider>);
+    await act(async () => { captured(attachment); });
+    await waitFor(() => document.querySelector('dialog .window-capture-preview')?.getAttribute('src') === imageUrl, 'Window capture preview did not load');
+    const search = input('dialog input[role=combobox]');
+    await change(search, 'review window qa');
+    const options = document.querySelectorAll('dialog [role=option]');
+    assert(options.length === 1 && options[0].textContent?.includes(activeSession.title), 'Image-ineligible destinations were offered or project search did not work');
+    const mouseDown = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+    await act(async () => { options[0].dispatchEvent(mouseDown); (options[0] as HTMLElement).click(); });
+    assert(mouseDown.defaultPrevented && document.activeElement === search && !saves.length && document.querySelector('dialog[open]'),
+      'Selecting the capture target moved focus or added the capture before confirmation');
+    await click('workspace:evidence.addToDraft');
+    assert(saves.length === 1 && saves[0][0] === activeSession.id && saves[0][1] === attachment && sends === 0
+      && !document.querySelector('dialog[open]'), 'The confirmed capture changed the wrong draft or sent a prompt');
   },
   'UX2-CHAT1: attachment selections keep oversized drafts editable and block invalid sends': async () => {
     const attachment = (index: number, size = 4) => ({ id: `limit-${index}`, name: `file-${index}.txt`, kind: 'text' as const, ownedPath: `/file-${index}.txt`, mimeType: 'text/plain', size, sha256: 'a'.repeat(64) });

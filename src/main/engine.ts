@@ -3,7 +3,7 @@ import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, relative, sep } from 'node:path';
 import { z } from 'zod';
 import type {
-  AgentMail, ApprovalInput, CollaborationCaller, CreateSessionInput, DraftEvidence, McpServerConfig, PromptInput, ProviderInfo,
+  AgentMail, AgentMessageSource, ApprovalInput, CollaborationCaller, CreateSessionInput, DraftEvidence, McpServerConfig, PromptInput, ProviderInfo,
   ParkedSessionRuntime, SendPromptRejectionReason, Session, SessionAttempt, SessionCommandReceipt, SessionContinuationTarget, SessionQueueItem, SessionSettings, SessionSkillAssignment, SessionSkillAssignmentReceipt, SessionStatus, SessionUpdate, SideQuestionInput, SideQuestionReceipt, Snapshot, TerminalInfo, Workflow,
   WorkflowInput, Workspace, WorkspaceManagement, WorkspaceSplitInput, WorkspaceTab,
 } from '../shared/types';
@@ -111,7 +111,10 @@ function payloadHash(value: unknown): string {
 }
 
 const archivedProjectNotice = '请先在左侧项目列表中恢复已归档的项目。';
-const archivedSideQuestionNotice = '会话已归档，请恢复会话后继续队列。';
+const archivedQueueNotice = '会话已归档，请恢复会话后继续队列。';
+const sessionMessageCommand = 'send-session-message';
+interface SessionMessageReceipt { sessionId: string; queueItemId: string; sourceId: string }
+const sessionMessageCommandId = (sourceId: string, requestId: string) => `session-message:${payloadHash([sourceId, requestId])}`;
 
 export class WorkbenchEngine {
   private adapters = new Map<string, ProviderAdapter>();
@@ -531,6 +534,11 @@ export class WorkbenchEngine {
   updateSession(id: string, input: SessionUpdate & { skillAssignment?: SessionSkillAssignment }): SessionSkillAssignmentReceipt | void;
   updateSession(id: string, input: SessionUpdate & { skillAssignment?: SessionSkillAssignment }): SessionSkillAssignmentReceipt | void {
     const session = this.session(id);
+    if (input.messageTarget) {
+      if (Object.keys(input).some(key => key !== 'messageTarget')) throw new Error('请单独修改会话联系权限。');
+      this.updateMessageTarget(session, input.messageTarget);
+      return;
+    }
     if (this.active.has(id)) throw new Error('请等当前任务结束后修改会话。');
     if (input.skillAssignment && input.settings?.skillIds !== undefined) throw new Error('不能同时替换全部 Skills 和修改单项 Skill 分派。');
     const provider = this.adapters.get(session.providerId)?.info;
@@ -569,8 +577,8 @@ export class WorkbenchEngine {
       }
     }
     const updatedAt = new Date(Math.max(Date.now(), Date.parse(session.updatedAt) + 1)).toISOString();
-    if (input.archived === true && session.waitingForProject) {
-      this.holdSessionQueue(session, archivedSideQuestionNotice);
+    if (input.archived === true && this.hasProjectDeferredPrompt(session)) {
+      this.holdSessionQueue(session, archivedQueueNotice);
       this.waitingForProject.delete(id);
     }
     Object.assign(session, {
@@ -582,6 +590,33 @@ export class WorkbenchEngine {
     });
     this.changed();
     if (input.skillAssignment) return { skillIds: [...(session.settings?.skillIds ?? [])], updatedAt: session.updatedAt };
+  }
+
+  private updateMessageTarget(source: Session, { sessionId, enabled }: NonNullable<SessionUpdate['messageTarget']>): void {
+    this.assertOpen();
+    const ids = new Set(source.messageTargetIds);
+    if (enabled === ids.has(sessionId)) return;
+    const target = this.store.state.sessions.find(session => session.id === sessionId);
+    if (enabled) {
+      if (!target || source.archived || source.parentSessionId || sessionId === source.id) throw new Error('请选择另一个未归档的普通会话。');
+      const blocked = this.sessionMessageBlockReason(target);
+      if (blocked) throw new Error(blocked);
+    }
+    const queued = target?.queue;
+    const removePending = !enabled && queued?.some(item => item.agentSource?.sessionId === source.id);
+    this.store.atomic(() => {
+      if (enabled) ids.add(sessionId);
+      else ids.delete(sessionId);
+      source.messageTargetIds = [...ids];
+      source.updatedAt = now();
+      if (target && queued && removePending) {
+        if (queued[0]?.agentSource?.sessionId === source.id) delete target.waitingForProject;
+        target.queue = queued.filter(item => item.agentSource?.sessionId !== source.id);
+        target.updatedAt = now();
+      }
+    });
+    this.publish(this.liveSnapshot());
+    if (target && removePending) this.drainSessionQueue(target.id);
   }
 
   async switchSessionRuntime(id: string, targetProviderId: string, expectedProviderId: string): Promise<void> {
@@ -841,11 +876,12 @@ export class WorkbenchEngine {
     this.drainSessionQueue(id);
   }
 
-  private enqueuePrompt(session: Session, input: PromptInput, commandId: string) {
+  private enqueuePrompt(session: Session, input: PromptInput, commandId: string, agentSource?: AgentMessageSource) {
     const item: SessionQueueItem = { id: randomUUID(), commandId, input: structuredClone(input),
+      ...(agentSource ? { agentSource } : {}),
       modelId: session.modelId, settings: structuredClone(session.settings), createdAt: now(), updatedAt: now() };
     session.queue ??= []; session.queue.push(item);
-    if (samePromptDraft(session.draft, input)) delete session.draft;
+    if (!agentSource && samePromptDraft(session.draft, input)) delete session.draft;
     session.updatedAt = now();
     return { sessionId: session.id, queueItemId: item.id };
   }
@@ -854,6 +890,7 @@ export class WorkbenchEngine {
     this.assertOpen();
     const session = this.session(id);
     const item = this.queuedPrompt(session, itemId);
+    if (item.agentSource) throw new Error('来自其他会话的消息只能移除。');
     const edit = item.edit;
     const lease = edit?.lease;
     if (lease && lease.ownerId !== ownerId && lease.expiresAt > Date.now()) {
@@ -933,7 +970,6 @@ export class WorkbenchEngine {
       session.queue = session.queue!.filter(item => item.id !== itemId); session.updatedAt = now();
     });
     if (replayed) return;
-    if (!session.waitingForProject) this.waitingForProject.delete(id);
     this.publish(this.liveSnapshot());
     this.drainSessionQueue(id);
   }
@@ -943,7 +979,7 @@ export class WorkbenchEngine {
     this.store.atomic(() => {
       const session = this.session(id);
       if (!paused) {
-        this.assertQueuedSideQuestionCanRun(session);
+        this.assertDeferredQueueCanRun(session);
         this.assertProjectAdmission(session.cwd);
         this.assertDeliveryResolved(session);
       }
@@ -955,8 +991,14 @@ export class WorkbenchEngine {
     if (!paused) this.drainSessionQueue(id);
   }
 
-  private assertQueuedSideQuestionCanRun(session: Session): void {
-    if (session.waitingForProject && session.archived) throw new Error(archivedSideQuestionNotice);
+  private hasProjectDeferredPrompt(session: Session): boolean {
+    return Boolean(session.waitingForProject || session.queue?.[0]?.agentSource);
+  }
+
+  private assertDeferredQueueCanRun(session: Session): void {
+    const blocked = session.queue?.[0]?.agentSource ? this.sessionMessageBlockReason(session)
+      : session.archived && session.waitingForProject ? archivedQueueNotice : undefined;
+    if (blocked) throw new Error(blocked);
   }
 
   private drainSessionQueue(id: string): void {
@@ -964,8 +1006,15 @@ export class WorkbenchEngine {
     const item = session.queue?.[0];
     if (this.closing || this.active.has(id) || session.queuePaused || !item || item.edit) { this.waitingForProject.delete(id); return; }
     try {
-      this.assertQueuedSideQuestionCanRun(session);
-      if (session.waitingForProject && !this.projectAvailable(session.cwd, id)) { this.waitingForProject.add(id); return; }
+      this.assertDeferredQueueCanRun(session);
+      if (this.hasProjectDeferredPrompt(session) && !this.projectAvailable(session.cwd, id)) {
+        this.waitingForProject.add(id);
+        if (!session.waitingForProject) {
+          this.store.atomic(() => { session.waitingForProject = true; });
+          this.publish(this.liveSnapshot());
+        }
+        return;
+      }
       this.waitingForProject.delete(id);
       this.executeSession(id, item.input, { queueItemId: item.id, modelId: item.modelId, settings: item.settings, maxPhysicalTurns: MAX_PHYSICAL_TURNS });
     } catch (error) {
@@ -1053,9 +1102,13 @@ export class WorkbenchEngine {
     const userMessageId = randomUUID();
     const previous = session.attempts?.at(-1);
     const queued = options.queueItemId ? session.queue?.find(item => item.id === options.queueItemId) : undefined;
+    const agentSource = queued?.agentSource;
     const modelId = options.queueItemId ? options.modelId : session.modelId;
     const settings = structuredClone(options.queueItemId ? options.settings : session.settings);
-    const executionInput: PromptInput = { text: draftPromptText(input), attachments: input.attachments };
+    const text = draftPromptText(input);
+    const executionInput: PromptInput = { text: agentSource
+      ? `Message from Ensemble session ${JSON.stringify(agentSource.title)} (session ID ${agentSource.sessionId}). Reply in this chat so the sender can retrieve your response.\n\n${text}`
+      : text, attachments: input.attachments };
     const attempt: SessionAttempt = { id: randomUUID(), status: 'queued', prompt: executionInput.text, userMessageId,
       ...(previous && ['failed', 'cancelled', 'interrupted'].includes(previous.status) ? { retryOf: previous.id } : {}), startedAt: now(),
       modelId, settings, ...(queued ? { queueItemId: queued.id, commandId: queued.commandId } : {}) };
@@ -1073,8 +1126,8 @@ export class WorkbenchEngine {
         }
         session.attempts ??= []; session.attempts.push(attempt);
         session.error = undefined;
-        if (samePromptDraft(session.draft, input)) delete session.draft;
-        this.recordTurnInput(session, input, userMessageId, executionInput.text);
+        if (!agentSource && samePromptDraft(session.draft, input)) delete session.draft;
+        this.recordTurnInput(session, input, userMessageId, text, agentSource);
         this.moveSessionState(session, 'queued');
       });
     } catch (error) { releaseProject(); throw error; }
@@ -1085,9 +1138,10 @@ export class WorkbenchEngine {
     this.enqueue(task, executionInput, userMessageId, true); return handle;
   }
 
-  private recordTurnInput(session: Session, input: PromptInput, userMessageId: string, text = input.text): void {
+  private recordTurnInput(session: Session, input: PromptInput, userMessageId: string, text = input.text, agentSource?: AgentMessageSource): void {
     const timestamp = now();
     session.messages.push({ id: userMessageId, role: 'user', text, attachments: structuredClone(input.attachments), createdAt: timestamp,
+      ...(agentSource ? { agentSource } : {}),
       ...(input.evidence?.length ? { evidence: structuredClone(input.evidence), originalPrompt: input.text } : {}),
       ...(this.adapters.get(session.providerId)?.tracksDelivery ? { delivery: { id: randomUUID(), clientUserMessageId: userMessageId, status: 'pending' as const,
         createdAt: timestamp, updatedAt: timestamp, ...(session.externalId ? { nativeThreadId: session.externalId } : {}) } } : {}) });
@@ -1215,7 +1269,11 @@ export class WorkbenchEngine {
 
   private taskOutput(session: Session, attempt: SessionAttempt): string {
     const start = session.messages.findIndex(message => message.id === attempt.userMessageId);
-    return session.messages.slice(Math.max(0, start)).filter(message => message.role === 'assistant').map(message => message.text).join('\n');
+    if (start < 0) return '';
+    const index = session.attempts?.findIndex(item => item.id === attempt.id) ?? -1;
+    const subsequentInputs = new Set(index >= 0 ? session.attempts?.slice(index + 1).map(item => item.userMessageId) : []);
+    const end = subsequentInputs.size ? session.messages.findIndex((message, position) => position > start && subsequentInputs.has(message.id)) : -1;
+    return session.messages.slice(start + 1, end < 0 ? undefined : end).filter(message => message.role === 'assistant').map(message => message.text).join('\n');
   }
 
   private async finishCancellation(task: LogicalTask): Promise<void> {
@@ -1243,6 +1301,100 @@ export class WorkbenchEngine {
     const task = this.active.get(caller.sessionId);
     if (!task || task.attempt.id !== caller.attemptId || !task.executing || !task.turnKey || task.controller.signal.aborted) throw new Error('这个协作调用的回合已结束。');
     return task;
+  }
+
+  listSessionMessageTargets(caller: CollaborationCaller) {
+    const task = this.activeCaller(caller);
+    const source = this.session(caller.sessionId);
+    if (source.archived || source.parentSessionId) return [];
+    return (source.messageTargetIds ?? []).flatMap(id => {
+      const target = this.store.state.sessions.find(session => session.id === id);
+      if (!target || this.sessionMessageBlockReason(target) || !this.canSendSessionMessage(task, target)) return [];
+      return [{ sessionId: target.id, title: target.title, providerId: target.providerId, status: target.status,
+        available: this.adapters.get(target.providerId)?.info.available ?? false }];
+    });
+  }
+
+  async sendSessionMessage(caller: CollaborationCaller, { toSessionId, requestId, text }: { toSessionId: string; requestId: string; text: string }) {
+    this.assertOpen();
+    this.activeCaller(caller);
+    const target = this.authorizedMessageTarget(caller.sessionId, toSessionId);
+    const commandId = sessionMessageCommandId(caller.sessionId, requestId);
+    const payload = { sourceId: caller.sessionId, toSessionId, text };
+    const previous = previousSessionCommand<SessionMessageReceipt>(this.store, sessionMessageCommand, commandId, payload);
+    if (!previous) {
+      await this.prepareSessionExecution(target.id);
+      this.assertOpen();
+      const task = this.activeCaller(caller);
+      this.authorizedMessageTarget(caller.sessionId, toSessionId);
+      if (!this.canSendSessionMessage(task, target)) throw new Error('不能向权限更高的会话发消息。');
+      this.assertProjectAdmission(target.cwd);
+      if (!this.adapters.get(target.providerId)?.info.available) throw new Error('目标 Agent 目前不可用。');
+      if (!this.active.has(target.id)) this.assertDeliveryResolved(target);
+      const source = this.session(caller.sessionId);
+      const agentSource = { sessionId: source.id, title: source.title, providerId: source.providerId };
+      const { replayed } = runSessionCommand(this.store, sessionMessageCommand, commandId, payload, acceptedId => ({
+        ...this.enqueuePrompt(target, { text }, acceptedId, agentSource), sourceId: source.id,
+      }));
+      if (!replayed) {
+        this.publish(this.liveSnapshot());
+        this.drainSessionQueue(target.id);
+      }
+    }
+    return this.getSessionMessage(caller, requestId);
+  }
+
+  getSessionMessage(caller: CollaborationCaller, requestId: string) {
+    const task = this.activeCaller(caller);
+    const commandId = sessionMessageCommandId(caller.sessionId, requestId);
+    const command = sessionCommandReceipt(this.store, commandId);
+    const receipt = command?.kind === sessionMessageCommand ? command.result as SessionMessageReceipt : undefined;
+    if (!receipt || receipt.sourceId !== caller.sessionId) throw new Error('找不到此会话发送的消息。');
+    const target = this.authorizedMessageTarget(caller.sessionId, receipt.sessionId, { receiptOnly: true });
+    const identity = { requestId, toSessionId: target.id };
+    const queued = target.queue?.find(item => item.id === receipt.queueItemId);
+    if (queued) {
+      const turnMustFinish = !target.queuePaused && executionPathsOverlap(task.projectKey, this.executionKey(target.cwd));
+      return { ...identity, status: target.queuePaused ? 'paused' : 'queued', turnMustFinish,
+        ...(target.queueHoldReason ? { reason: target.queueHoldReason } : {}) };
+    }
+    const attempt = target.attempts?.find(item => item.queueItemId === receipt.queueItemId && item.commandId === commandId);
+    if (!attempt) return { ...identity, status: 'removed' };
+    const message = target.messages.find(message => message.id === attempt.userMessageId);
+    if (message?.agentSource?.sessionId !== caller.sessionId) return { ...identity, status: 'removed' };
+    const delivery = message.delivery?.status;
+    const reply = attempt.status === 'completed' ? this.taskOutput(target, attempt) : undefined;
+    return { ...identity, attemptId: attempt.id, status: attempt.status, ...(delivery ? { delivery } : {}),
+      ...(attempt.error ? { error: attempt.error } : {}),
+      ...(reply === undefined ? {} : { reply: reply.slice(0, PROMPT_TEXT_LIMIT), ...(reply.length > PROMPT_TEXT_LIMIT ? { truncated: true } : {}) }) };
+  }
+
+  private authorizedMessageTarget(sourceId: string, targetId: string, { receiptOnly = false } = {}): Session {
+    const source = this.session(sourceId);
+    const target = this.store.state.sessions.find(session => session.id === targetId);
+    if (!target || source.id === target.id || source.archived || source.parentSessionId || !source.messageTargetIds?.includes(targetId)) {
+      throw new Error('没有权限联系此会话，或目标当前不能接收消息。');
+    }
+    const blocked = !receiptOnly && this.sessionMessageBlockReason(target);
+    if (blocked) throw new Error(blocked);
+    return target;
+  }
+
+  private canSendSessionMessage(source: LogicalTask, target: Session): boolean {
+    const from = source.settings?.permission;
+    const to = target.settings?.permission;
+    if (from === 'read-only') return to === 'read-only';
+    return to !== 'full-access' || from === 'full-access';
+  }
+
+  private sessionMessageBlockReason(session: Session): string | undefined {
+    if (session.archived) return archivedQueueNotice;
+    if (this.store.state.workspaces.some(workspace => workspace.cwd === session.cwd && workspace.archived)) return archivedProjectNotice;
+    if (session.parentSessionId) return '派工子会话不能接收普通会话消息。';
+    const { runs, tasks } = this.store.state.collaboration;
+    if (runs.some(run => (run.status === 'running' || run.status === 'paused')
+      && (run.definitionSnapshot.participants.some(participant => participant.binding?.sessionId === session.id)
+        || tasks.some(task => task.runId === run.id && task.sessionId === session.id)))) return '目标会话正在由协作运行管理，请等协作结束。';
   }
 
   private workerSummary(id: string): Record<string, unknown> {

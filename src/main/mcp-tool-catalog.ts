@@ -44,6 +44,13 @@ export const LEGACY_MCP_TOOLS: McpToolDefinition[] = [
   { name: 'wait_workers', description: 'Wait for older owned workers. Same-directory work requires finishing this physical turn. For collaborations use wait_events.', schema: { sessionIds: z.array(id).min(1).max(500), timeoutMs: z.number().int().min(0).max(30_000).optional() } },
   { name: 'ask_parent', description: 'Ask the creator of this task a question. This is a compatibility alias for send_message; it does not grant user approval.', schema: { requestId: id, text } },
 ];
-export const WORKBENCH_MCP_TOOLS = [...COLLABORATION_MCP_TOOLS, ...LEGACY_MCP_TOOLS];
+export const SESSION_MESSAGE_MCP_TOOLS = [
+  { name: 'list_session_targets', description: 'List existing Ensemble chats the user has allowed this chat to contact, including runtime and availability. No access to other chat history.', schema: {} },
+  { name: 'send_session_message', description: 'Queue a message in an existing Ensemble chat authorized by the user. The recipient replies in its own chat. Save requestId to check the exact reply later. If turnMustFinish is true, finish this turn before checking; the chats share an execution directory.', schema: {
+    requestId, toSessionId: id, text: z.string().max(200_000).refine(value => Boolean(value.trim()), 'Message cannot be blank.'),
+  } },
+  { name: 'get_session_message', description: 'Read the status and, once completed, the exact reply to a message sent from this chat. Does not wait or read unrelated turns. If turnMustFinish is true, finish this turn and check on a later turn.', schema: { requestId } },
+] as const satisfies readonly McpToolDefinition[];
+export const WORKBENCH_MCP_TOOLS: McpToolDefinition[] = [...COLLABORATION_MCP_TOOLS, ...LEGACY_MCP_TOOLS, ...SESSION_MESSAGE_MCP_TOOLS];
 export const WORKBENCH_MCP_TOOL_NAMES = WORKBENCH_MCP_TOOLS.map(tool => tool.name);
 export const collaborationOperationSchemas = new Map(COLLABORATION_MCP_TOOLS.map(tool => [tool.name, z.object(tool.schema).strict()]));

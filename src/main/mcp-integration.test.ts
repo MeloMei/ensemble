@@ -10,7 +10,7 @@ import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontex
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { startBackend } from './backend-server';
 import { BackendClient, connectBackend } from './backend-client';
-import type { ProviderAdapter } from './providers/types';
+import type { ProviderAdapter, TurnContext } from './providers/types';
 import type { CollaborationArtifactVersion, CollaborationEvent, CollaborationParticipant, CollaborationRun, CollaborationTask } from '../shared/collaboration';
 
 interface IssuedConnection {
@@ -196,4 +196,120 @@ test('official HTTP and stdio MCP clients share authenticated tasks, immutable a
   await assert.rejects(refused.connect(new StreamableHTTPClientTransport(new URL(issued.http.url), {
     requestInit: { headers: issued.http.headers },
   }), { timeout: 5_000 }), error => error instanceof StreamableHTTPError && error.code === 403);
+});
+
+test('ordinary cross-runtime MCP messages require a user grant and return only their own reply', { timeout: 25_000 }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'workbench-session-message-'));
+  const cwd = await realpath(directory);
+  const sourceTitle = 'Sender chat';
+  const targetTitle = 'Recipient chat';
+  const text = 'Check this change\nKeep the reply in this chat';
+  const reply = 'The change has been checked.';
+  const laterPrompt = 'A separate request from the user';
+  const laterReply = 'This reply belongs to a separate turn.';
+  const firstPrompt = 'Contact the other chat';
+  const targetPrompts: string[] = [];
+  const provider = (id: string, run: ProviderAdapter['run']): ProviderAdapter => ({
+    info: { id, name: id, source: 'plugin', available: true, detail: 'Controlled fixture',
+      capabilities: { resume: true, approvals: false, permissions: true, permissionTiers: ['read-only', 'review', 'full-access'] },
+      models: [{ id: 'fixture-model', name: 'Fixture model', free: true }], defaultModelId: 'fixture-model' },
+    run,
+  });
+  const inTurn = async (context: TurnContext, use: (client: Client) => Promise<void>) => {
+    const config = context.mcpServers?.find(server => server.name === 'workbench');
+    assert.ok(config?.type === 'stdio');
+    const client = new Client({ name: context.session.providerId, version: '1' });
+    try {
+      await client.connect(new StdioClientTransport({
+        command: config.command, args: ['--import', 'tsx', ...config.args], env: config.env, cwd: resolve('.'),
+      }), { timeout: 5_000 });
+      await use(client);
+    } finally { await client.close(); }
+  };
+  const expectDenied = async (client: Client, name: string, args: Record<string, unknown>, reason: RegExp) => {
+    const denied = await client.callTool({ name, arguments: args }, undefined, { timeout: 5_000 });
+    assert.equal(denied.isError, true, contentText(denied));
+    assert.match(contentText(denied), reason);
+  };
+  const sender = provider('source-runtime', context => inTurn(context, async client => {
+    const lookup = { requestId: outgoing.requestId };
+    const queued = { ...lookup, toSessionId: outgoing.toSessionId, status: 'queued', turnMustFinish: true };
+    if (context.prompt === firstPrompt) {
+      assert.deepEqual(await tool(client, 'list_session_targets', {}), []);
+      await expectDenied(client, 'send_session_message', outgoing, /权限/);
+      await updateGrant(true);
+      engine.updateSession(targetId, { settings: { permission: 'full-access' } });
+      assert.deepEqual(await tool(client, 'list_session_targets', {}), []);
+      await expectDenied(client, 'send_session_message', outgoing, /权限更高/);
+      engine.updateSession(targetId, { settings: { permission: 'review' } });
+      assert.deepEqual(await tool(client, 'list_session_targets', {}), [{
+        sessionId: outgoing.toSessionId, title: targetTitle, providerId: 'target-runtime', status: 'idle', available: true,
+      }]);
+      assert.deepEqual(await tool(client, 'send_session_message', outgoing), queued);
+      assert.deepEqual(await tool(client, 'send_session_message', outgoing), queued);
+      assert.deepEqual(await tool(client, 'get_session_message', lookup), queued);
+      assertTargetQueueSize(1);
+      assert.equal(engine.getSession(targetId).waitingForProject, true);
+      assert.equal(targetPrompts.length, 0);
+    } else {
+      const result = await tool<{ status: string; reply?: string }>(client, 'get_session_message', lookup);
+      assert.equal(result.status, 'completed');
+      assert.equal(result.reply, reply);
+      const revoked = { ...outgoing, requestId: 'revoked-message', text: 'Do not deliver this' };
+      assert.deepEqual(await tool(client, 'send_session_message', revoked), { ...queued, requestId: revoked.requestId });
+      await updateGrant(false);
+      assertTargetQueueSize(0);
+      assert.equal(engine.getSession(targetId).waitingForProject, undefined);
+      await expectDenied(client, 'get_session_message', { requestId: revoked.requestId }, /权限/);
+    }
+  }));
+  const recipient = provider('target-runtime', async context => {
+    targetPrompts.push(context.prompt);
+    const unrelated = context.prompt === laterPrompt;
+    if (unrelated) await inTurn(context, client => expectDenied(client, 'get_session_message', { requestId: outgoing.requestId }, /找不到/));
+    context.emit({ type: 'text', itemId: unrelated ? 'unrelated-output' : 'agent-output', text: unrelated ? laterReply : reply });
+  });
+  const backend = await startBackend({ dataPath: join(directory, 'data'), command: process.execPath,
+    bridgePath: resolve('src/main/mcp-stdio.ts'), providers: [sender, recipient] });
+  t.after(async () => {
+    try { await backend.close(); }
+    finally { await rm(directory, { recursive: true, force: true }); }
+  });
+  const engine = backend.service.engine;
+  const admin = new BackendClient(backend.endpoint);
+  const sourceId = await engine.createSession({ title: sourceTitle, providerId: sender.info.id, cwd });
+  const targetId = await engine.createSession({ title: targetTitle, providerId: recipient.info.id, cwd, initialDraft: text });
+  const outgoing = { requestId: 'contact-recipient', toSessionId: targetId, text };
+  const updateGrant = (enabled: boolean) => admin.call('workbench:update-session', sourceId, { messageTarget: { sessionId: targetId, enabled } });
+  const assertTargetQueueSize = (size: number) => assert.equal(engine.getSession(targetId).queue?.length ?? 0, size);
+  const complete = async (sessionId: string, prompt: string) => {
+    await bounded(engine.executeSession(sessionId, { text: prompt }).done);
+    const session = engine.getSession(sessionId);
+    assert.equal(session.status, 'completed', session.error);
+  };
+  let stopListening = () => {};
+  const delivered = new Promise<void>(resolve => {
+    stopListening = engine.subscribeExecution(event => {
+      if (event.type === 'settled' && event.sessionId === targetId) resolve();
+    });
+  });
+  try {
+    await complete(sourceId, firstPrompt);
+    await bounded(delivered);
+  } finally { stopListening(); }
+  const target = engine.getSession(targetId);
+  assert.equal(target.status, 'completed', target.error);
+  assert.equal(targetPrompts.length, 1);
+  const [header, ...body] = targetPrompts[0].split('\n\n');
+  assert.ok(header.includes(sourceTitle));
+  assert.ok(header.includes(sourceId));
+  assert.equal(body.join('\n\n'), text);
+  assert.equal(target.draft?.text, text);
+  const agentMessages = target.messages.filter(message => message.role === 'user').map(message => ({ text: message.text, source: message.agentSource }));
+  assert.deepEqual(agentMessages, [{ text, source: { sessionId: sourceId, title: sourceTitle, providerId: sender.info.id } }]);
+  await complete(targetId, laterPrompt);
+  assert.equal(engine.getSession(targetId).messages.at(-1)?.text, laterReply);
+  await complete(sourceId, 'Read the reply from the other chat');
+  assert.deepEqual(targetPrompts.slice(1), [laterPrompt]);
+  assert.equal(engine.getSession(targetId).attempts?.length, 2);
 });

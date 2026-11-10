@@ -47,6 +47,7 @@ const sessionUpdateSchema = z.object({
   title: z.string().trim().min(1).max(200).optional(), archived: z.boolean().optional(),
   modelId: modelIdSchema.nullable(), settings: settingsSchema.optional(),
   skillAssignment: z.object({ skillId: idSchema, enabled: z.boolean() }).strict().optional(),
+  messageTarget: z.object({ sessionId: idSchema, enabled: z.boolean() }).strict().optional(),
 }).strict();
 // Older oversized drafts stay editable until the user removes the excess files.
 const draftInputSchema = z.object({ text: z.string().max(PROMPT_TEXT_LIMIT), attachments: z.array(attachmentMetadataSchema).max(8).optional(), evidence: draftEvidenceListSchema.optional() }).strict();

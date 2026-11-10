@@ -684,11 +684,11 @@ export function App() {
         {page === 'workflows' && <div className="split-page"><aside className="item-sidebar"><div className="sidebar-heading"><h2>{t('app.workflows')}</h2><IconButton label={t('workflow.new')} onClick={() => setNewWorkflow(true)}><Plus size={17} /></IconButton></div><p className="sidebar-subtitle">{t('workflow.dependenciesNote')}</p><div className="item-list">{workflows.map(item => <button key={item.id} className={`list-item ${item.id === workflow?.id && !newWorkflow ? 'selected' : ''}`} onClick={() => { setWorkflowId(item.id); setNewWorkflow(false); }}><strong>{item.name}</strong><div><span>{t('workflow.stepCount', { count: item.steps.length })}</span><Status value={item.status} /></div></button>)}</div><button className="sidebar-action" onClick={() => setNewWorkflow(true)}><Plus size={14} />{t('workflow.new')}</button></aside>{newWorkflow ? <WorkflowEditor providers={providers} perform={perform} pending={pending} onClose={() => setNewWorkflow(false)} onCreated={id => { setWorkflowId(id); setNewWorkflow(false); }} /> : workflow ? <WorkflowView workflow={workflow} providers={providers} sessions={sessions} perform={perform} pending={pending} openSession={openSession} openWorkflow={id => { setWorkflowId(id); setNewWorkflow(false); }} /> : <EmptyState icon={<GitBranch size={28} />} title={t('workflow.empty')} action={<button className="button" onClick={() => setNewWorkflow(true)}><Plus size={14} />{t('workflow.new')}</button>}>{t('workflow.emptyNote')}</EmptyState>}</div>}
       </>}
     </main>
-    {evidenceTarget && <EvidenceTargetDialog reference={evidenceTarget} sessions={sessions}
+    {evidenceTarget && <EvidenceTargetDialog reference={evidenceTarget} sessions={sessions} workspaces={workspaces}
       onAdd={addEvidence} onClose={() => setEvidenceTarget(undefined)} />}
     {windowCapture && !evidenceTarget && !dialog && !terminalAction && !projectManagement.dialog &&
       <DraftTargetDialog key={windowCapture.id} title={t('app.captureWindowDraft')} sourceLabel={windowCapture.name}
-        preview={<WindowCapturePreview attachment={windowCapture} />}
+        preview={<WindowCapturePreview attachment={windowCapture} />} workspaces={workspaces}
         sessions={sessions.filter(session => supportsPromptAttachment(providers.find(provider => provider.id === session.providerId), 'image'))}
         onAdd={id => addCapture(id, windowCapture)} onClose={() => setWindowCaptures(items => items.filter(item => item.id !== windowCapture.id))} />}
     {pending.has('capture-window') && !windowCapture && <Modal title={t('app.captureWindow')}

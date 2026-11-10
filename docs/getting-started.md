@@ -98,6 +98,14 @@ Drag the file panel’s left edge to resize it, or focus the divider and press t
 
 In a diff, click a line number to leave a note. Drag along the original or modified line numbers, or focus one and press Shift + ↑/↓, to select a range within one hunk. Saved notes can be added to the current agent draft.
 
+## Let an agent contact another conversation
+
+In the sending conversation, open **Preferences → Current session → Conversations this Agent can contact**. Search for an existing conversation and grant access. Then ask the agent, for example, “Send this question to the Code review conversation and ask it to check.” The incoming message names its sender and links back to that conversation.
+
+The sending agent uses Ensemble MCP to find authorized conversations, send messages, and check their replies. Messages use the recipient's runtime and queue. If the chats share a busy execution directory, the message waits for the current task to finish. The sender can check the reply in a later turn. Revoking access removes messages that have not started; tasks already running continue.
+
+The sending runtime must load Ensemble MCP. Custom runtime plugins do not receive this tool configuration automatically. A read-only agent can only message an explicitly read-only conversation. Conversations with full access can only be contacted by an agent that also has full access.
+
 ## Session drafts
 
 Unsent text and selected attachments are saved with their session. Closing the window waits for pending draft saves. If saving fails or cannot be confirmed, keep the window open and retry after resolving the error; choosing **Quit anyway** can discard the unsaved changes.
