@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { LoaderCircle } from 'lucide-react';
 import type { RuntimeInstall } from '../shared/types';
 import type { Perform } from './ui';
+import { OperationFeedback } from './ui-kit/OperationFeedback';
 
 function inProgress(install: RuntimeInstall) {
   return ['installing', 'cancelling', 'detecting'].includes(install.phase);
@@ -33,11 +33,12 @@ export function useRuntimeInstalls(perform: Perform) {
     installs,
     busy: requested || installs.some(inProgress),
     install: (id: string) => {
-      setRequested(true);
-      void perform(`runtime-install-${id}`, async () => {
+      const request = async () => {
+        setRequested(true);
         try { await window.workbench.installRuntime(id); }
         finally { setRequested(false); }
-      });
+      };
+      void perform(`runtime-install-${id}`, request, { retry: request });
     },
     cancel: (id: string) => void perform(`runtime-install-cancel-${id}`, () => window.workbench.cancelRuntimeInstall(id)),
   };
@@ -53,15 +54,16 @@ export function RuntimeInstallAction({ state, available, busy, install, cancel }
   const { t } = useTranslation('shell');
   if (available && state.phase === 'idle') return null;
   const running = inProgress(state);
+  const unavailable = running ? state.phase !== 'installing' : busy;
   return <div className="provider-install-action">
     <p>{t('provider.installPackage', { package: state.packageName, manager: state.manager === 'brew' ? 'Homebrew' : 'npm' })}</p>
-    {running && <p role="status"><LoaderCircle className="spin" size={13} />{t(`provider.installPhase.${state.phase}`)}</p>}
-    {state.phase === 'failed' && <p role="alert" className="runtime-panel-error">{t(`provider.installProblem.${state.problem ?? 'install'}`)}</p>}
-    {(state.phase === 'complete' || state.phase === 'cancelled') && <p role="status">{t(`provider.installPhase.${state.phase}`)}</p>}
-    {!available && !running && (state.prerequisiteMet
-      ? <button className="button small" type="button" disabled={busy} onClick={install}>
-        {t(state.phase === 'failed' ? 'provider.installRetry' : 'provider.installNow')}</button>
-      : <p>{t(state.manager === 'brew' ? 'provider.installNeedsBrew' : 'provider.installNeedsNpm')}</p>)}
-    {state.phase === 'installing' && <button className="button small" type="button" onClick={cancel}>{t('provider.installCancel')}</button>}
+    {running && <OperationFeedback state="progress">{t(`provider.installPhase.${state.phase}`)}</OperationFeedback>}
+    {state.phase === 'failed' && <OperationFeedback state="error">{t(`provider.installProblem.${state.problem ?? 'install'}`)}</OperationFeedback>}
+    {(state.phase === 'complete' || state.phase === 'cancelled') && <OperationFeedback>{t(`provider.installPhase.${state.phase}`)}</OperationFeedback>}
+    {(running || (!available && state.prerequisiteMet)) && <button className="button small" type="button" aria-disabled={unavailable}
+      onClick={() => { if (!unavailable) (running ? cancel : install)(); }}>
+      {t(running ? 'provider.installCancel' : state.phase === 'failed' ? 'provider.installRetry' : 'provider.installNow')}
+    </button>}
+    {!available && !running && !state.prerequisiteMet && <p>{t(state.manager === 'brew' ? 'provider.installNeedsBrew' : 'provider.installNeedsNpm')}</p>}
   </div>;
 }

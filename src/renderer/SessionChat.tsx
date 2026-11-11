@@ -12,6 +12,7 @@ import { Fragment, memo, useCallback, useContext, useEffect, useId, useLayoutEff
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useReducedMotion } from './appearance';
+import { OperationFeedback } from './ui-kit/OperationFeedback';
 import { AppSelect } from './AppSelect';
 import { ComposerModelPicker } from './ComposerModelPicker';
 import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown';
@@ -729,7 +730,8 @@ function PromptQueue({ session, provider, pending, perform, connected, sessions,
       </button>
     </header>
     {session.queuePaused && <p className="queue-paused"><Pause size={12} />{t('chat.queuePaused')}{session.queueHoldReason && <span>{session.queueHoldReason}</span>}</p>}
-    {!session.queuePaused && !queue[0].edit && session.waitingForProject && <p className="queue-paused" role="status"><Clock3 size={12} />{t('chat.sideQuestion.waiting')}</p>}
+    {!session.queuePaused && !queue[0].edit && session.waitingForProject && <OperationFeedback className="queue-paused">{t('chat.sideQuestion.waiting')}</OperationFeedback>}
+    {(pending.has(moveKey) || pending.has(pauseKey)) && <OperationFeedback state="progress">{t('chat.queueUpdating')}</OperationFeedback>}
     <ol onDragOver={event => {
       if (!drag) return;
       const to = dropTarget(event);
@@ -797,8 +799,8 @@ function QueuedPromptRow({ sessionId, item, provider, connected, pending, perfor
     commandId => window.workbench.removeQueuedPrompt(sessionId, item.id, edit?.revision ?? revision, commandId, edit?.id));
   return <>
     {item.agentSource && <AgentMessageAttribution source={item.agentSource} sessions={sessions} openSession={openSession} />}
-    {(item.edit || edit) && <p className="queue-edit-hold" role="status">{t('chat.queueEditHeld')}</p>}
-    {editingElsewhere && <p className="queue-edit-hold" role="alert">{t('chat.queueEditMoved')}</p>}
+    {(item.edit || edit) && <OperationFeedback className="queue-edit-hold">{t('chat.queueEditHeld')}</OperationFeedback>}
+    {editingElsewhere && <OperationFeedback className="queue-edit-hold" state="error">{t('chat.queueEditMoved')}</OperationFeedback>}
     {(edit || editingElsewhere) && acquired && <QueuedPromptEditor key={acquired.id} sessionId={sessionId} itemId={item.id}
       editId={acquired.id} initial={acquired.input} current={Boolean(edit)} connected={connected} disabled={disabled} perform={action => void perform(key, async () => {
         await action();
@@ -897,8 +899,8 @@ function QueuedPromptEditor({ sessionId, itemId, editId, initial, current, conne
     <DraftEvidenceCards evidence={input.evidence} onRemove={disabled ? undefined : id =>
       change({ ...input, evidence: input.evidence?.filter(reference => reference.id !== id) })} />
     <AttachmentLimitNotice issue={issue} />
-    {current && draftError && <p className="queue-edit-hold" role="alert">{t('chat.queueDraftUnsaved')}</p>}
-    {current && leaseError && <p className="queue-edit-hold" role="alert">{t('chat.queueEditLeaseLost')}</p>}
+    {current && draftError && <OperationFeedback className="queue-edit-hold" state="error">{t('chat.queueDraftUnsaved')}</OperationFeedback>}
+    {current && leaseError && <OperationFeedback className="queue-edit-hold" state="error">{t('chat.queueEditLeaseLost')}</OperationFeedback>}
     {current && <div className="queue-item-actions">
       <button type="submit" disabled={!canSave}>{t('chat.saveQueued')}</button>
       <button type="button" disabled={disabled} onClick={() => finish()}>{t('chat.cancelQueuedEdit')}</button>

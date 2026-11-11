@@ -15,6 +15,7 @@ import { motionMessageFadeUp } from './vendor/open-claude-ui/ClaudeMotionPresets
 import { RuntimeHealth, useRuntimeHealth } from './RuntimeHealth';
 import { RuntimeInstallAction, useRuntimeInstalls } from './RuntimeInstall';
 import { RuntimeAccount } from './RuntimeAccount';
+import { OperationFeedback } from './ui-kit/OperationFeedback';
 import { ExecutionGraph, graphNode, edgeFor, type GraphSelection } from './ExecutionGraph';
 import { copyGraphView } from './graph-view-state';
 import { workflowDependencies, setWorkflowDependency, removeWorkflowDependency, removeWorkflowStep, type WorkflowDependency } from './workflow-graph';
@@ -303,15 +304,19 @@ export function ProvidersContent({ snapshot, perform, pending }: ProvidersProps)
   const cwd = snapshot.workspaces.some(workspace => !workspace.archived && workspace.cwd === directory) ? directory : '';
   const health = useRuntimeHealth(snapshot.providers, cwd);
   const available = health.providers.filter(provider => provider.available).length;
+  const refreshing = pending.has('refresh-providers');
   const directories = snapshot.workspaces.filter((workspace, index, values) => !workspace.archived && values.findIndex(item => !item.archived && item.cwd === workspace.cwd) === index);
   return <div className="providers-content">
     <div className="runtime-directory"><label>{runtimeText('health.directory')}<AppSelect label={runtimeText('health.directory')} value={cwd} onChange={setDirectory}
       options={[{ value: '', label: runtimeText('health.global') }, ...directories.map(workspace => ({ value: workspace.cwd, label: workspace.name, description: workspace.cwd }))]} /></label>{cwd && <code>{cwd}</code>}<p>{runtimeText(cwd ? 'health.directoryNote' : 'health.globalNote')}</p></div>
     <div className="provider-detection">
       <div><span className={`connections-status ${available ? 'ready' : ''}`}><span />{t('provider.detectedCount', { count: available })}</span><p>{t('provider.detectionNote')}</p></div>
-      <button className="button" disabled={pending.has('refresh-providers') || health.loading} onClick={() => void perform('refresh-providers', health.refresh)}><RefreshCw className={pending.has('refresh-providers') ? 'spin' : ''} size={14} />{t('provider.refresh')}</button>
+      <button className="button" aria-disabled={refreshing || health.loading} onClick={() => {
+        if (!refreshing && !health.loading) void perform('refresh-providers', health.refresh, { retry: health.refresh });
+      }}><RefreshCw size={14} aria-hidden="true" />{t('provider.refresh')}</button>
     </div>
-    {health.error && <p className="runtime-panel-error" role="alert">{health.error}</p>}
+    {(refreshing || health.loading) && <OperationFeedback state="progress">{runtimeText('health.loading')}</OperationFeedback>}
+    {health.error && <OperationFeedback state="error">{health.error}</OperationFeedback>}
     <div className="provider-cards">{health.providers.map(provider => {
       const install = runtimeInstalls.installs.find(item => item.providerId === provider.id);
       return <motion.article className={`provider-card ${!provider.available ? 'unavailable' : ''}`} key={provider.id} variants={motionMessageFadeUp} initial={reducedMotion ? false : 'initial'} animate="animate">

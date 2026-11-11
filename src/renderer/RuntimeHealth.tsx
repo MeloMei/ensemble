@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Check, CircleAlert, CircleHelp, CircleSlash, LoaderCircle } from 'lucide-react';
+import { Check, CircleAlert, CircleHelp, CircleSlash } from 'lucide-react';
 import type { ProviderHealthStage, ProviderInfo } from '../shared/types';
 import { formatDate } from '../shared/i18n';
 import './RuntimeHealth.css';
@@ -48,7 +48,7 @@ export function useRuntimeHealth(providers: ProviderInfo[], cwd: string) {
 export function RuntimeHealth({ provider, loading = false }: { provider: ProviderInfo; loading?: boolean }) {
   const { t } = useTranslation('runtime');
   return <section className="runtime-health" aria-label={t('health.title', { provider: provider.name })} aria-busy={loading}>
-    <div className="runtime-health-heading"><h3>{t('health.checks')}</h3>{loading && <span role="status"><LoaderCircle className="spin" size={12} />{t('health.loading')}</span>}</div>
+    <div className="runtime-health-heading"><h3>{t('health.checks')}</h3></div>
     <dl>{stages.map(stage => {
       const check = provider.health?.checks[stage];
       const status = check?.status ?? 'unknown';

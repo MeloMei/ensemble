@@ -2,7 +2,7 @@ import { useTranslation } from 'react-i18next';
 import { formatDate, renderDisplayText } from '../shared/i18n';
 import type { DisplayText } from '../shared/display-text';
 import { useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { FileCode2, Files, GitBranch, GitCompareArrows, GitPullRequest, LoaderCircle, Maximize2, MessageSquare, Minimize2, PanelRight, RefreshCw, Save, Search, Timer, WrapText, X } from 'lucide-react';
+import { FileCode2, Files, GitBranch, GitCompareArrows, GitPullRequest, Maximize2, MessageSquare, Minimize2, PanelRight, RefreshCw, Save, Search, Timer, WrapText, X } from 'lucide-react';
 import { z } from 'zod';
 import type { FileContent, FileDiff, FileEntry, FileImage, GitCommitPreview, GitMutation, GitState, PullRequestReview, Session, Workspace } from '../shared/types';
 import { rasterImageMimeFromPath } from '../shared/raster-image';
@@ -18,12 +18,15 @@ import { WorkspaceFileTree } from './WorkspaceFileTree';
 import { FileDraftStore } from './file-drafts';
 import { diffRangeLines, reviewFeedback, reviewNoteSchema, type DiffNoteDraft, type ReviewNote } from './review-notes';
 import { IconButton, Modal, type Perform } from './ui';
+import { OperationFeedback } from './ui-kit/OperationFeedback';
+import { operationError } from './ui-kit/useOperationFeedback';
 import { useFileDiskCheck } from './useFileDiskCheck';
 import { WorkspaceFileNavigation, type FileReference } from './workspace-file-reference';
 import './FileReviewPanel.css';
 
 const notesSchema = z.array(reviewNoteSchema).max(200);
-type FileNotice = string | DisplayText;
+type FileRefresh = 'files' | 'pullRequest';
+type FileNotice = { message: string | DisplayText; state?: 'status'; refresh?: FileRefresh };
 const emptyEntries: FileEntry[] = [];
 const writeFile = (workspaceId: string, input: Parameters<Window['workbench']['writeFile']>[1]) => window.workbench.writeFile(workspaceId, input);
 const fileDrafts = new FileDraftStore(summary => window.workbench.setUnsavedFiles(summary), { delay: 1000, write: writeFile });
@@ -98,7 +101,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
   const draft = buffer?.text ?? '';
   const markdown = file?.language === 'markdown';
   const markdownPreview = markdown && contentTab?.kind === 'text' && contentTab.preview;
-  const [error, setError] = useState<FileNotice>('');
+  const [operationNotice, setOperationNotice] = useState<FileNotice>();
   const [operationBusy, setBusy] = useState(false);
   const busy = operationBusy || (file !== null && fileDrafts.isSaving(workspace.id, file.path));
   const [preview, setPreview] = useState<GitCommitPreview | null>(null);
@@ -113,6 +116,8 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
   const operations = useRef(0);
   const diskCheckBlocked = useCallback(() => operations.current > 0 || (editor.current?.isComposing() ?? false), []);
   const reviewLayout = useRef<HTMLDivElement>(null);
+  const panelHeader = useRef<HTMLElement>(null);
+  const retryFocus = useRef<HTMLButtonElement>(null);
   const responsiveDiff = view === 'changes' && selected?.mode === 'diff' && !expanded;
   const selectedChangeIndex = responsiveDiff ? git?.changes.findIndex(change => change.path === selected.path) ?? -1 : -1;
   const dirty = isDirty(buffer);
@@ -128,8 +133,10 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
     : diskStatus === 'missing' ? (dirty ? 'workspace:files.missingDraft' : 'workspace:files.missing')
     : diskStatus === 'unreadable' ? (dirty ? 'workspace:files.unreadableDraft' : 'workspace:files.unreadable') : undefined;
   const saveError = !diskStatus && dirty && typeof buffer?.autoSaveBlock === 'object' ? buffer.autoSaveBlock.error : undefined;
-  const notice: FileNotice = error || (saveError && editorPreferences.autoSave
-    ? { key: 'workspace:editor.autoSavePaused', values: { error: saveError } } : saveError ?? '');
+  const notice = operationNotice ?? (saveError ? {
+    message: editorPreferences.autoSave ? { key: 'workspace:editor.autoSavePaused', values: { error: saveError } } : saveError,
+  } : undefined);
+  const retryTarget = notice?.refresh;
   const currentNotes = notes.workspaceId === workspace.id ? notes.items : [];
   const changes = git?.changes ?? [];
   const checked = changes.filter(change => checkedChanges.has(change.path));
@@ -138,6 +145,12 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
   const unstageable = checked.filter(change => change.staged).map(change => change.path);
 
   useLayoutEffect(() => { fileDrafts.setAutoSave(editorPreferences.autoSave); }, [editorPreferences.autoSave]);
+  useLayoutEffect(() => {
+    const button = retryFocus.current;
+    if (busy || !button) return;
+    retryFocus.current = null;
+    if (!button.isConnected && document.activeElement === document.body) panelHeader.current?.querySelector('button')?.focus();
+  }, [busy, notice]);
   useFileDiskCheck(fileDrafts, workspace.id, visible && editorOpen && !operationBusy ? file?.path : undefined, diskCheckBlocked);
   useLayoutEffect(() => {
     if (!focusAfterClose.current) return;
@@ -168,11 +181,18 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
     return () => observer.disconnect();
   }, [responsiveDiff, selected?.path, selectedChangeIndex]);
 
-  const run = (key: string, action: () => Promise<unknown>) => {
-    setError(''); operations.current++; setBusy(true);
+  const run = (key: string, action: () => Promise<unknown>, target?: FileRefresh, retry?: { notice: FileNotice; button: HTMLButtonElement }) => {
+    if (retry && operations.current) return;
+    if (!retry) setOperationNotice(undefined);
+    operations.current++; setBusy(true);
     void perform(`review-${workspace.id}-${key}`, async () => {
-      try { return await action(); }
-      catch (failure) { setError(failure instanceof Error ? failure.message : String(failure)); throw failure; }
+      try {
+        await action();
+        if (retry) {
+          if (document.activeElement === retry.button) retryFocus.current = retry.button;
+          setOperationNotice(current => current === retry.notice ? undefined : current);
+        }
+      } catch (failure) { setOperationNotice({ message: operationError(failure), refresh: target }); }
       finally { operations.current--; if (!operations.current) setBusy(false); }
     });
   };
@@ -189,14 +209,18 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
     setMissingDirectory(listing === null);
     setRootListing(previous => ({ workspaceKey, entries: listing ?? emptyEntries, revision: (previous?.revision ?? 0) + 1 }));
     if (listing === null) { setGit(null); setView('files'); return; }
-    const status = await window.workbench.gitState(workspace.id);
-    if (token !== directoryGeneration.current) return;
-    setGit(status);
-    if (status.error && !/not a git repository/i.test(status.error)) throw new Error(status.error);
+    try {
+      const status = await window.workbench.gitState(workspace.id);
+      if (token !== directoryGeneration.current) return;
+      setGit(status);
+      if (status.error && !/not a git repository/i.test(status.error)) throw new Error(status.error);
+    } catch (failure) { if (token === directoryGeneration.current) throw failure; }
   };
   const refreshPullRequest = async () => {
     setReview(await window.workbench.reviewPullRequest(workspace.id));
   };
+  const refreshPanel = (target: FileRefresh, retry?: { notice: FileNotice; button: HTMLButtonElement }) =>
+    run('refresh', target === 'files' ? refresh : refreshPullRequest, target, retry);
   const showFile = (path: string, reference?: FileReference, image?: FileImage) => {
     setTabs(current => {
       const existing = current.open.find(tab => tab.path === path);
@@ -290,13 +314,13 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
       return;
     }
     fileGeneration.current++;
-    setError('');
+    setOperationNotice(undefined);
     showFile(path, reference);
   };
   const requestCloseFile = (path: string) => {
     const current = fileDrafts.get(workspace.id, path);
     if (fileDrafts.isSaving(workspace.id, path)) return;
-    setError('');
+    setOperationNotice(undefined);
     if (current && isDirty(current)) setClosingTab({ path, draft: current });
     else closeFile(path);
   };
@@ -326,13 +350,13 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
     setNoteDrafts(new Map());
     return () => { directoryGeneration.current++; fileGeneration.current++; };
   }, [workspace.id]);
-  useEffect(() => { run('refresh', () => refresh()); }, [workspace.id, refreshKey]);
+  useEffect(() => { refreshPanel('files'); }, [workspaceKey, refreshKey]);
   useEffect(() => {
     let active = true;
     const unsubscribe = fileDrafts.subscribeAutoSaved(id => {
       if (id !== workspace.id) return;
       void refresh().catch(failure => {
-        if (active) setError(failure instanceof Error ? failure.message : String(failure));
+        if (active) setOperationNotice({ message: operationError(failure), refresh: 'files' });
       });
     });
     return () => { active = false; unsubscribe(); };
@@ -340,7 +364,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
   useEffect(() => {
     if (notes.workspaceId !== workspace.id) return;
     try { localStorage.setItem(`workbench:review:${workspace.id}`, JSON.stringify(notes.items)); }
-    catch { setError({ key: 'workspace:files.notesSaveFailed' }); }
+    catch { setOperationNotice({ message: { key: 'workspace:files.notesSaveFailed' } }); }
   }, [notes, workspace.id]);
   const save = (path: string, close = false) => {
     if (fileDrafts.isSaving(workspace.id, path)) return;
@@ -372,7 +396,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
   };
   const addNote = (draft: DiffNoteDraft) => {
     if (!selected || !diff || !matchesReviewRevision(diff, draft.revision) || !draft.body.trim() || busy || operations.current) return;
-    if (currentNotes.length >= 200) { setError({ key: 'workspace:files.notesLimit' }); return; }
+    if (currentNotes.length >= 200) { setOperationNotice({ message: { key: 'workspace:files.notesLimit' } }); return; }
     const filePath = selected.path;
     run('save-note', async () => {
       const latest = await window.workbench.fileDiff(workspace.id, filePath);
@@ -396,11 +420,17 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
     }
     onFeedback?.(reviewFeedback(currentNotes));
   });
+  const noticeFeedback = notice && <OperationFeedback className={notice.state === 'status' ? 'pane-note' : 'pane-note error-text'}
+    state={notice.state ?? 'error'} retry={retryTarget && !closingTab && !preview ? {
+      pending: busy, run: button => refreshPanel(retryTarget, { notice, button }),
+    } : undefined}>
+    {typeof notice.message === 'string' ? notice.message : renderDisplayText('', notice.message)}
+  </OperationFeedback>;
 
   return <aside className={`file-panel file-review-panel ${expanded ? 'review-expanded' : ''}`} aria-label={t('files.title')}>
-    <header className="file-panel-header">
+    <header ref={panelHeader} className="file-panel-header">
       <span className="file-panel-title"><PanelRight size={15} />{t('files.title')}</span>
-      <IconButton label={t('files.refresh')} disabled={!!busy} onClick={() => run('refresh', () => view === 'pr' ? refreshPullRequest() : refresh())}><RefreshCw size={14} /></IconButton>
+      <IconButton label={t('files.refresh')} disabled={!!busy} onClick={() => refreshPanel(view === 'pr' ? 'pullRequest' : 'files')}><RefreshCw size={14} /></IconButton>
     </header>
     {missingDirectory && <div className="pane-note" role="status">
       <p>{t('files.projectDirectoryMissing')}</p>
@@ -409,7 +439,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
     <div className="file-view-tabs" data-view={view} role="group" aria-label={t('files.views')}>
       <button className={view === 'files' ? 'active' : ''} aria-pressed={view === 'files'} onClick={() => setView('files')}><Files size={13} />{t('files.files')}</button>
       <button disabled={missingDirectory} className={view === 'changes' ? 'active' : ''} aria-pressed={view === 'changes'} onClick={() => setView('changes')}><GitCompareArrows size={13} />{t('files.changes')}{git?.available && <span>{git.changes.length}</span>}</button>
-      <button disabled={missingDirectory} className={view === 'pr' ? 'active' : ''} aria-pressed={view === 'pr'} onClick={() => { setView('pr'); run('pr', refreshPullRequest); }}><GitPullRequest size={13} />PR / CI</button>
+      <button disabled={missingDirectory} className={view === 'pr' ? 'active' : ''} aria-pressed={view === 'pr'} onClick={() => { setView('pr'); refreshPanel('pullRequest'); }}><GitPullRequest size={13} />PR / CI</button>
     </div>
     {!missingDirectory && <div className="file-branch"><GitBranch size={13} />{git?.available
       ? <GitBranchControl workspaceId={workspace.id} branch={git.branch}
@@ -429,9 +459,9 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
         onPull={() => run('refresh', async () => { await refresh(); if (selected) await load(selected.path, selected.mode, true); })} />}
       {git?.available && <button className="review-text-button" disabled={!!busy || hasUnsavedFiles} onClick={() => run('preview', async () => setPreview(await window.workbench.gitCommitPreview(workspace.id)))}>{t('files.commitPreview')}</button>}
     </div>}
-    {notice && <div className="pane-note error-text" role="alert">{typeof notice === 'string' ? notice : renderDisplayText('', notice)}</div>}
-    {diskNotice && <div className="pane-note error-text" role="status" data-file-disk-status={diskStatus}>{renderDisplayText('', { key: diskNotice })}</div>}
-    {busy && <div className="review-busy" role="status"><LoaderCircle className="spin" size={12} />{t('files.processing')}</div>}
+    {!closingTab && !preview && noticeFeedback}
+    {diskNotice && <OperationFeedback className="pane-note error-text" data-file-disk-status={diskStatus}>{renderDisplayText('', { key: diskNotice })}</OperationFeedback>}
+    {busy && <OperationFeedback className="review-busy" state="progress">{t('files.processing')}</OperationFeedback>}
     <WorkspaceFileTree key={workspaceKey} workspaceId={workspace.id}
       workspaceKey={workspaceKey} entries={tree?.entries ?? emptyEntries} revision={tree?.revision ?? 0}
       hidden={view !== 'files' || missingDirectory} selectedPath={selected?.path}
@@ -534,14 +564,14 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
     </section>}
     </div>
     {closingTab && <Modal title={t('files.unsavedTitle')} subtitle={closingTab.path} busy={closingBusy}
-      fallbackFocus={activeTabButton} onClose={() => { setError(''); setClosingTab(undefined); }}>
-      {notice && <p className="pane-note error-text" role="alert">{typeof notice === 'string' ? notice : renderDisplayText('', notice)}</p>}
+      fallbackFocus={activeTabButton} onClose={() => { setOperationNotice(undefined); setClosingTab(undefined); }}>
+      {!preview && noticeFeedback}
       <div className="modal-actions">
-        <button className="button" autoFocus disabled={closingBusy} onClick={() => { setError(''); setClosingTab(undefined); }}>{t('common.cancel')}</button>
+        <button className="button" autoFocus disabled={closingBusy} onClick={() => { setOperationNotice(undefined); setClosingTab(undefined); }}>{t('common.cancel')}</button>
         <button className="button danger" disabled={closingBusy} onClick={() => {
           const current = fileDrafts.get(workspace.id, closingTab.path);
           if (isDirty(current) && (current?.editVersion !== closingTab.draft.editVersion || current?.original !== closingTab.draft.original)) {
-            setError({ key: 'workspace:files.closeChanged' });
+            setOperationNotice({ message: { key: 'workspace:files.closeChanged' } });
             return;
           }
           closeFile(closingTab.path, current);
@@ -554,11 +584,13 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
       <button disabled={!onFeedback || !sessions.length || !!busy} onClick={sendNotes}>{t('files.notesToDraft')}</button>
     </section>}
     {preview && <Modal title={t('files.commitTitle')} subtitle={t('files.commitDescription')} busy={busy} onClose={() => setPreview(null)}><div className="review-commit-content">
+      {noticeFeedback}
       <ul>{preview.paths.map(filePath => <li key={filePath}>{filePath}</li>)}</ul><pre>{preview.patch || t('files.noStagedChanges')}</pre>
       <textarea aria-label={t('files.commitMessage')} placeholder={t('files.commitMessage')} value={commitMessage} onChange={event => setCommitMessage(event.target.value)} />
       <div className="review-commit-actions"><p className="pane-note">{t('files.localCommitOnly')}</p><button className="button primary" disabled={!preview.paths.length || preview.truncated || !commitMessage.trim() || !!busy} onClick={() => run('commit', async () => {
         const sha = await window.workbench.gitCommit(workspace.id, { message: commitMessage, revision: preview.revision });
-        setPreview(null); setCommitMessage(''); await refresh(); setError({ key: 'workspace:files.commitComplete', values: { sha: sha.slice(0, 12) } });
+        setPreview(null); setCommitMessage(''); await refresh();
+        setOperationNotice({ message: { key: 'workspace:files.commitComplete', values: { sha: sha.slice(0, 12) } }, state: 'status' });
       })}>{t('files.confirmCommit')}</button></div>
     </div></Modal>}
   </aside>;
