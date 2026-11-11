@@ -20,6 +20,8 @@ import { CommandPalette } from './CommandPalette';
 import { FileReviewPanel } from './FileReviewPanel';
 import { WorkspaceFilePane, useWorkspaceFilePane } from './WorkspaceFilePane';
 import { WorkspaceSidebar, useWorkspaceSidebar } from './WorkspaceSidebar';
+import { SidebarSessionActions, SidebarSessionGroups } from './SidebarSessionGroups';
+import { sessionPlacement, useSidebarSessions } from './sidebar-sessions';
 import { SESSION_TAB_DRAG_TYPE, WorkspacePanes } from './WorkspacePanes';
 import { ProjectRowActions, useProjectManagement } from './ProjectManagement';
 import { NewAgentDialog } from './NewAgentDialog';
@@ -51,7 +53,7 @@ const CollaborationViews = lazy(() => import('./CollaborationViews').then(module
 const projectWorkStatuses: readonly Session['status'][] = ['waiting_approval', 'running', 'waiting_children', 'queued'];
 
 function workspaceGroup(workspace: Workspace, sessions: Session[]) {
-  const relevant = sessions.filter(session => session.cwd === workspace.cwd);
+  const relevant = sessions.filter(session => !session.archived && session.cwd === workspace.cwd);
   if (relevant.some(session => ['approval', 'failure'].includes(sessionAttentionReason(session) ?? ''))) return 'attention';
   if (relevant.some(session => ['running', 'waiting_children', 'queued'].includes(session.status))) return 'working';
   if (relevant.some(session => sessionAttentionReason(session) === 'result')) return 'review';
@@ -124,6 +126,7 @@ export function App() {
   const [searching, setSearching] = useState(false);
   const [archivesOpen, setArchivesOpen] = useState(false);
   const [expandedProjects, setExpandedProjects] = useState(() => new Set<string>());
+  const sidebarSessionFocus = useRef<string>(undefined);
   const [drafts, setDrafts] = useState<Record<string, PromptInput>>({});
   const currentDrafts = useRef<Record<string, PromptInput>>({});
   const draftReady = useRef(new Set<string>());
@@ -237,6 +240,14 @@ export function App() {
   }, [workspace?.id, activeTab?.id, workspace?.tabs.length, page]);
   const readingSession = page === 'history' ? sessions.find(session => session.id === readingSessionId) : undefined;
   const connected = connection.status === 'connected' && connection.synced;
+  const sidebarSessions = useSidebarSessions(snapshot, connected);
+  const { prefs: sidebarSessionPrefs, groups: sidebarSessionGroups } = sidebarSessions;
+  useLayoutEffect(() => {
+    const id = sidebarSessionFocus.current;
+    if (!id) return;
+    sidebarSessionFocus.current = undefined;
+    sidebar.container.current?.querySelector<HTMLButtonElement>(`[data-sidebar-session-id="${CSS.escape(id)}"] .row-actions-trigger`)?.focus();
+  }, [sidebarSessionPrefs, sidebar.container]);
   useEffect(() => {
     if (!connected || !snapshot || applicationReady.current) return;
     applicationReady.current = true;
@@ -484,8 +495,34 @@ export function App() {
     return <EmptyState icon={<Layers2 size={28} />} title={t('app.projectReady')} action={<div className="empty-actions"><button className="button" onClick={openAgentDialog}><Plus size={14} />{t('app.addAgent')}</button><button className="button subtle" disabled={pending.has('create-terminal')} onClick={openLocalTerminal}><TerminalSquare size={14} />{t('app.openTerminal')}</button></div>}>{t('app.projectReadyNote')}</EmptyState>;
   };
 
+  const renderSidebarSession = (session: Session, projectName?: string) => {
+    const placement = sessionPlacement(sidebarSessionPrefs, session.id);
+    const project = sidebarSessionGroups.projectBySession.get(session.id);
+    const place = (next: typeof placement) => {
+      sidebarSessionFocus.current = session.id;
+      if (project && !next.pinned && !next.sectionId) {
+        setExpandedProjects(current => current.has(project) ? current : new Set([...current, project]));
+      }
+      sidebarSessions.dispatch({ type: 'placeSession', id: session.id, placement: next });
+    };
+    return <li className="sidebar-session-row" key={session.id} data-sidebar-session-id={session.id}>
+      <button type="button" className="sidebar-session-open" disabled={!connected}
+        aria-current={page === 'workspace' && session.id === activeSession?.id ? 'true' : undefined} onClick={() => openSession(session.id)}>
+        <AgentIcon providerId={session.providerId} size={13} />
+        <span className="workspace-session-title" title={session.title}>{session.title}</span>
+        <span className="sidebar-session-meta">
+          {projectName && <span className="sidebar-session-project" title={projectName}>{projectName}</span>}
+          <Status value={session.status} /><AttentionBadge session={session} />
+        </span>
+      </button>
+      <SidebarSessionActions session={session} sections={sidebarSessionPrefs.sections} pinned={placement.pinned} sectionId={placement.sectionId}
+        onPin={() => place({ ...placement, pinned: placement.pinned ? undefined : true })}
+        onMove={sectionId => place({ sectionId })} />
+    </li>;
+  };
+
   const workspaceRow = (item: Workspace, group: string, last: boolean) => {
-    const related = sessions.filter(session => session.cwd === item.cwd).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    const related = sessions.filter(session => !session.archived && session.cwd === item.cwd).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     const current = related.find(session => sessionAttentionReason(session) === 'approval')
       ?? related.find(session => sessionAttentionReason(session) === 'failure')
       ?? related.find(session => ['running', 'waiting_children', 'queued'].includes(session.status))
@@ -494,7 +531,7 @@ export function App() {
     const selected = page === 'workspace' && workspace?.id === item.id;
     const expanded = expandedProjects.has(item.id);
     const listId = `workspace-sessions-${item.id}`;
-    const projectSessions = related.filter(session => !session.archived).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const projectSessions = sidebarSessionGroups.projects.get(item.id) ?? [];
     const activeCounts = projectWorkStatuses.flatMap(status => {
       const count = related.filter(session => session.status === status).length;
       return count ? [{ status, count }] : [];
@@ -526,12 +563,7 @@ export function App() {
         <ProjectRowActions workspace={item} disabled={!connected || projectManagement.busy} onAction={action => projectManagement.open(item, action)} />
       </div>
       <ul id={listId} className="workspace-session-list" hidden={!expanded}>
-        {expanded && projectSessions.map(session => <li key={session.id}><button type="button" disabled={!connected}
-          aria-current={selected && session.id === activeSession?.id ? 'true' : undefined} onClick={() => openSession(session.id)}>
-          <AgentIcon providerId={session.providerId} size={13} />
-          <span className="workspace-session-title" title={session.title}>{session.title}</span>
-          <Status value={session.status} /><AttentionBadge session={session} />
-        </button></li>)}
+        {expanded && projectSessions.map(session => renderSidebarSession(session))}
       </ul>
     </motion.div>;
   };
@@ -616,7 +648,11 @@ export function App() {
         <button className={page === 'attention' ? 'selected' : ''} aria-current={page === 'attention' ? 'page' : undefined}
           onClick={() => { setAttentionOpen(undefined); setPage('attention'); }}><Inbox size={17} />{t('attention.inboxTitle')}</button>
         <button className={page === 'history' ? 'selected' : ''} aria-current={page === 'history' ? 'page' : undefined} onClick={() => setPage('history')}><History size={17} />{t('app.history')}</button><button className={page === 'collaboration' ? 'selected' : ''} aria-current={page === 'collaboration' ? 'page' : undefined} onClick={openCollaboration}><Network size={17} />{t('app.collaboration')}</button><button className={page === 'workflows' ? 'selected' : ''} aria-current={page === 'workflows' ? 'page' : undefined} onClick={() => setPage('workflows')}><GitBranch size={17} />{t('app.workflows')}</button></nav>
-      <motion.div className="workspace-sidebar-scroll" layoutScroll>{sidebarItems}</motion.div>
+      <motion.div className="workspace-sidebar-scroll" data-density={sidebarSessionPrefs.density} layoutScroll>
+        <SidebarSessionGroups organization={sidebarSessions} visibleProjects={query.trim() ? new Set(visibleWorkspaces.map(project => project.id)) : undefined}
+          renderSession={session => renderSidebarSession(session, workspaces.find(project => project.id === sidebarSessionGroups.projectBySession.get(session.id))?.name)} />
+        {sidebarItems}
+      </motion.div>
       <div className={`sidebar-connection connection-${connected ? 'connected' : connection.status}`}><i /><span>{connected ? t('app.connected') : t(`connection.${connection.status}`)}</span><small>{t('app.thisMachine')}</small></div><footer className="sidebar-footer"><button onClick={() => setDialog('workspace')}><Plus size={15} />{t('app.addProject')}</button><IconButton label={t('preferences.open')} onClick={() => openSettings()}><Settings2 size={16} /></IconButton></footer>
     </WorkspaceSidebar>
 

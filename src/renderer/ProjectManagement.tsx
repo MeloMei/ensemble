@@ -1,8 +1,8 @@
-import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Archive, Ellipsis, FolderOpen, Pencil, RotateCcw, Trash2 } from 'lucide-react';
+import { Archive, FolderOpen, Pencil, RotateCcw, Trash2 } from 'lucide-react';
 import type { Workspace } from '../shared/types';
-import { Tooltip } from './Tooltip';
+import { RowActionMenu } from './ui-kit/RowActionMenu';
 import { Modal, type Perform } from './ui';
 import './ProjectManagement.css';
 
@@ -25,72 +25,12 @@ export function ProjectRowActions({ workspace, disabled, onAction }: {
   onAction(action: ProjectAction): void;
 }) {
   const { t } = useTranslation('shell');
-  const id = useId();
-  const trigger = useRef<HTMLButtonElement>(null);
-  const menu = useRef<HTMLDivElement>(null);
-  const openFromEnd = useRef(false);
-  const [expanded, setExpanded] = useState(false);
   const actions = projectActions(workspace);
-  if (!actions.length) return null;
-  const label = t('projectManagement.actions', { name: workspace.name });
-  const menuId = `${id}-menu`;
-  const anchor = `--project-actions-${id}`;
-  const menuItems = () => Array.from(menu.current?.querySelectorAll<HTMLButtonElement>('[role=menuitem]:not(:disabled)') ?? []);
-  const dismiss = () => {
-    menu.current?.hidePopover();
-    trigger.current?.focus({ preventScroll: true });
-  };
-  const navigate = (event: KeyboardEvent<HTMLDivElement>) => {
-    const { key } = event;
-    if (key === 'Escape' || key === 'Tab') {
-      if (key === 'Escape') { event.preventDefault(); event.stopPropagation(); }
-      dismiss();
-      return;
-    }
-    if (key !== 'ArrowUp' && key !== 'ArrowDown' && key !== 'Home' && key !== 'End') return;
-    event.preventDefault();
-    const items = menuItems();
-    const current = items.indexOf(document.activeElement as HTMLButtonElement);
-    const next = key === 'Home' ? 0 : key === 'End' ? items.length - 1
-      : (current + (key === 'ArrowDown' ? 1 : items.length - 1)) % items.length;
-    items[next]?.focus();
-  };
-
-  return <>
-    <Tooltip label={label}><button ref={trigger} id={id} type="button" className="project-actions-trigger" disabled={disabled} style={{ anchorName: anchor }}
-      aria-label={label} aria-haspopup="menu" aria-controls={menuId} aria-expanded={expanded}
-      popoverTarget={menuId}
-      onClick={event => {
-        if (!menu.current?.matches(':popover-open')) event.currentTarget.focus({ preventScroll: true });
-      }}
-      onKeyDown={event => {
-        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
-        event.preventDefault();
-        openFromEnd.current = event.key === 'ArrowUp';
-        if (!menu.current?.matches(':popover-open')) event.currentTarget.click();
-        else {
-          const items = menuItems();
-          items.at(openFromEnd.current ? -1 : 0)?.focus();
-          openFromEnd.current = false;
-        }
-      }}><Ellipsis size={16} aria-hidden="true" /></button></Tooltip>
-    <div ref={menu} id={menuId} popover="auto" role="menu" aria-labelledby={id} className="project-actions-menu" style={{ positionAnchor: anchor }}
-      onToggle={event => {
-        const isOpen = event.newState === 'open';
-        setExpanded(isOpen);
-        if (isOpen) menuItems().at(openFromEnd.current ? -1 : 0)?.focus({ preventScroll: true });
-        openFromEnd.current = false;
-      }}
-      onKeyDown={navigate}>
-      {actions.map(action => {
-        const Icon = actionIcons[action];
-        return <button key={action} type="button" role="menuitem" tabIndex={-1} disabled={disabled} data-action={action}
-          onClick={() => { dismiss(); onAction(action); }}>
-          <Icon size={14} aria-hidden="true" />{t(`projectManagement.${action}`)}
-        </button>;
-      })}
-    </div>
-  </>;
+  return <RowActionMenu label={t('projectManagement.actions', { name: workspace.name })} disabled={disabled}
+    items={actions.map(action => {
+      const Icon = actionIcons[action];
+      return { id: action, label: t(`projectManagement.${action}`), icon: <Icon size={14} aria-hidden="true" />, select: () => onAction(action) };
+    })} />;
 }
 
 type Dialog = { workspace: Workspace; action: 'edit' | 'remove' };
