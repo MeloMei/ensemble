@@ -11,16 +11,10 @@ import { SPRING_SNAPPY } from './vendor/open-claude-ui/ClaudeMotionPresets';
 import { OverlayContext } from './overlays';
 import { AppSelect } from './AppSelect';
 import { Tooltip } from './Tooltip';
+import type { Perform } from './ui-kit/useOperationFeedback';
 
 export { OverlayProvider } from './overlays';
-
-export type Perform = (key: string, action: () => Promise<unknown>) => Promise<void>;
-
-export function ErrorToast({ message, onDismiss }: { message: string; onDismiss: () => void }) {
-  const { t } = useTranslation('shell');
-  const { top } = useContext(OverlayContext);
-  return createPortal(<div className="toast" role="alert"><CircleAlert size={16} /><span>{message}</span><IconButton label={t('common.dismissNotice')} onClick={onDismiss}><X size={14} /></IconButton></div>, top ?? document.body);
-}
+export type { Perform };
 export function statusLabel(value: string): string {
   const key = `shell:status.${value}`;
   return i18n.exists(key) ? t(key) : value;
