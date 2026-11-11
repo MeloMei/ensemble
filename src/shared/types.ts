@@ -6,6 +6,7 @@ import type { ProviderCapabilities } from './provider-capabilities';
 import type { AppUpdateState } from './application-updates';
 import type { SessionPermission } from './session-permissions';
 import type { RasterImageMime } from './raster-image';
+import type { WorkspaceFileMutation } from './workspace-file-mutations';
 export type { ProviderCapabilities } from './provider-capabilities';
 
 export type SessionStatus = 'idle' | 'queued' | 'running' | 'waiting_approval' | 'waiting_children' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
@@ -150,12 +151,13 @@ export interface TerminalInfo {
 }
 export interface TerminalService { host: '127.0.0.1' | '::1'; port: number }
 
-export interface FileEntry { path: string; name: string; kind: 'file' | 'directory'; size: number }
+export interface WorkspaceFilePath { path: string; realPath?: string }
+export interface FileEntry extends WorkspaceFilePath { name: string; kind: 'file' | 'directory'; size: number }
 export interface WorkspaceFileMatch { path: string; name: string }
 export interface WorkspaceTextMatch { path: string; line: number; column: number; preview: string }
 export interface WorkspaceTextSearch { matches: WorkspaceTextMatch[]; limited: boolean }
-export interface FileContent { path: string; content: string; size: number; language: string; revision: string }
-export interface FileImage { path: string; base64: string; size: number; mimeType: RasterImageMime; revision: string }
+export interface FileContent extends WorkspaceFilePath { content: string; size: number; language: string; revision: string }
+export interface FileImage extends WorkspaceFilePath { base64: string; size: number; mimeType: RasterImageMime; revision: string }
 export interface GitChange { path: string; status: string; staged: boolean; additions: number; deletions: number }
 export interface GitState { available: boolean; branch: string; changes: GitChange[]; error?: string }
 export interface GitBranchComparison {
@@ -434,6 +436,7 @@ export interface WorkbenchAPI {
   searchWorkspaceText(workspaceId: string, query: string): Promise<WorkspaceTextSearch>;
   readFile(workspaceId: string, relativePath: string): Promise<FileContent | null>;
   readFileImage(workspaceId: string, relativePath: string): Promise<FileImage | null>;
+  mutateWorkspaceFile(workspaceId: string, input: WorkspaceFileMutation): Promise<void>;
   gitState(workspaceId: string): Promise<GitState>;
   gitBranchRefs(workspaceId: string): Promise<string[]>;
   gitBranchComparison(workspaceId: string, targetRef: string): Promise<GitBranchComparison>;

@@ -8,6 +8,7 @@ import { startBackend } from './backend-server';
 import { BackendClient, BackendCommandError, connectBackend } from './backend-client';
 import { createWorkbenchService } from './workbench-service';
 import type { FileImage, PromptAttachment, Snapshot } from '../shared/types';
+import type { WorkspaceFileMutation } from '../shared/workspace-file-mutations';
 import type { CollaborationArtifactVersion } from '../shared/collaboration';
 import type { LoadedPromptAttachment, ProviderAdapter } from './providers/types';
 
@@ -96,6 +97,64 @@ test('workspace image preview returns verified raster bytes and rejects out-of-s
     assert.equal(await readImage('missing.png'), null);
     await writeFile(join(project, 'unknown.bin'), Buffer.from([0, 255]));
     await assert.rejects(service.call('workbench:read-file', [workspace, 'unknown.bin']), /Binary/);
+  } finally { await service.shutdown(); await rm(dataPath, { recursive: true, force: true }); }
+});
+
+test('file tree mutations enforce project ownership, workspace boundaries and exclusive destinations', async () => {
+  const dataPath = await realpath(await mkdtemp(join(tmpdir(), 'workbench-file-tree-actions-')));
+  const project = join(dataPath, 'project');
+  const service = await createWorkbenchService({ dataPath, command: process.execPath, bridgePath: join(dataPath, 'bridge.cjs'), publish() {}, providers: [] });
+  try {
+    await mkdir(project);
+    const workspace = await service.engine.createWorkspace({ name: 'file actions', cwd: project });
+    const mutate = (input: WorkspaceFileMutation) => service.call('workbench:mutate-workspace-file', [workspace, input]);
+    const create = (name: string, kind: 'file' | 'directory' = 'file', directory = '') => mutate({ action: 'create', kind, directory, name });
+    await create('source [literal].txt');
+    await writeFile(join(project, 'source [literal].txt'), 'source');
+    await assert.rejects(create('source [literal].txt'), { code: 'EEXIST' });
+    await create('destination.txt');
+    await writeFile(join(project, 'destination.txt'), 'destination');
+    await assert.rejects(mutate({ action: 'rename', kind: 'file', path: 'source [literal].txt', name: 'destination.txt' }), { code: 'EEXIST' });
+    assert.equal(await readFile(join(project, 'source [literal].txt'), 'utf8'), 'source');
+    assert.equal(await readFile(join(project, 'destination.txt'), 'utf8'), 'destination');
+    await create('folder', 'directory');
+    await create('child.txt', 'file', 'folder');
+    await create('occupied', 'directory');
+    await assert.rejects(mutate({ action: 'rename', kind: 'directory', path: 'folder', name: 'occupied' }), { code: 'EEXIST' });
+    assert.deepEqual(await readdir(join(project, 'occupied')), []);
+    await mutate({ action: 'rename', kind: 'directory', path: 'folder', name: 'renamed' });
+    assert.deepEqual(await readdir(join(project, 'renamed')), ['child.txt']);
+    await assert.rejects(readdir(join(project, 'folder')), { code: 'ENOENT' });
+
+    await writeFile(join(dataPath, 'outside.txt'), 'outside');
+    await symlink(join(dataPath, 'outside.txt'), join(project, 'outside-link.txt'));
+    await symlink(join(project, 'destination.txt'), join(project, 'inside-link.txt'));
+    await symlink(join(dataPath, 'outside.txt'), join(project, 'renamed', 'nested-link.txt'));
+    await assert.rejects(mutate({ action: 'delete', kind: 'file', path: '../outside.txt' }), /workspace file or folder/);
+    await assert.rejects(mutate({ action: 'delete', kind: 'file', path: 'outside-link.txt' }), /outside the workspace/);
+    await assert.rejects(mutate({ action: 'rename', kind: 'file', path: 'inside-link.txt', name: 'other.txt' }), /symbolic links/i);
+    await assert.rejects(mutate({ action: 'delete', kind: 'directory', path: 'renamed' }), /symbolic links/i);
+    await assert.rejects(mutate({ action: 'delete', kind: 'directory', path: '.' }), /workspace file or folder/);
+    await assert.rejects(create('.GIT', 'directory'), /file or folder name/);
+    await assert.rejects(create('../outside.txt'), /file or folder name/);
+    await mkdir(join(project, 'occupied', '.git'));
+    await assert.rejects(mutate({ action: 'delete', kind: 'directory', path: 'occupied' }), /Git metadata/);
+    assert.equal(await readFile(join(dataPath, 'outside.txt'), 'utf8'), 'outside');
+    await assert.rejects(mutate({ action: 'delete', kind: 'directory', path: 'destination.txt' }), /changed/);
+
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const held = service.engine.withProjectMutation(project, async () => { enter(); await gate; });
+    try {
+      await entered;
+      await assert.rejects(create('blocked.txt'), /已有会话或编排运行/);
+    } finally { release(); await held; }
+    await rm(join(project, 'renamed', 'nested-link.txt'));
+    await mutate({ action: 'delete', kind: 'directory', path: 'renamed' });
+    await mutate({ action: 'delete', kind: 'file', path: 'destination.txt' });
+    await assert.rejects(readdir(join(project, 'renamed')), { code: 'ENOENT' });
+    await assert.rejects(readFile(join(project, 'destination.txt')), { code: 'ENOENT' });
   } finally { await service.shutdown(); await rm(dataPath, { recursive: true, force: true }); }
 });
 

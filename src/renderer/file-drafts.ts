@@ -1,4 +1,5 @@
-import type { FileContent, UnsavedFileSummary, Workspace } from '../shared/types';
+import type { FileContent, UnsavedFileSummary, Workspace, WorkspaceFilePath } from '../shared/types';
+import { matchesWorkspaceFile } from '../shared/workspace-file-mutations';
 
 interface FileDraft {
   original: FileContent;
@@ -38,6 +39,14 @@ export class FileDraftStore {
   isSaving(workspaceId: string, path: string): boolean { return this.saves.has(this.key(workspaceId, path)); }
   hasUnsettledEdits(): boolean {
     return this.saves.size > 0 || [...this.entries.values()].some(draft => draft.text !== draft.original.content);
+  }
+
+  hasUnsettledAt(workspaceId: string, target: WorkspaceFilePath): boolean {
+    for (const [key, entry] of this.entries) {
+      if ((entry.text !== entry.original.content || this.saves.has(key))
+        && matchesWorkspaceFile(target, entry.original, entry.workspaceId === workspaceId)) return true;
+    }
+    return false;
   }
 
   setAutoSave(enabled: boolean): void {

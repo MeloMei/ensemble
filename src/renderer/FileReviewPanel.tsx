@@ -4,8 +4,9 @@ import type { DisplayText } from '../shared/display-text';
 import { useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { FileCode2, Files, GitBranch, GitCompareArrows, GitPullRequest, Maximize2, MessageSquare, Minimize2, PanelRight, RefreshCw, Save, Search, Timer, WrapText, X } from 'lucide-react';
 import { z } from 'zod';
-import type { FileContent, FileDiff, FileEntry, FileImage, GitCommitPreview, GitMutation, GitState, PullRequestReview, Session, Workspace } from '../shared/types';
+import type { FileContent, FileDiff, FileEntry, FileImage, GitCommitPreview, GitMutation, GitState, PullRequestReview, Session, Workspace, WorkspaceFilePath } from '../shared/types';
 import { rasterImageMimeFromPath } from '../shared/raster-image';
+import { matchesWorkspaceFile, workspaceFileParent, type WorkspaceFileMutation } from '../shared/workspace-file-mutations';
 import { BranchComparison } from './BranchComparison';
 import { CodeEditor, type CodeEditorHandle, type CodeEditorPosition } from './CodeEditor';
 import { FileEditorTabs } from './FileEditorTabs';
@@ -14,7 +15,7 @@ import { DiffReview } from './DiffReview';
 import { GitHistory } from './GitHistory';
 import { GitBranchControl } from './GitBranchControl';
 import { GitSyncControl } from './GitSyncControl';
-import { WorkspaceFileTree } from './WorkspaceFileTree';
+import { WorkspaceFileTree, type FileTreeAction, type FileTreeChange } from './WorkspaceFileTree';
 import { FileDraftStore } from './file-drafts';
 import { diffRangeLines, reviewFeedback, reviewNoteSchema, type DiffNoteDraft, type ReviewNote } from './review-notes';
 import { IconButton, Modal, type Perform } from './ui';
@@ -36,6 +37,7 @@ type EditorTab = { kind: 'text'; path: string; position: CodeEditorPosition; pre
   | { kind: 'image'; path: string; image: FileImage };
 type FileDraft = NonNullable<ReturnType<FileDraftStore['get']>>;
 const isDirty = (draft: FileDraft | undefined) => Boolean(draft && draft.text !== draft.original.content);
+const joinFilePath = (parent: string, name: string) => parent ? `${parent.replace(/\/$/, '')}/${name}` : name;
 
 function readEditorPreferences(): EditorPreferences {
   try {
@@ -86,6 +88,9 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
   const [diff, setDiff] = useState<FileDiff | null>(null);
   const [location, setLocation] = useState<FileReference>();
   const [closingTab, setClosingTab] = useState<{ path: string; draft: FileDraft }>();
+  const [treeAction, setTreeAction] = useState<FileTreeAction>();
+  const [treeChange, setTreeChange] = useState<FileTreeChange>();
+  const [treeName, setTreeName] = useState('');
   const [editorPreferences, setEditorPreferences] = useState(readEditorPreferences);
   const tabId = useId();
   const activeTabButton = useRef<HTMLButtonElement>(null);
@@ -94,6 +99,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
   useSyncExternalStore(fileDrafts.subscribe, fileDrafts.getSnapshot);
   const activeTab = tabs.open.find(tab => tab.path === tabs.active);
   const selected = diff ? { path: diff.path, mode: 'diff' as const } : activeTab ? { path: activeTab.path, mode: 'content' as const } : null;
+  const currentLocation = location?.path === selected?.path ? location : undefined;
   const contentTab = selected?.mode === 'content' ? activeTab : undefined;
   const image = contentTab?.kind === 'image' ? contentTab.image : undefined;
   const buffer = contentTab?.kind === 'text' ? fileDrafts.get(workspace.id, contentTab.path) : undefined;
@@ -331,6 +337,47 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
     setLocation(current => current?.path === tabs.active ? current : undefined);
     if (!tabs.active) setExpanded(false);
   };
+  const beginTreeAction = (action: FileTreeAction) => {
+    setOperationNotice(undefined);
+    setTreeName(action.action === 'rename' ? action.entry.name : '');
+    setTreeAction(action);
+  };
+  const cancelTreeAction = () => { setTreeAction(undefined); setOperationNotice(undefined); };
+  const submitTreeAction = () => {
+    if (!treeAction || operations.current) return;
+    const source = treeAction.action === 'create' ? undefined : treeAction.entry;
+    const directory = treeAction.action === 'create' ? treeAction.directory?.path ?? '' : workspaceFileParent(treeAction.entry.path);
+    const workspaceRoot = workspace.cwd.replaceAll('\\', '/');
+    const realDirectory = treeAction.action === 'create'
+      ? treeAction.directory?.realPath ?? joinFilePath(workspaceRoot, directory)
+      : treeAction.entry.realPath ? workspaceFileParent(treeAction.entry.realPath) : joinFilePath(workspaceRoot, directory);
+    const target: WorkspaceFilePath = { path: joinFilePath(directory, treeName), realPath: joinFilePath(realDirectory, treeName) };
+    const mutation: WorkspaceFileMutation = treeAction.action === 'create'
+      ? { action: 'create', directory, name: treeName, kind: treeAction.kind }
+      : treeAction.action === 'rename' ? { action: 'rename', path: treeAction.entry.path, kind: treeAction.entry.kind, name: treeName }
+      : { action: 'delete', path: treeAction.entry.path, kind: treeAction.entry.kind };
+
+    run('file-tree-mutation', async () => {
+      if ((source && fileDrafts.hasUnsettledAt(workspace.id, source))
+        || (mutation.action !== 'delete' && fileDrafts.hasUnsettledAt(workspace.id, target))) {
+        throw new Error(t('files.treeDraftBlocked'));
+      }
+      fileGeneration.current++;
+      try { await window.workbench.mutateWorkspaceFile(workspace.id, mutation); }
+      catch (failure) { void refresh().catch(() => {}); throw failure; }
+      if (source) {
+        for (const tab of tabs.open) {
+          const draft = fileDrafts.get(workspace.id, tab.path);
+          const identity = tab.kind === 'image' ? tab.image : draft?.original ?? tab;
+          if (matchesWorkspaceFile(source, identity, true) && !isDirty(draft) && !fileDrafts.isSaving(workspace.id, tab.path)) closeFile(tab.path);
+        }
+        if (diff && matchesWorkspaceFile(source, diff, true)) closeDiff();
+        setTreeChange({ oldPath: source.path, newPath: mutation.action === 'rename' ? target.path : undefined });
+      } else setTreeChange({ revealDirectory: directory });
+      setTreeAction(undefined);
+      await refresh();
+    });
+  };
 
   const request = navigation?.request;
   useEffect(() => {
@@ -346,6 +393,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
 
   useEffect(() => {
     setMissingDirectory(false); setGit(null); setTabs({ open: [], active: null }); setDiff(null); setLocation(undefined); setClosingTab(undefined);
+    setTreeAction(undefined); setTreeChange(undefined);
     setPreview(null); setReview(null); setNotes({ workspaceId: workspace.id, items: persistedNotes(workspace.id) });
     setNoteDrafts(new Map());
     return () => { directoryGeneration.current++; fileGeneration.current++; };
@@ -459,13 +507,13 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
         onPull={() => run('refresh', async () => { await refresh(); if (selected) await load(selected.path, selected.mode, true); })} />}
       {git?.available && <button className="review-text-button" disabled={!!busy || hasUnsavedFiles} onClick={() => run('preview', async () => setPreview(await window.workbench.gitCommitPreview(workspace.id)))}>{t('files.commitPreview')}</button>}
     </div>}
-    {!closingTab && !preview && noticeFeedback}
+    {!closingTab && !preview && !treeAction && noticeFeedback}
     {diskNotice && <OperationFeedback className="pane-note error-text" data-file-disk-status={diskStatus}>{renderDisplayText('', { key: diskNotice })}</OperationFeedback>}
     {busy && <OperationFeedback className="review-busy" state="progress">{t('files.processing')}</OperationFeedback>}
     <WorkspaceFileTree key={workspaceKey} workspaceId={workspace.id}
       workspaceKey={workspaceKey} entries={tree?.entries ?? emptyEntries} revision={tree?.revision ?? 0}
       hidden={view !== 'files' || missingDirectory} selectedPath={selected?.path}
-      onOpen={openFile} />
+      change={treeChange} actionsDisabled={!visible || operationBusy || !tree} onOpen={openFile} onAction={beginTreeAction} />
     {view === 'pr' && <section className="pr-review-body">
       {!review ? <p className="pane-note">{t('files.readPullRequest')}</p> : review.status !== 'ready' ? <p className="pane-note">{review.error}</p> : <>
         <div className="pr-review-summary"><span className="pr-review-icon"><GitPullRequest size={18} /></span>
@@ -552,10 +600,10 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
           : markdownPreview ? <MarkdownFilePreview text={draft} />
           : file && <CodeEditor ref={editor} key={`${workspace.id}:${file.path}`} value={draft} onChange={text => {
             fileDrafts.edit(workspace.id, file.path, text);
-          }} language={file.language} readOnly={operationBusy} wrapLines={editorPreferences.wrapLines} location={location} position={contentTab.position} />}
+          }} language={file.language} readOnly={operationBusy} wrapLines={editorPreferences.wrapLines} location={currentLocation} position={contentTab.position} />}
       </div>}
       {diff && <>
-        <DiffReview key={JSON.stringify([selected.path, diff.revision])} diff={diff} location={location} busy={busy} draft={noteDrafts.get(selected.path)}
+        <DiffReview key={JSON.stringify([selected.path, diff.revision])} diff={diff} location={currentLocation} busy={busy} draft={noteDrafts.get(selected.path)}
           onDraftChange={draft => updateNoteDraft(selected.path, () => draft)} onSave={addNote} />
         {diff.patch && diff.revision && !diff.truncated && git?.changes.some(change => change.path === selected.path && change.status[1] !== ' ' && change.status[1] !== '?') && <div className="review-discard">
           {discard === selected.path ? <><span>{t('files.discardQuestion')}</span><button className="danger" disabled={!!busy || hasUnsavedFiles} onClick={() => mutate({ action: 'discard', path: selected.path, revision: diff.revision })}>{t('files.confirmDiscard')}</button><button onClick={() => setDiscard(null)}>{t('common.cancel')}</button></> : <button disabled={hasUnsavedFiles} onClick={() => setDiscard(selected.path)}>{t('files.discard')}</button>}
@@ -563,6 +611,26 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
       </>}
     </section>}
     </div>
+    {treeAction && <Modal title={t(treeAction.action === 'create' ? (treeAction.kind === 'file' ? 'files.newFile' : 'files.newFolder')
+      : treeAction.action === 'rename' ? 'files.renameItem' : treeAction.entry.kind === 'file' ? 'files.deleteFile' : 'files.deleteFolder')}
+      subtitle={treeAction.action === 'create' ? treeAction.directory?.path ?? workspace.name : treeAction.entry.path}
+      className="workspace-tree-action-dialog" busy={operationBusy} onClose={cancelTreeAction}>
+      <form onSubmit={event => { event.preventDefault(); submitTreeAction(); }}>
+        {treeAction.action === 'delete'
+          ? <p>{t(treeAction.entry.kind === 'directory' ? 'files.deleteFolderPrompt' : 'files.deleteFilePrompt')}</p>
+          : <label className="workspace-tree-action-name">{t('files.itemName')}
+            <input autoFocus required maxLength={255} value={treeName} readOnly={operationBusy} onChange={event => setTreeName(event.target.value)} />
+          </label>}
+        {operationNotice && noticeFeedback}
+        <div className="modal-actions">
+          <button className="button" type="button" autoFocus={treeAction.action === 'delete'} disabled={operationBusy} onClick={cancelTreeAction}>{t('common.cancel')}</button>
+          <button className={`button ${treeAction.action === 'delete' ? 'danger' : 'primary'}`} type="submit"
+            disabled={operationBusy || (treeAction.action !== 'delete' && (!treeName.trim() || (treeAction.action === 'rename' && treeName === treeAction.entry.name)))}>
+            {t(treeAction.action === 'delete' ? 'files.deleteItem' : treeAction.action === 'rename' ? 'files.renameItem' : 'files.createItem')}
+          </button>
+        </div>
+      </form>
+    </Modal>}
     {closingTab && <Modal title={t('files.unsavedTitle')} subtitle={closingTab.path} busy={closingBusy}
       fallbackFocus={activeTabButton} onClose={() => { setOperationNotice(undefined); setClosingTab(undefined); }}>
       {!preview && noticeFeedback}

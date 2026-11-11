@@ -4,13 +4,15 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, open, opendir, realpath, rename, stat, unlink } from 'node:fs/promises';
+import { lstat, mkdir, open, opendir, realpath, rename, rm, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { TextDecoder } from 'node:util';
 import type { FileContent, FileDiff, FileEntry, FileImage, GitBranchChange, GitBranchComparison, GitCommitPreview, GitHistory, GitHistoryCommit, GitMutation, GitState, GitSyncRequest, GitSyncState,
   WorkspaceFileMatch, WorkspaceTextMatch, WorkspaceTextSearch } from '../shared/types';
 import { rasterImageMimeFromPath } from '../shared/raster-image';
+import { workspaceFileParent, type WorkspaceFileMutation } from '../shared/workspace-file-mutations';
 import { detectRasterImageMime } from './raster-image';
+import { renameExclusive } from './rename-exclusive';
 import { parsePorcelainV1Records, type PorcelainV1Record } from './vendor/orca/porcelain-v1-records';
 
 const FILE_LIMIT = 1024 * 1024;
@@ -34,6 +36,23 @@ function normalizedRelative(value: string): string {
     throw new Error('A workspace-relative path is required');
   }
   return value.split(path.sep).join('/');
+}
+
+const portablePath = (value: string) => value.split(path.sep).join('/');
+
+function mutationPath(value: string): string {
+  const relative = normalizedRelative(value);
+  if (relative.split('/').some(part => !part || part === '.' || part === '..' || part.toLowerCase() === '.git')) {
+    throw new Error('A workspace file or folder path is required');
+  }
+  return relative;
+}
+
+function mutationName(value: string): string {
+  if (!value.trim() || value === '.' || value === '..' || value.toLowerCase() === '.git' || /[/\\\0]/.test(value)) {
+    throw new Error('Enter one file or folder name');
+  }
+  return value;
 }
 
 async function workspaceRoot(cwd: string): Promise<string> {
@@ -123,7 +142,7 @@ async function serialized<T>(key: string, operation: () => Promise<T>): Promise<
 
 async function writablePath(root: string, relativePath: string, allowMissing = false): Promise<string> {
   const relative = normalizedRelative(relativePath);
-  if (!relative || relative.split('/').some(part => part === '.git')) throw new Error('A workspace file path is required');
+  if (!relative || relative.split('/').some(part => part.toLowerCase() === '.git')) throw new Error('A workspace file path is required');
   const target = await scopedPath(root, relative, allowMissing);
   if (target === root) throw new Error('A workspace file path is required');
   let current = root;
@@ -136,6 +155,19 @@ async function writablePath(root: string, relativePath: string, allowMissing = f
     }
   }
   return target;
+}
+
+async function validateMutableDirectory(directory: string): Promise<void> {
+  const pending = [directory];
+  while (pending.length) {
+    const parent = pending.pop()!;
+    for await (const entry of await opendir(parent)) {
+      if (entry.name.toLowerCase() === '.git') throw new Error('A folder containing Git metadata cannot be changed');
+      if (entry.isSymbolicLink()) throw new Error('A folder containing symbolic links cannot be changed from the file panel');
+      if (entry.isDirectory()) pending.push(path.join(parent, entry.name));
+      else if (!entry.isFile()) throw new Error('A folder containing special files cannot be changed');
+    }
+  }
 }
 
 async function mutationKey(root: string): Promise<string> {
@@ -382,13 +414,13 @@ export class WorkspaceFiles {
     let examined = 0;
     for await (const entry of reader) {
       if (++examined > ENTRY_LIMIT) throw new Error('Directory exceeds the 2000 entry limit');
-      if (entry.name === '.git') continue;
+      if (entry.name.toLowerCase() === '.git') continue;
       const filePath = path.join(relativePath, entry.name);
       try {
         const file = await scopedPath(root, filePath);
         const info = await stat(file);
         if (!info.isDirectory() && !info.isFile()) continue;
-        entries.push({ path: normalizedRelative(filePath), name: entry.name,
+        entries.push({ path: normalizedRelative(filePath), realPath: portablePath(file), name: entry.name,
           kind: info.isDirectory() ? 'directory' : 'file', size: info.size });
       } catch (error) {
         if (!entry.isSymbolicLink() && !['ENOENT', 'EACCES'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
@@ -401,7 +433,7 @@ export class WorkspaceFiles {
     const root = await workspaceRoot(cwd);
     const file = await scopedPath(root, relativePath);
     const contents = await textFile(file);
-    return { path: normalizedRelative(relativePath), ...contents, language: language(relativePath) };
+    return { path: normalizedRelative(relativePath), realPath: portablePath(file), ...contents, language: language(relativePath) };
   }
 
   async readImage(cwd: string, relativePath: string): Promise<FileImage> {
@@ -412,7 +444,34 @@ export class WorkspaceFiles {
     if (!mimeType) throw new Error('Image preview supports PNG, JPEG, GIF, and WebP');
     const { bytes, size, revision } = await fileBytes(file, IMAGE_FILE_LIMIT);
     if (detectRasterImageMime(bytes) !== mimeType) throw new Error('Image format does not match the file extension');
-    return { path: relative, base64: bytes.toString('base64'), size, mimeType, revision };
+    return { path: relative, realPath: portablePath(file), base64: bytes.toString('base64'), size, mimeType, revision };
+  }
+
+  async mutateFile(cwd: string, input: WorkspaceFileMutation): Promise<void> {
+    const root = await workspaceRoot(cwd);
+    return serialized(await mutationKey(root), async () => {
+      if (input.action === 'create') {
+        const parent = input.directory ? mutationPath(input.directory) : '';
+        const target = await writablePath(root, path.posix.join(parent, mutationName(input.name)), true);
+        if (input.kind === 'directory') await mkdir(target);
+        else await (await open(target, 'wx')).close();
+        return;
+      }
+
+      const relative = mutationPath(input.path);
+      const source = await writablePath(root, relative);
+      const info = await lstat(source);
+      if (input.kind === 'directory' ? !info.isDirectory() : !info.isFile()) {
+        throw new Error('The file or folder changed. Refresh the file tree and try again.');
+      }
+      if (info.isDirectory()) await validateMutableDirectory(source);
+      if (input.action === 'rename') {
+        const name = mutationName(input.name);
+        await writablePath(root, path.posix.join(workspaceFileParent(relative), name), true);
+        await renameExclusive(source, path.join(path.dirname(source), name));
+      } else if (info.isDirectory()) await rm(source, { recursive: true });
+      else await unlink(source);
+    });
   }
 
   async resolveFilePaths(cwd: string, relativePaths: string[]): Promise<string[]> {
