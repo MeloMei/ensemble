@@ -79,10 +79,11 @@ class CodexSessionConnection {
   }
 }
 
-export async function resolveCodexBinary(): Promise<string | null> {
+export async function resolveCodexBinary(managedBinary?: string): Promise<string | null> {
   const executable = process.platform === 'win32' ? 'codex.exe' : 'codex';
   const candidates = [
     process.env.CODEX_BINARY,
+    managedBinary,
     ...(process.env.PATH ?? '').split(delimiter).filter(Boolean).map(directory => join(directory, executable)),
     ...['/Applications', join(homedir(), 'Applications')].flatMap(directory => [
       join(directory, 'ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex'),
@@ -157,7 +158,7 @@ export interface CodexProvider extends ProviderAdapter {
   refreshInfo(): Promise<void>;
 }
 
-export async function createCodexProvider(): Promise<CodexProvider> {
+export async function createCodexProvider(findManagedBinary?: () => Promise<string | undefined>): Promise<CodexProvider> {
   let binary: string | null = null;
   let version = '';
   let detail = '没有找到 Codex CLI。安装后点击刷新，或设置 CODEX_BINARY。';
@@ -175,7 +176,7 @@ export async function createCodexProvider(): Promise<CodexProvider> {
     async refreshInfo() {
       let protocolReady: boolean | undefined;
       let catalogReady: boolean | undefined;
-      binary = await resolveCodexBinary();
+      binary = await resolveCodexBinary(await findManagedBinary?.());
       version = '';
       catalog = [];
       detail = '没有找到 Codex CLI。安装后点击刷新，或设置 CODEX_BINARY。';

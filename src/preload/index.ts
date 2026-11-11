@@ -112,6 +112,9 @@ const api: WorkbenchAPI = {
     return () => { ipcRenderer.removeListener('workbench:changed', receive); };
   },
   refreshProviders: () => ipcRenderer.invoke('workbench:refresh-providers'),
+  runtimeInstalls: () => ipcRenderer.invoke('workbench:runtime-installs'),
+  installRuntime: id => ipcRenderer.invoke('workbench:install-runtime', id),
+  cancelRuntimeInstall: id => ipcRenderer.invoke('workbench:cancel-runtime-install', id),
   chooseDirectory: () => ipcRenderer.invoke('workbench:choose-directory'),
   createSession: input => ipcRenderer.invoke('workbench:create-session', input),
   sessionLocations: workspaceId => ipcRenderer.invoke('workbench:session-locations', workspaceId),

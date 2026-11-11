@@ -4594,6 +4594,32 @@ const cases: Record<string, () => Promise<void>> = {
     await waitFor(() => Boolean(watched.length && watched.at(-1)?.length === 0), 'Closing retained history did not unsubscribe its session');
     assert(!document.querySelector('.chat-pane-readonly') && creations === 0 && openedTabs === 0 && sends === 0, 'Reading retained history created a workspace/tab or sent a prompt');
   },
+  'RUNTIME-INSTALL: missing runtime can install, cancel, retry and show detection': async () => {
+    const missing = { ...provider, id: 'codex', available: false };
+    const requests: string[] = [];
+    let done = deferred<void>();
+    let phase = 'idle';
+    window.workbench = {
+      providerHealth: async () => [missing],
+      runtimeInstalls: async () => [{ providerId: missing.id, packageName: '@openai/codex', manager: 'npm', prerequisiteMet: true, phase }],
+      installRuntime: async (id: string) => { requests.push(`install:${id}`); phase = 'installing'; await done.promise; },
+      cancelRuntimeInstall: async (id: string) => { requests.push(`cancel:${id}`); phase = 'cancelled'; done.resolve(); },
+    } as unknown as Window['workbench'];
+    const snapshot: Snapshot = { ...collaborationSnapshot([]), providers: [missing] };
+    await render(<ProvidersContent snapshot={snapshot} perform={perform} pending={new Set()} />);
+    const status = () => document.querySelector('.provider-install-action [role=status]')?.textContent;
+    await waitFor(() => Boolean(document.querySelector('.provider-install-action button')), 'The installer action did not load');
+    await click('shell:provider.installNow');
+    await waitFor(() => status() === translate('shell:provider.installPhase.installing'), 'The installation did not display progress');
+    await click('shell:provider.installCancel');
+    await waitFor(() => status() === translate('shell:provider.installPhase.cancelled'), 'Cancellation did not update the UI');
+    done = deferred<void>();
+    await click('shell:provider.installNow');
+    await waitFor(() => status() === translate('shell:provider.installPhase.installing'), 'The cancelled installation could not retry');
+    await act(async () => { phase = 'complete'; done.resolve(); await tick(); });
+    await waitFor(() => status() === translate('shell:provider.installPhase.complete'), 'Successful detection was not shown');
+    assert(requests.join(',') === 'install:codex,cancel:codex,install:codex', 'An operation ran for the wrong runtime or twice');
+  },
   'UI-12: health evidence stays scoped to the selected directory and entry detection is not sign-in': async () => {
     const first = deferred<ProviderInfo[]>(), second = deferred<ProviderInfo[]>();
     const other: Workspace = { ...workspace, id: 'other', name: 'Other', cwd: '/other' };

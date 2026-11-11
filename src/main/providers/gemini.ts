@@ -14,11 +14,11 @@ import type { AcpRuntimeDescriptor } from './acp-types';
 const execute = promisify(execFile);
 const sessionModes = { review: 'default', 'read-only': 'plan', 'full-access': 'default' } as const;
 
-export async function resolveGeminiBinary(): Promise<string | undefined> {
+export async function resolveGeminiBinary(managedBinary?: string): Promise<string | undefined> {
   const name = process.platform === 'win32' ? 'gemini.cmd' : 'gemini';
   const nvmRoot = join(homedir(), '.nvm', 'versions', 'node');
   const versions = await readdir(nvmRoot).catch(() => [] as string[]);
-  const candidates = [process.env.GEMINI_BINARY,
+  const candidates = [process.env.GEMINI_BINARY, managedBinary,
     ...(process.env.PATH ?? '').split(delimiter).filter(Boolean).map(directory => join(directory, name)),
     join(homedir(), '.local', 'bin', name), join('/opt/homebrew/bin', name), join('/usr/local/bin', name),
     ...versions.sort((a, b) => b.localeCompare(a, undefined, { numeric: true })).map(version => join(nvmRoot, version, 'bin', name))];
@@ -72,9 +72,10 @@ function requireUnambiguousMcpNames(servers: McpServerConfig[]): void {
 export async function createGeminiDescriptor(options: {
   dataPath: string;
   binary?: string;
+  managedBinary?: string;
   systemPoliciesPath?: string;
 }): Promise<AcpRuntimeDescriptor> {
-  const command = options.binary ?? await resolveGeminiBinary();
+  const command = options.binary ?? await resolveGeminiBinary(options.managedBinary);
   if (!command) throw new Error('没有找到 Gemini CLI。请安装官方 Gemini CLI 后刷新，或设置 GEMINI_BINARY。');
   const env = { ...process.env, PATH: `${dirname(command)}${delimiter}${process.env.PATH ?? ''}` };
   const [versionResult, help] = await Promise.all([

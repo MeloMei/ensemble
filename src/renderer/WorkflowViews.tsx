@@ -11,6 +11,7 @@ import type { ProviderInfo, Session, Snapshot, Workflow, WorkflowInput, Workflow
 import { DirectoryField, IconButton, ModelField, ProviderSelect, Status, defaultModelId, statusLabel, modelName, modelPolicy, validModelSelection, usesCliModelDefault, type Perform } from './ui';
 import { motionMessageFadeUp } from './vendor/open-claude-ui/ClaudeMotionPresets';
 import { RuntimeHealth, useRuntimeHealth } from './RuntimeHealth';
+import { RuntimeInstallAction, useRuntimeInstalls } from './RuntimeInstall';
 import { ExecutionGraph, graphNode, edgeFor, type GraphSelection } from './ExecutionGraph';
 import { copyGraphView } from './graph-view-state';
 import { workflowDependencies, setWorkflowDependency, removeWorkflowDependency, removeWorkflowStep, type WorkflowDependency } from './workflow-graph';
@@ -295,6 +296,7 @@ export function ProvidersContent({ snapshot, perform, pending }: ProvidersProps)
   const { t: runtimeText } = useTranslation('runtime');
   const reducedMotion = useReducedMotion();
   const [directory, setDirectory] = useState('');
+  const runtimeInstalls = useRuntimeInstalls(perform);
   const cwd = snapshot.workspaces.some(workspace => !workspace.archived && workspace.cwd === directory) ? directory : '';
   const health = useRuntimeHealth(snapshot.providers, cwd);
   const available = health.providers.filter(provider => provider.available).length;
@@ -307,13 +309,17 @@ export function ProvidersContent({ snapshot, perform, pending }: ProvidersProps)
       <button className="button" disabled={pending.has('refresh-providers') || health.loading} onClick={() => void perform('refresh-providers', health.refresh)}><RefreshCw className={pending.has('refresh-providers') ? 'spin' : ''} size={14} />{t('provider.refresh')}</button>
     </div>
     {health.error && <p className="runtime-panel-error" role="alert">{health.error}</p>}
-    <div className="provider-cards">{health.providers.map(provider => <motion.article className={`provider-card ${!provider.available ? 'unavailable' : ''}`} key={provider.id} variants={motionMessageFadeUp} initial={reducedMotion ? false : 'initial'} animate="animate">
+    <div className="provider-cards">{health.providers.map(provider => {
+      const install = runtimeInstalls.installs.find(item => item.providerId === provider.id);
+      return <motion.article className={`provider-card ${!provider.available ? 'unavailable' : ''}`} key={provider.id} variants={motionMessageFadeUp} initial={reducedMotion ? false : 'initial'} animate="animate">
       <div className="provider-card-heading"><div className="provider-icon"><AgentIcon providerId={provider.id} size={18} /></div><div><h2>{provider.name}</h2><span>{provider.source === 'plugin' ? t('provider.plugin') : t('provider.builtin')}</span></div><span className={`availability ${provider.available ? 'available' : ''}`}><span />{provider.available ? t('provider.entryFound') : t('provider.notReady')}</span></div>
       <p className="provider-detail">{renderDisplayText(provider.detail, provider.detailI18n)}</p><ProviderModelSummary provider={provider} />
       <div className="provider-capabilities"><span className={provider.capabilities.resume ? 'supported' : ''}>{provider.capabilities.resume ? <Check size={13} /> : <X size={13} />}{t('provider.continueSession')}{!provider.capabilities.resume && t('provider.unsupportedSuffix')}</span><span className={provider.capabilities.approvals ? 'supported' : ''}><ShieldCheck size={13} />{t('provider.approvals')}{!provider.capabilities.approvals && t('provider.unsupportedSuffix')}</span></div>
       <RuntimeHealth provider={provider} loading={health.loading} />
+      {install && <RuntimeInstallAction state={install} available={provider.available} busy={runtimeInstalls.busy}
+        install={() => runtimeInstalls.install(provider.id)} cancel={() => runtimeInstalls.cancel(provider.id)} />}
       <ProviderGuides provider={provider} />
-    </motion.article>)}</div>
+    </motion.article>; })}</div>
     <div className="plugin-section">
       <div className="plugin-section-heading"><div><h2><Plug size={18} />{t('provider.plugin')}</h2><p>{t('provider.pluginsNote')}</p></div><button className="button" onClick={() => void perform('open-plugins', () => window.workbench.openPluginDirectory())}><FolderOpen size={14} />{t('provider.openPluginDirectory')}</button></div>
       <code className="path-display">{snapshot.pluginPath}</code>
