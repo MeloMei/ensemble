@@ -28,6 +28,11 @@ function storedIntent(key: string): CommandIntent | undefined {
 
 function currentIntent(key: string): CommandIntent | undefined { return intents.get(key) ?? storedIntent(key); }
 
+function remember(key: string, intent: CommandIntent): void {
+  intents.set(key, intent);
+  try { localStorage.setItem(key, JSON.stringify(intent)); } catch { /* The in-memory intent survives storage limits. */ }
+}
+
 function retire(key: string, commandId: string): void {
   if (intents.get(key)?.commandId === commandId) intents.delete(key);
   try { if (storedIntent(key)?.commandId === commandId) localStorage.removeItem(key); }
@@ -97,7 +102,8 @@ export async function recoverSessionCommands(): Promise<void> {
     }
   } catch { /* Active calls can recover without storage access. */ }
   await Promise.all([...executions.values()].map(execution => recoverExecution(execution)).concat(
-    [...intents].filter(([, intent]) => !executions.has(intent.commandId)).map(([key, intent]) => recoverOrphan(key, intent))));
+    [...intents].filter(([key, intent]) => key.startsWith(storagePrefix) && !executions.has(intent.commandId))
+      .map(([key, intent]) => recoverOrphan(key, intent))));
 }
 
 export async function runSessionCommand<T>(scope: string, input: unknown, operation: (commandId: string) => Promise<T>): Promise<T> {
@@ -120,14 +126,23 @@ export async function runSessionCommand<T>(scope: string, input: unknown, operat
   let resolve!: (result: unknown) => void, reject!: (error: unknown) => void;
   const promise = new Promise<unknown>((accept, fail) => { resolve = accept; reject = fail; });
   const execution: CommandExecution = { key, intent, operation, promise, resolve, reject, failed: false, completed: false, waiting: true, blocked: false };
-  intents.set(key, intent); executions.set(intent.commandId, execution);
-  try { localStorage.setItem(key, JSON.stringify(intent)); } catch { /* The in-memory intent survives storage limits. */ }
+  remember(key, intent); executions.set(intent.commandId, execution);
   void Promise.resolve().then(() => operation(intent.commandId)).then(result => succeed(execution, result), error => {
     if (execution.completed) return;
     if (error instanceof SessionCommandRejectedError) { rejectKnown(execution, error); return; }
     execution.failed = true; execution.error = error; void recoverExecution(execution);
   });
   return promise as Promise<T>;
+}
+
+export async function runRemoteSessionCommand<T>(deviceId: string, input: unknown, operation: (commandId: string) => Promise<T>): Promise<T> {
+  const signature = await fingerprint(input);
+  const key = `ensemble:remote-command:${deviceId}:${signature}`;
+  const intent = currentIntent(key) ?? { fingerprint: signature, commandId: crypto.randomUUID() };
+  remember(key, intent);
+  const result = await operation(intent.commandId);
+  retire(key, intent.commandId);
+  return result;
 }
 
 export function promptCommandInput(input: PromptInput): PromptInput {

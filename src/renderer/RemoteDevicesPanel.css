@@ -1,0 +1,10 @@
+.remote-devices-panel, .remote-device-form, .remote-session { display: grid; gap: 12px; min-width: 0; }
+.remote-device-controls, .remote-session > header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.remote-device-form label { display: grid; gap: 4px; }
+.remote-device-form input, .remote-message-form textarea { width: 100%; }
+.remote-session > header h4, .remote-session-messages p { margin: 0; }
+.remote-session-messages { max-height: 320px; overflow: auto; display: grid; gap: 12px; }
+.remote-session-messages p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.remote-message-form { display: grid; gap: 8px; justify-items: end; }
+.remote-message-form textarea { min-height: 64px; resize: vertical; }
+.remote-device-status { margin: 0; color: var(--muted); }

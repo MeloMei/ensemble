@@ -39,6 +39,10 @@ ipcRenderer.on('workbench:prepare-close', (_event, requestId: string, intent?: '
 });
 
 const api: WorkbenchAPI = {
+  listRemoteDevices: () => ipcRenderer.invoke('workbench:list-remote-devices'),
+  saveRemoteDevice: input => ipcRenderer.invoke('workbench:save-remote-device', input),
+  removeRemoteDevice: id => ipcRenderer.invoke('workbench:remove-remote-device', id),
+  remoteDeviceRequest: (id, input) => ipcRenderer.invoke('workbench:remote-device-request', id, input),
   getApplicationUpdate: () => ipcRenderer.invoke('workbench:application-update'),
   checkApplicationUpdate: () => ipcRenderer.invoke('workbench:check-application-update'),
   downloadApplicationUpdate: () => ipcRenderer.invoke('workbench:download-application-update'),

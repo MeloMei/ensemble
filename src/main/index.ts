@@ -21,6 +21,7 @@ import { captureWindow, WINDOW_CAPTURE_SHORTCUT } from './window-capture';
 import { EmbeddedBrowsers, browserBoundsSchema, browserCommandSchema } from './embedded-browser';
 import { Dictation, dictationHelperPath } from './dictation';
 import { dictationLanguages } from '../shared/dictation';
+import { RemoteDevices } from './remote-devices';
 
 app.setName(PRODUCT_NAME);
 app.setPath('userData', process.env.WORKBENCH_DATA_DIR ?? join(app.getPath('appData'), DATA_DIRECTORY_NAME));
@@ -39,6 +40,7 @@ let quitting = false;
 let updatesDisposed = false;
 let notifications: WorkbenchNotifications;
 const preferences = new DesktopPreferences(app.getPath('userData'));
+const remoteDevices = new RemoteDevices(app.getPath('userData'));
 const attachments = new AttachmentService(join(app.getPath('userData'), 'attachments'));
 let languageState: LanguageState;
 let languageUpdates: Promise<void> = Promise.resolve();
@@ -179,6 +181,10 @@ function registerIPC(commands: string[]): void {
   handle('workbench:browser-layout', (id, bounds) => browsers?.layout(browserIdSchema.parse(id), browserBoundsSchema.parse(bounds)));
   handle('workbench:browser-command', (id, command) => browsers?.command(browserIdSchema.parse(id), browserCommandSchema.parse(command)) ?? false);
   handle('workbench:get-connection', () => connection.current);
+  handle('workbench:list-remote-devices', () => remoteDevices.list());
+  handle('workbench:save-remote-device', input => remoteDevices.save(input));
+  handle('workbench:remove-remote-device', id => remoteDevices.remove(id));
+  handle('workbench:remote-device-request', (id, input) => remoteDevices.request(id, input));
   handle('workbench:watch-sessions', async input => {
     watchedSessions = z.array(z.string().min(1).max(200)).max(8).parse(input);
     await backend.watchSessions(watchedSessions);

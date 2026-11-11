@@ -1,5 +1,6 @@
 import type { DictationError, DictationEvent, DictationLanguage, DictationStatus } from './dictation';
 import type { CollaborationEvent, CollaborationState, CollaborationIdentity, SessionCollaboration } from './collaboration';
+import type { RemoteDevice, RemoteDeviceInput, RemoteDeviceSnapshot, RemoteRequest } from './remote-devices';
 import type { LanguagePreference, LanguageState } from './i18n';
 import type { DisplayText } from './display-text';
 import type { BackendConnectionState, SessionHistoryPage, TerminalOutputEvent } from './backend';
@@ -362,6 +363,10 @@ export interface Snapshot {
 export interface UnsavedFileSummary { count: number; names: string[] }
 
 export interface WorkbenchAPI {
+  listRemoteDevices(): Promise<RemoteDevice[]>;
+  saveRemoteDevice(input: RemoteDeviceInput & { id?: string }): Promise<RemoteDevice[]>;
+  removeRemoteDevice(id: string): Promise<RemoteDevice[]>;
+  remoteDeviceRequest(id: string, request: RemoteRequest): Promise<RemoteDeviceSnapshot | undefined>;
   getApplicationUpdate(): Promise<AppUpdateState>;
   checkApplicationUpdate(): Promise<AppUpdateState>;
   downloadApplicationUpdate(): Promise<AppUpdateState>;

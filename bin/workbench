@@ -1,8 +1,20 @@
 #!/bin/sh
 set -eu
 workbench_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+if [ -n "${WORKBENCH_NODE:-}" ]; then
+  exec "$WORKBENCH_NODE" "$workbench_root/dist/main/cli.js" "$@"
+fi
 workbench_runtime="$workbench_root/../../MacOS/Ensemble"
 if [ -x "$workbench_runtime" ]; then
   exec env ELECTRON_RUN_AS_NODE=1 "$workbench_runtime" "$workbench_root/dist/main/cli.js" "$@"
 fi
-exec node "$workbench_root/dist/main/cli.js" "$@"
+if command -v node >/dev/null 2>&1; then
+  exec node "$workbench_root/dist/main/cli.js" "$@"
+fi
+for workbench_node in /opt/homebrew/bin/node /usr/local/bin/node; do
+  if [ -x "$workbench_node" ]; then
+    exec "$workbench_node" "$workbench_root/dist/main/cli.js" "$@"
+  fi
+done
+printf '%s\n' 'Node.js not found. Set WORKBENCH_NODE to the absolute path to Node.js 22.22 or later.' >&2
+exit 127
