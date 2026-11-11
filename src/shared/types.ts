@@ -116,6 +116,10 @@ export interface GitState { available: boolean; branch: string; changes: GitChan
 export interface GitBranchComparison {
   targetRef: string; targetSha: string; mergeBase: string; headSha: string; patch: string; truncated: boolean;
 }
+export interface GitHistoryCommit {
+  sha: string; parents: string[]; subject: string; author: string; authoredAt: string; refs: string;
+}
+export interface GitHistory { commits: GitHistoryCommit[]; limited: boolean }
 export interface FileDiff { path: string; patch: string; binary: boolean; truncated: boolean; revision?: string }
 
 export interface AgentMessageSource { sessionId: string; title: string; providerId: string; reply?: true }
@@ -365,6 +369,9 @@ export interface WorkbenchAPI {
   gitState(workspaceId: string): Promise<GitState>;
   gitBranchRefs(workspaceId: string): Promise<string[]>;
   gitBranchComparison(workspaceId: string, targetRef: string): Promise<GitBranchComparison>;
+  gitHistory(workspaceId: string, query: string, allBranches: boolean, limit: number): Promise<GitHistory>;
+  gitCommitFiles(workspaceId: string, sha: string): Promise<string[]>;
+  gitCommitDiff(workspaceId: string, sha: string, path: string): Promise<FileDiff>;
   fileDiff(workspaceId: string, relativePath: string): Promise<FileDiff>;
   chooseAttachments(): Promise<PromptAttachment[]>;
   importDroppedAttachments(files: File[]): Promise<PromptAttachment[] | null>;

@@ -388,6 +388,10 @@ export async function createWorkbenchService(options: {
     handle('workbench:git-branch-refs', (_event, id) => workspaceFiles.gitBranchRefs(workspaceCwd(id)));
     handle('workbench:git-branch-comparison', (_event, id, targetRef) =>
       workspaceFiles.gitBranchComparison(workspaceCwd(id), z.string().min(1).max(4096).parse(targetRef)));
+    handle('workbench:git-history', (_event, id, query, allBranches, limit) =>
+      workspaceFiles.gitHistory(workspaceCwd(id), z.string().trim().max(256).parse(query), z.boolean().parse(allBranches), z.number().int().min(1).max(500).parse(limit)));
+    handle('workbench:git-commit-files', (_event, id, sha) => workspaceFiles.gitCommitFiles(workspaceCwd(id), idSchema.parse(sha)));
+    handle('workbench:git-commit-diff', (_event, id, sha, path) => workspaceFiles.gitCommitDiff(workspaceCwd(id), idSchema.parse(sha), cwdSchema.parse(path)));
     handle('workbench:write-file', (_event, id, input) => workspaceFiles.write(workspaceCwd(id), z.object({ path: cwdSchema, content: z.string().max(1_048_576), revision: idSchema }).strict().parse(input)));
     handle('workbench:git-mutate', (_event, id, input) => {
       const cwd = workspaceCwd(id);
