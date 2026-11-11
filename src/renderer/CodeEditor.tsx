@@ -1,13 +1,15 @@
 import { useTranslation } from 'react-i18next';
-import { useEffect, useImperativeHandle, useRef, type Ref } from 'react';
-import { Annotation, Compartment, EditorSelection, EditorState, Transaction } from '@codemirror/state';
+import { useEffect, useImperativeHandle, useLayoutEffect, useRef, type Ref } from 'react';
+import { Annotation, Compartment, EditorSelection, EditorState, Text, Transaction } from '@codemirror/state';
 import { EditorView, drawSelection, highlightActiveLine, keymap, lineNumbers, runScopeHandlers, type Panel } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
+import { diff } from '@codemirror/merge';
 import { SearchQuery, closeSearchPanel, findNext, findPrevious, getSearchQuery, openSearchPanel, search, searchKeymap, setSearchQuery } from '@codemirror/search';
 import { useAppearance } from './appearance';
 import type { FileReference } from './workspace-file-reference';
 
 const remoteUpdate = Annotation.define<boolean>();
+const lineSeparator = (value: string) => value.includes('\r\n') ? '\r\n' : value.includes('\r') ? '\r' : '\n';
 const findKeymap = searchKeymap.filter(binding => binding.scope === 'editor search-panel');
 const editorTheme = (dark: boolean) => EditorView.theme({
   '&': { height: '100%', fontSize: 'var(--code-font-size)', backgroundColor: 'var(--editor-bg)', color: 'var(--text)' },
@@ -86,7 +88,7 @@ function fileFindPanel(view: EditorView): Panel {
   };
 }
 
-export interface CodeEditorHandle { find(): void }
+export interface CodeEditorHandle { find(): void; isComposing(): boolean }
 
 export function CodeEditor({ value, onChange, readOnly = false, wrapLines = false, language = 'text', location, ref }: {
   value: string; onChange(value: string): void; readOnly?: boolean; wrapLines?: boolean; language?: string; location?: FileReference;
@@ -100,6 +102,7 @@ export function CodeEditor({ value, onChange, readOnly = false, wrapLines = fals
   const appearance = useRef(new Compartment());
   const accessibility = useRef(new Compartment());
   const wrapping = useRef(new Compartment());
+  const lineEndings = useRef(new Compartment());
   const editorAccessibility = () => [
     EditorView.contentAttributes.of({ 'aria-label': t('editor.label', { language }), spellcheck: 'false' }),
     EditorState.phrases.of({
@@ -110,19 +113,22 @@ export function CodeEditor({ value, onChange, readOnly = false, wrapLines = fals
   ];
   const changed = useRef(onChange); changed.current = onChange;
   const initial = useRef(value);
-  useImperativeHandle(ref, () => ({ find() { if (editor.current) openSearchPanel(editor.current); } }), []);
+  useImperativeHandle(ref, () => ({
+    find() { if (editor.current) openSearchPanel(editor.current); },
+    isComposing() { return editor.current?.composing ?? false; },
+  }), []);
   useEffect(() => {
     if (!host.current) return;
-    const separator = initial.current.includes('\r\n') ? '\r\n' : initial.current.includes('\r') ? '\r' : '\n';
+    const separator = lineSeparator(initial.current);
     const view = new EditorView({ parent: host.current, state: EditorState.create({
       doc: initial.current,
       extensions: [lineNumbers(), highlightActiveLine(), drawSelection(), history(), search({ createPanel: fileFindPanel }),
         keymap.of([...findKeymap, ...defaultKeymap, ...historyKeymap]), appearance.current.of(editorTheme(theme === 'dark')),
-        EditorState.lineSeparator.of(separator), permission.current.of([EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)]),
+        lineEndings.current.of(EditorState.lineSeparator.of(separator)), permission.current.of([EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)]),
         accessibility.current.of(editorAccessibility()), wrapping.current.of(wrapLines ? EditorView.lineWrapping : []),
         EditorView.updateListener.of(update => {
           if (update.docChanged && !update.transactions.some(transaction => transaction.annotation(remoteUpdate))) {
-            changed.current(update.state.doc.sliceString(0, undefined, separator));
+            changed.current(update.state.sliceDoc());
           }
         })],
     }) });
@@ -142,10 +148,21 @@ export function CodeEditor({ value, onChange, readOnly = false, wrapLines = fals
   useEffect(() => {
     editor.current?.dispatch({ effects: wrapping.current.reconfigure(wrapLines ? EditorView.lineWrapping : []) });
   }, [wrapLines]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const view = editor.current;
-    if (!view || view.state.doc.eq(view.state.toText(value))) return;
-    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value },
+    if (!view) return;
+    const { state } = view;
+    const separator = lineSeparator(value);
+    if (state.lineBreak === separator && state.sliceDoc() === value) return;
+    const next = Text.of(value.split(separator));
+    const changes = state.changes(diff(state.doc.toString(), next.toString(), { scanLimit: 500, timeout: 20 })
+      .map(change => ({ from: change.fromA, to: change.toA, insert: next.slice(change.fromB, change.toB) })));
+    const effects = state.lineBreak === separator ? [] : [lineEndings.current.reconfigure(EditorState.lineSeparator.of(separator))];
+    if (!changes.empty) {
+      const scroll = view.scrollSnapshot().map(changes);
+      if (scroll) effects.push(scroll);
+    }
+    view.dispatch({ changes, effects,
       annotations: [remoteUpdate.of(true), Transaction.addToHistory.of(false)] });
   }, [value]);
   useEffect(() => {

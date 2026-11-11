@@ -685,7 +685,7 @@ export function App() {
               void perform('split', () => window.workbench.splitWorkspace(workspace.id, { ...split, expectedLayout: { activeTabId: draggedTab!.activeTabId, secondaryTabId: draggedTab!.secondaryTabId } }));
             }} />
         </div><WorkspaceFilePane id={filePane.id} visible={filePane.visible} width={filePane.width} limit={filePane.limit} onResize={filePane.rememberWidth}>
-          <FileReviewPanel key={JSON.stringify([workspace.id, workspace.cwd])} workspace={workspace} onEditProject={connected ? () => projectManagement.open(workspace, 'edit') : undefined} refreshKey={refreshKey} perform={perform} sessions={sessions} onFeedback={activeSession ? text => { const draft = currentDrafts.current[activeSession.id] ?? activeSession.draft ?? { text: '' }; updateDraft(activeSession.id, { ...draft, text: [draft.text, text].filter(Boolean).join('\n\n') }); } : undefined} />
+          <FileReviewPanel key={JSON.stringify([workspace.id, workspace.cwd])} workspace={workspace} visible={filePane.visible && connected} onEditProject={connected ? () => projectManagement.open(workspace, 'edit') : undefined} refreshKey={refreshKey} perform={perform} sessions={sessions} onFeedback={activeSession ? text => { const draft = currentDrafts.current[activeSession.id] ?? activeSession.draft ?? { text: '' }; updateDraft(activeSession.id, { ...draft, text: [draft.text, text].filter(Boolean).join('\n\n') }); } : undefined} />
         </WorkspaceFilePane></div> : <FirstTask providers={providers} connected={connected} perform={perform} pending={pending} />)}
         {page === 'attention' && <SessionAttentionInbox sessions={sessions} workspaces={snapshot.workspaces} pending={pending}
           openSession={id => openSession(id, false, true)} />}
