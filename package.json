@@ -34,6 +34,7 @@
     "extract-zip": "2.0.1",
     "framer-motion": "11.18.2",
     "i18next": "26.5.4",
+    "koffi": "3.3.7",
     "lucide-react": "^0.468.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

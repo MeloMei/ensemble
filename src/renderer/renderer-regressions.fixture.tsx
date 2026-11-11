@@ -7,7 +7,8 @@ import { I18nextProvider } from 'react-i18next';
 import { MotionConfig, MotionConfigContext } from 'framer-motion';
 import { EditorView } from '@codemirror/view';
 import { i18n, translate } from '../shared/i18n';
-import type { DiagnosticEntry, FileContent, FileImage, McpSettingsView, Message, PromptInput, ProviderInfo, Session, Snapshot, UnsavedFileSummary, Workflow, WorkflowInput, Workspace, WorkspaceManagement } from '../shared/types';
+import type { DiagnosticEntry, FileContent, FileEntry, FileImage, McpSettingsView, Message, PromptInput, ProviderInfo, Session, Snapshot, UnsavedFileSummary, Workflow, WorkflowInput, Workspace, WorkspaceManagement } from '../shared/types';
+import { pathContainsFile, workspaceFileParent, type WorkspaceFileMutation } from '../shared/workspace-file-mutations';
 import type { BackendConnectionState, SessionHistoryWindow } from '../shared/backend';
 import { SESSION_PERMISSION_TIERS, type SessionPermission } from '../shared/session-permissions';
 import { SettingsDialog } from './SettingsDialog';
@@ -2397,7 +2398,7 @@ const cases: Record<string, () => Promise<void>> = {
     await clickRow('src/lib');
     await waitFor(() => Boolean(row(target)), 'Expanding the nested folder did not load its files');
     const scroller = document.querySelector<HTMLElement>('.workspace-tree-scroll')!;
-    const region = row('src')!.nextElementSibling!;
+    const region = row('src')!.parentElement!.nextElementSibling!;
     if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
       assert(getComputedStyle(region).transitionDuration === '0s', 'Reduced motion left a tree animation enabled');
     } else {
@@ -2416,7 +2417,7 @@ const cases: Record<string, () => Promise<void>> = {
       return document.elementFromPoint(nested.left + 20, nested.top + 12)?.closest('button') === row('src/lib');
     }, 'A pinned folder could not be clicked after the expand animation');
     await act(async () => { scroller.style.flex = '0 0 75px'; await tick(); });
-    assert(getComputedStyle(row('src')!).position === 'sticky' && getComputedStyle(row('src/lib')!).position === 'static', 'Pinned ancestors filled the whole tree in a short file inspector');
+    assert(getComputedStyle(row('src')!.parentElement!).position === 'sticky' && getComputedStyle(row('src/lib')!.parentElement!).position === 'static', 'Pinned ancestors filled the whole tree in a short file inspector');
     await act(async () => { scroller.style.removeProperty('flex'); await tick(); });
     await clickRow('src/lib');
     assert(!open('src/lib'), 'Clicking a pinned ancestor did not collapse its contents');
@@ -2448,6 +2449,108 @@ const cases: Record<string, () => Promise<void>> = {
     await show(workspace);
     await waitFor(() => open('src/lib') && Boolean(row(target)), 'Returning to the workspace lost its expanded paths');
     assert(opened.length === 1, 'Restoring the tree reopened a file without a click');
+  },
+  'FILE-TREE-ACTIONS: menus change only the confirmed path and preserve independent tabs': async () => {
+    const project = { ...workspace, id: 'file-tree-actions', cwd: '/fixture-tree-actions' };
+    const src = 'source', child = 'source/child.txt', alias = 'alias.txt', keep = 'keep.txt';
+    const make = (path: string, kind: FileEntry['kind'], realPath = path): FileEntry =>
+      ({ path, kind, name: path.split('/').at(-1)!, size: 0, realPath: `${project.cwd}/${realPath}` });
+    const files = new Map([
+      [src, make(src, 'directory')], [child, make(child, 'file')], [alias, make(alias, 'file', child)], [keep, make(keep, 'file')],
+    ]);
+    let failDelete = true;
+    const mutations: WorkspaceFileMutation[] = [];
+    const reads: string[] = [];
+    window.workbench = {
+      listFiles: async (_id: string, directory: string) => {
+        reads.push(directory);
+        return [...files.values()].filter(entry => workspaceFileParent(entry.path) === directory);
+      },
+      gitState: async () => ({ available: false }),
+      readFile: async (_id: string, path: string) => {
+        const entry = files.get(path);
+        return entry ? { path, realPath: entry.realPath, content: 'disk content', language: 'text', size: 12, revision: path } : null;
+      },
+      mutateWorkspaceFile: async (_id: string, mutation: WorkspaceFileMutation) => {
+        mutations.push(mutation);
+        if (mutation.action === 'create') {
+          const path = mutation.directory ? `${mutation.directory}/${mutation.name}` : mutation.name;
+          files.set(path, make(path, mutation.kind));
+          return;
+        }
+        if (mutation.action === 'delete' && failDelete) { failDelete = false; throw new Error('EACCES fixture'); }
+        const parent = workspaceFileParent(mutation.path);
+        const target = mutation.action === 'rename' ? (parent ? `${parent}/${mutation.name}` : mutation.name) : undefined;
+        if (target && files.has(target)) throw new Error('An item with that name already exists');
+        for (const [path, entry] of [...files]) if (pathContainsFile(mutation.path, path)) {
+          files.delete(path);
+          if (target) {
+            const renamed = target + path.slice(mutation.path.length);
+            files.set(renamed, make(renamed, entry.kind));
+          }
+        }
+        files.delete(alias);
+      },
+      setUnsavedFiles: () => {},
+    } as unknown as Window['workbench'];
+    const row = (path: string) => document.querySelector<HTMLButtonElement>(`.workspace-tree-scroll .tree-row[title="${path}"]`);
+    const tab = (path: string) => document.querySelector<HTMLButtonElement>(`.file-editor-tabs [role=tab][title="${path}"]`);
+    const open = (path: string) => act(async () => { row(path)?.click(); await tick(); });
+    const action = async (id: string, path?: string) => {
+      await click(path ? `Actions for ${path}` : 'workspace:files.rootActions');
+      const menu = document.querySelector<HTMLButtonElement>(`.row-actions-menu:popover-open [data-action="${id}"]`);
+      assert(menu, `The open file menu has no ${id} action`);
+      await act(async () => { menu.click(); await tick(); });
+    };
+    const dialog = () => document.querySelector('dialog[open]');
+    const submit = () => act(async () => { dialog()?.querySelector<HTMLButtonElement>('button[type=submit]')?.click(); await tick(); });
+    const name = (value: string) => change(input('dialog input'), value);
+    const cancel = () => click('workspace:common.cancel');
+
+    await render(<div style={{ display: 'flex', width: 380, height: 540 }}><FileReviewPanel workspace={project} refreshKey="tree-actions" perform={perform} /></div>);
+    await action('create-directory');
+    await name('assets'); await submit();
+    await waitFor(() => !!row('assets'), 'The root folder was not created');
+    await action('create-file', 'assets');
+    await name('picture.txt'); await submit();
+    await waitFor(() => row('assets')?.getAttribute('aria-expanded') === 'true' && !!row('assets/picture.txt'), 'Creating a file did not reveal it in the target folder');
+
+    await open(src);
+    await waitFor(() => !!row(child), 'The source directory did not expand');
+    await open(keep);
+    await open(child);
+    await open(alias);
+    await change(input('[data-test-editor]'), 'unsaved through alias');
+    const beforeBlocked = mutations.length;
+    await action('rename', src);
+    await name('renamed'); await submit();
+    assert(mutations.length === beforeBlocked && dialog()?.querySelector('[role=alert]')?.textContent === translate('workspace:files.treeDraftBlocked')
+      && input('[data-test-editor]').value === 'unsaved through alias', 'A folder rename ignored an unsaved draft that resolves inside it');
+    await cancel();
+    await change(input('[data-test-editor]'), 'disk content');
+
+    await action('rename', src);
+    await name('assets'); await submit();
+    assert(dialog()?.querySelector('[role=alert]')?.textContent === 'An item with that name already exists' && tab(child) && tab(alias),
+      'A failed rename closed tabs or left no way to retry');
+    await name('renamed'); await submit();
+    await waitFor(() => !!row('renamed/child.txt'), 'Renaming a folder lost its expansion');
+    assert(!tab(child) && !tab(alias) && tab(keep)?.getAttribute('aria-selected') === 'true'
+      && row('assets')?.getAttribute('aria-expanded') === 'true' && reads.includes('assets'),
+    'Renaming did not close the affected clean tabs or preserve unrelated selection');
+
+    await action('remove', 'renamed');
+    assert(dialog()?.getAttribute('aria-label') === translate('workspace:files.deleteFolder') && dialog()?.textContent?.includes('renamed'),
+      'Delete confirmation omitted the exact folder');
+    const beforeCancel = mutations.length;
+    await cancel();
+    assert(mutations.length === beforeCancel && row('renamed'), 'Cancelling delete still changed the folder');
+    await action('remove', 'renamed');
+    await submit();
+    assert(dialog()?.querySelector('[role=alert]')?.textContent === 'EACCES fixture' && row('renamed'), 'A filesystem error lost the deletion dialog or hid the folder');
+    await submit();
+    await waitFor(() => !row('renamed') && !dialog(), 'Retrying the confirmed deletion did not remove the folder');
+    assert(tab(keep)?.getAttribute('aria-selected') === 'true' && row('assets/picture.txt'), 'Deleting a folder changed unrelated tabs or expansion');
   },
   'BRANCH-COMPARE: Changes opens a read-only comparison with explicit refs and preserves the working diff': async () => {
     const local = 'refs/heads/review';

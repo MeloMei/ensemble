@@ -234,7 +234,8 @@ export async function createWorkbenchService(options: {
 
 
     const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>();
-    const workspaceMutations = new Set(['workbench:create-terminal', 'workbench:write-file', 'workbench:git-mutate', 'workbench:git-commit', 'workbench:change-git-branch', 'workbench:sync-git',
+    const workspaceMutations = new Set(['workbench:create-terminal', 'workbench:write-file', 'workbench:mutate-workspace-file',
+      'workbench:git-mutate', 'workbench:git-commit', 'workbench:change-git-branch', 'workbench:sync-git',
       'workbench:save-skill', 'workbench:save-mcp-settings', 'workbench:test-mcp-server']);
     const handle = (channel: string, handler: (event: unknown, ...args: unknown[]) => unknown) => {
       handlers.set(channel, (event, ...args) => workspaceMutations.has(channel)
@@ -482,6 +483,17 @@ export async function createWorkbenchService(options: {
     handle('workbench:git-commit-files', (_event, id, sha) => workspaceFiles.gitCommitFiles(workspaceCwd(id), idSchema.parse(sha)));
     handle('workbench:git-commit-diff', (_event, id, sha, path) => workspaceFiles.gitCommitDiff(workspaceCwd(id), idSchema.parse(sha), cwdSchema.parse(path)));
     handle('workbench:write-file', (_event, id, input) => workspaceFiles.write(workspaceCwd(id), z.object({ path: cwdSchema, content: z.string().max(1_048_576), revision: idSchema }).strict().parse(input)));
+    handle('workbench:mutate-workspace-file', (_event, id, input) => {
+      const cwd = workspaceCwd(id);
+      const name = z.string().min(1).max(255);
+      const kind = z.enum(['file', 'directory']);
+      const mutation = z.discriminatedUnion('action', [
+        z.object({ action: z.literal('create'), directory: z.string().max(4096), kind, name }).strict(),
+        z.object({ action: z.literal('rename'), path: cwdSchema, kind, name }).strict(),
+        z.object({ action: z.literal('delete'), path: cwdSchema, kind }).strict(),
+      ]).parse(input);
+      return engine.withProjectMutation(cwd, () => workspaceFiles.mutateFile(cwd, mutation));
+    });
     handle('workbench:git-mutate', (_event, id, input) => {
       const cwd = workspaceCwd(id);
       const mutation = z.union([

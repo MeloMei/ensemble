@@ -164,6 +164,7 @@ const api: WorkbenchAPI = {
   searchWorkspaceText: (workspaceId, query) => ipcRenderer.invoke('workbench:search-workspace-text', workspaceId, query),
   readFile: (workspaceId, path) => ipcRenderer.invoke('workbench:read-file', workspaceId, path),
   readFileImage: (workspaceId, path) => ipcRenderer.invoke('workbench:read-file-image', workspaceId, path),
+  mutateWorkspaceFile: (workspaceId, input) => ipcRenderer.invoke('workbench:mutate-workspace-file', workspaceId, input),
   gitState: workspaceId => ipcRenderer.invoke('workbench:git-state', workspaceId),
   gitBranchRefs: workspaceId => ipcRenderer.invoke('workbench:git-branch-refs', workspaceId),
   gitBranchComparison: (workspaceId, targetRef) => ipcRenderer.invoke('workbench:git-branch-comparison', workspaceId, targetRef),
