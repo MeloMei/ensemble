@@ -3518,6 +3518,55 @@ const cases: Record<string, () => Promise<void>> = {
     await click('workspace:files.restorePanel'); await frames();
     assert(inline() && sameReadingPosition(), 'Leaving full-width view lost the selected diff');
   },
+  'SIDEBAR-LAYOUT: drag, keyboard and collapse preserve the sidebar preference and workspace': async () => {
+    const snapshot: Snapshot = { ...collaborationSnapshot([]), workspaces: [workspace], sessions: [session], providers: [provider] };
+    window.workbench = {
+      ...applicationUpdateApi,
+      snapshot: async () => snapshot, subscribe: () => () => {},
+      getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
+      watchSessions: async () => {}, listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {},
+    } as unknown as Window['workbench'];
+    const key = 'ensemble.sidebar-layout';
+    const previous = localStorage.getItem(key);
+    localStorage.removeItem(key);
+    try {
+      await render(<App />);
+      const sidebar = () => document.querySelector<HTMLElement>('.workspace-sidebar')!;
+      const width = () => sidebar().getBoundingClientRect().width;
+      const host = sidebar().parentElement!.parentElement!;
+      host.style.width = '1440px';
+      await frames();
+      const handle = sidebar().querySelector<HTMLElement>('[role=separator]')!;
+      const start = width();
+      handle.setPointerCapture = () => {};
+      const pointer = (type: string, clientX: number) => act(async () => {
+        handle.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, isPrimary: true, pointerId: 3, button: 0, clientX }));
+        await tick();
+      });
+      await pointer('pointerdown', start);
+      await pointer('pointermove', start + 140);
+      assert(width() === start + 140 && localStorage.getItem(key) === null, 'Dragging did not update the left pane before saving');
+      await pointer('pointerup', start + 140);
+      await act(async () => { handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })); await tick(); });
+      const saved = start + 164;
+      assert(width() === saved && JSON.parse(localStorage.getItem(key)!).width === saved, 'Keyboard resizing did not update the preferred width');
+      host.style.width = '1040px';
+      await waitFor(() => width() < saved, 'Narrow workspace did not limit the width');
+      host.style.width = '1440px';
+      await waitFor(() => width() === saved, 'Wider workspace did not restore the preferred width');
+      const main = document.querySelector('main');
+      await click('shell:app.hideSidebar');
+      assert(sidebar().hidden && width() === 0 && document.querySelector('main') === main, 'Collapsing the sidebar replaced the workspace or left it visible');
+      await render(<div />);
+      await render(<App />);
+      assert(sidebar().hidden, 'The sidebar did not remember that it was collapsed');
+      await click('shell:app.showSidebar');
+      await waitFor(() => width() === saved, 'Showing the sidebar lost the preferred width');
+    } finally {
+      if (previous === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, previous);
+    }
+  },
   'FILE-PANE-WIDTH: the divider follows the pointer and restores the preferred width and selected file': async () => {
     const snapshot: Snapshot = { ...collaborationSnapshot([]), sessions: [session], providers: [provider],
       workspaces: [{ ...workspace, tabs: [{ kind: 'agent', id: 'file-pane-tab', sessionId: session.id }], activeTabId: 'file-pane-tab' }] };

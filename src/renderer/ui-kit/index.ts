@@ -5,3 +5,4 @@ export { DiscreteSlider } from './DiscreteSlider';
 export { FoldableText, type FoldableTextProps } from './FoldableText';
 export { RollingText } from './RollingText';
 export { SearchPicker, type SearchPickerItem, type SearchPickerProps, type SearchPickerSection } from './SearchPicker';
+export { usePaneResize } from './usePaneResize';
