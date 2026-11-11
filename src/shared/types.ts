@@ -473,7 +473,8 @@ export type McpServerConfig = { name: string; type: 'stdio'; command: string; ar
   | { name: string; type: 'http' | 'sse'; url: string; headers?: Record<string,string> };
 export interface SkillInfo { id: string; name: string; description: string; path: string; scope: 'project' | 'user'; editable: boolean; issue?: string }
 export interface McpSettingsView { content: string; revision: string; servers: { name: string; transport: string; status: string; source: string; issue?: string }[] }
-export type GitMutation = { action: 'stage' | 'unstage' | 'discard'; path: string; revision?: string };
+export type GitMutation = { action: 'stage' | 'unstage' | 'discard'; path: string; revision?: string }
+  | { action: 'stage' | 'unstage'; paths: string[] };
 export interface GitCommitPreview { revision: string; patch: string; paths: string[]; truncated: boolean }
 export interface PullRequestReview { status: 'ready' | 'unavailable' | 'error'; url?: string; number?: number; title?: string; state?: string; headSha?: string; checkedAt?: string; reviewDecision?: string; checks?: { name: string; status: string; conclusion?: string; url?: string }[]; error?: string }
 export interface NotificationPreferences {

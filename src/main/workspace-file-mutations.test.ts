@@ -63,6 +63,20 @@ test('selected literal paths stage and unstage on an unborn branch without affec
   await assert.rejects(files.mutate(root, { action: 'stage', path: '.' }), /workspace file/);
 });
 
+test('batch Git selection validates all paths and updates only the selected index entries', async () => {
+  const root = await repository();
+  const filesToStage = ['literal [x]*\n中文.txt', '-leading.txt'];
+  for (const name of [...filesToStage, 'sibling.txt']) await writeFile(path.join(root, name), name);
+  const staged = () => git(root, 'diff', '--cached', '--name-only', '-z').split('\0').filter(Boolean).sort();
+  await assert.rejects(files.mutate(root, { action: 'stage', paths: [filesToStage[0], 'missing.txt'] }), /out of date/);
+  assert.deepEqual(staged(), []);
+  await files.mutate(root, { action: 'stage', paths: filesToStage });
+  assert.deepEqual(staged(), [...filesToStage].sort());
+  await files.mutate(root, { action: 'unstage', paths: filesToStage });
+  assert.deepEqual(staged(), []);
+  for (const name of [...filesToStage, 'sibling.txt']) assert.equal(await readFile(path.join(root, name), 'utf8'), name);
+});
+
 test('discard checks the actual worktree version, restores from index, and never deletes untracked files', async () => {
   const root = await repository(); const target = path.join(root, 'tracked.txt');
   await writeFile(target, 'head\n'); git(root, 'add', '.'); git(root, 'commit', '-qm', 'seed');

@@ -149,9 +149,9 @@ export async function workspaceExecutionKey(cwd: string): Promise<string> {
 type GitOutput = { stdout: string; stderr: string; code: number; truncated: boolean };
 
 function git(cwd: string, args: string[], allowedCodes = [0], allowTruncated = false, timeout = GIT_TIMEOUT_MS,
-  environment?: NodeJS.ProcessEnv): Promise<GitOutput> {
+  environment?: NodeJS.ProcessEnv, input?: string): Promise<GitOutput> {
   return new Promise((resolve, reject) => {
-    execFile('git', ['--no-pager', '-c', 'core.fsmonitor=false', ...args], {
+    const child = execFile('git', ['--no-pager', '-c', 'core.fsmonitor=false', ...args], {
       cwd, shell: false, windowsHide: true, timeout, maxBuffer: GIT_OUTPUT_LIMIT,
       encoding: 'utf8', env: { ...process.env, ...environment, GIT_OPTIONAL_LOCKS: '0', GIT_LITERAL_PATHSPECS: '1' },
     }, (error, stdout, stderr) => {
@@ -168,6 +168,10 @@ function git(cwd: string, args: string[], allowedCodes = [0], allowTruncated = f
           stderr.trim() || stdout.trim() || error?.message || `Git exited ${code}`));
       }
     });
+    if (input !== undefined) {
+      child.stdin?.on('error', () => {});
+      child.stdin?.end(input);
+    }
   });
 }
 
@@ -430,17 +434,31 @@ export class WorkspaceFiles {
     const root = await workspaceRoot(cwd);
     const key = await mutationKey(root);
     return serialized(key, async () => {
-      const file = await writablePath(root, input.path, true);
-      const relative = normalizedRelative(path.relative(root, file));
+      const requested = [...new Set('paths' in input ? input.paths : [input.path])];
+      if (!requested.length || requested.length > ENTRY_LIMIT) throw new Error('Select between 1 and 2000 workspace files');
       const status = await statusRecords(root);
-      const record = status.records.find(item => path.resolve(status.repoRoot, item.path) === file);
-      const original = record?.originalPath ? path.resolve(status.repoRoot, record.originalPath) : undefined;
-      if (original && !within(root, original)) throw new Error('Rename crosses the workspace boundary');
-      if (original) await writablePath(root, path.relative(root, original), true);
-      const paths = [relative, ...(original ? [normalizedRelative(path.relative(root, original))] : [])];
-      const info = await lstat(file).catch(error => { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; });
-      if (info && !info.isFile()) throw new Error('Select one regular file for a Git operation');
+      const records = new Map(status.records.map(record => [path.resolve(status.repoRoot, record.path), record]));
+      const paths = new Set<string>();
+      for (const item of requested) {
+        const file = await writablePath(root, item, true);
+        const relative = normalizedRelative(path.relative(root, file));
+        const record = records.get(file);
+        if ('paths' in input && (!record || (input.action === 'stage' ? record.xy[1] === ' ' : [' ', '?'].includes(record.xy[0])))) {
+          throw new Error('Selected Git changes are out of date; refresh and select the files again');
+        }
+        const info = await lstat(file).catch(error => { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; });
+        if (info && !info.isFile()) throw new Error('Select regular files for a Git operation');
+        paths.add(relative);
+        if (record?.originalPath) {
+          const original = path.resolve(status.repoRoot, record.originalPath);
+          if (!within(root, original)) throw new Error('Rename crosses the workspace boundary');
+          const originalRelative = normalizedRelative(path.relative(root, original));
+          await writablePath(root, originalRelative, true);
+          paths.add(originalRelative);
+        }
+      }
       if (input.action === 'discard') {
+        const relative = normalizedRelative(path.relative(root, path.resolve(root, input.path)));
         const entries = (await git(root, ['ls-files', '--stage', '-z', '--', relative])).stdout.split('\0').filter(Boolean);
         if (entries.length !== 1 || !/^(100644|100755) [0-9a-f]+ 0\t/.test(entries[0])) {
           throw new Error('Only an indexed regular file can be restored; untracked files are never deleted');
@@ -450,11 +468,10 @@ export class WorkspaceFiles {
           throw new Error('File or diff changed; refresh and review before discarding');
         }
         await git(root, ['restore', '--worktree', '--', relative]);
-      } else if (input.action === 'stage') {
-        await git(root, ['add', '--', ...paths]);
-      } else if (input.action === 'unstage') {
-        await git(root, ['reset', '--quiet', '--', ...paths]);
-      } else throw new Error('Unsupported Git operation');
+      } else {
+        const operation = input.action === 'stage' ? ['add'] : ['reset', '--quiet'];
+        await git(root, [...operation, '--pathspec-from-file=-', '--pathspec-file-nul'], [0], false, GIT_TIMEOUT_MS, undefined, [...paths].join('\0') + '\0');
+      }
       return this.gitState(root);
     });
   }

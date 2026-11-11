@@ -120,6 +120,11 @@
 .tree-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .tree-row > code { flex-shrink: 0; margin-left: auto; padding: 1px 3px; color: var(--success); font: 11px/1.2 ui-monospace, monospace; }
 .review-change-row + .review-change-row { margin-top: 2px; }
+.review-batch-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 3px 8px; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+.review-batch-actions label, .review-change-selection { display: flex; align-items: center; gap: 4px; }
+.review-batch-actions label { font-size: 11px; color: var(--muted); }
+.review-change-selection > input { flex: 0 0 auto; margin-inline-start: 6px; }
+.review-change-selection > .tree-row { flex: 1; min-width: 0; }
 .review-row-actions { display: flex; justify-content: flex-end; gap: 4px; padding: 0 6px 3px; }
 .review-row-actions button, .review-discard button, .review-note-editor button, .review-notes button {
   min-height: 25px;

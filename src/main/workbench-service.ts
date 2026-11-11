@@ -389,7 +389,10 @@ export async function createWorkbenchService(options: {
     handle('workbench:write-file', (_event, id, input) => workspaceFiles.write(workspaceCwd(id), z.object({ path: cwdSchema, content: z.string().max(1_048_576), revision: idSchema }).strict().parse(input)));
     handle('workbench:git-mutate', (_event, id, input) => {
       const cwd = workspaceCwd(id);
-      const mutation = z.object({ action: z.enum(['stage', 'unstage', 'discard']), path: cwdSchema, revision: idSchema.optional() }).strict().parse(input);
+      const mutation = z.union([
+        z.object({ action: z.enum(['stage', 'unstage', 'discard']), path: cwdSchema, revision: idSchema.optional() }).strict(),
+        z.object({ action: z.enum(['stage', 'unstage']), paths: z.array(cwdSchema).min(1).max(2000) }).strict(),
+      ]).parse(input);
       return engine.withProjectMutation(cwd, () => workspaceFiles.mutate(cwd, mutation));
     });
     handle('workbench:git-commit-preview', (_event, id) => workspaceFiles.commitPreview(workspaceCwd(id)));

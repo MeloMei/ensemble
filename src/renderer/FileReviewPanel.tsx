@@ -55,6 +55,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
   const tree = rootListing?.workspaceKey === workspaceKey ? rootListing : undefined;
   const [missingDirectory, setMissingDirectory] = useState(false);
   const [git, setGit] = useState<GitState | null>(null);
+  const [checkedChanges, setCheckedChanges] = useState<ReadonlySet<string>>(() => new Set());
   const [selected, setSelected] = useState<{ path: string; mode: 'content' | 'diff' } | null>(null);
   const [loadedPath, setLoadedPath] = useState<string | null>(null);
   const [location, setLocation] = useState<FileReference>();
@@ -81,6 +82,11 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
   const selectedChangeIndex = responsiveDiff ? git?.changes.findIndex(change => change.path === selected.path) ?? -1 : -1;
   const dirty = !!file && draft !== file.content;
   const currentNotes = notes.workspaceId === workspace.id ? notes.items : [];
+  const changes = git?.changes ?? [];
+  const checked = changes.filter(change => checkedChanges.has(change.path));
+  const allChecked = checked.length > 0 && checked.length === changes.length;
+  const stageable = checked.filter(change => change.status[1] !== ' ').map(change => change.path);
+  const unstageable = checked.filter(change => change.staged).map(change => change.path);
 
   useLayoutEffect(() => {
     const layout = reviewLayout.current;
@@ -198,10 +204,12 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
     await fileDrafts.save(workspace.id, file.path, input => window.workbench.writeFile(workspace.id, input));
     await refresh();
   });
-  const mutate = (action: GitMutation['action'], filePath: string, revision?: string) => run(action, async () => {
-    const updated = await window.workbench.gitMutate(workspace.id, { action, path: filePath, revision });
+  const mutate = (input: GitMutation) => run(input.action, async () => {
+    const paths = new Set('paths' in input ? input.paths : [input.path]);
+    const updated = await window.workbench.gitMutate(workspace.id, input);
     setGit(updated); setDiscard(null); setPreview(null);
-    if (selected?.path === filePath) await load(filePath, 'diff');
+    setCheckedChanges(current => new Set([...current].filter(path => !paths.has(path))));
+    if (selected && paths.has(selected.path)) await load(selected.path, 'diff');
   });
   const updateNoteDraft = (path: string, update: (current: DiffNoteDraft | undefined) => DiffNoteDraft | undefined) => {
     setNoteDrafts(current => {
@@ -279,15 +287,35 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
         <p className="pane-note">{t('files.prReadOnly')}</p>
       </>}
     </section>}
+    {view === 'changes' && changes.length > 0 && <div className="review-batch-actions">
+      <label><input type="checkbox" checked={allChecked} disabled={!!busy || dirty}
+        ref={element => { if (element) element.indeterminate = checked.length > 0 && !allChecked; }}
+        onChange={event => setCheckedChanges(new Set(event.target.checked ? changes.map(change => change.path) : []))} />{t('files.selectAllChanges')}</label>
+      <button className="review-text-button" disabled={!!busy || dirty || !stageable.length}
+        onClick={() => mutate({ action: 'stage', paths: stageable })}>{t('files.stageSelected', { count: stageable.length })}</button>
+      <button className="review-text-button" disabled={!!busy || dirty || !unstageable.length}
+        onClick={() => mutate({ action: 'unstage', paths: unstageable })}>{t('files.unstageSelected', { count: unstageable.length })}</button>
+    </div>}
     <div className="review-layout" ref={reviewLayout} data-responsive-diff={responsiveDiff || undefined}>
     {view === 'changes' && <div className="file-tree review-tree">
       {!git?.available ? <div className="pane-note">{git?.error || t('files.notGit')}</div> : !git.changes.length ? <div className="pane-note">{t('files.clean')}</div> : git.changes.map((change, index) => <div className="review-change-row" key={change.path}
         data-after-selected={selectedChangeIndex >= 0 && index > selectedChangeIndex || undefined}>
-        <button className={`tree-row ${selected?.path === change.path ? 'selected' : ''}`} onClick={() => run('open', () => load(change.path, 'diff'))} title={change.path}>
-          <GitCompareArrows size={13} /><span className="tree-name">{change.path}</span><code>{change.status}</code>
-        </button><div className="review-row-actions">
-          {change.status[1] !== ' ' && <button disabled={!!busy || dirty} onClick={() => mutate('stage', change.path)}>{t('files.stage')}</button>}
-          {change.staged && <button disabled={!!busy || dirty} onClick={() => mutate('unstage', change.path)}>{t('files.unstage')}</button>}
+        <div className="review-change-selection">
+          <input type="checkbox" aria-label={t('files.selectChange', { path: change.path })} checked={checkedChanges.has(change.path)} disabled={!!busy || dirty}
+            onChange={event => {
+              const include = event.target.checked;
+              setCheckedChanges(current => {
+                const next = new Set(current);
+                if (include) next.add(change.path); else next.delete(change.path);
+                return next;
+              });
+            }} />
+          <button className={`tree-row ${selected?.path === change.path ? 'selected' : ''}`} onClick={() => run('open', () => load(change.path, 'diff'))} title={change.path}>
+            <GitCompareArrows size={13} /><span className="tree-name">{change.path}</span><code>{change.status}</code>
+          </button>
+        </div><div className="review-row-actions">
+          {change.status[1] !== ' ' && <button disabled={!!busy || dirty} onClick={() => mutate({ action: 'stage', path: change.path })}>{t('files.stage')}</button>}
+          {change.staged && <button disabled={!!busy || dirty} onClick={() => mutate({ action: 'unstage', path: change.path })}>{t('files.unstage')}</button>}
         </div>
       </div>)}
     </div>}
@@ -311,7 +339,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
         <DiffReview key={JSON.stringify([selected.path, diff.revision])} diff={diff} location={location} busy={busy} draft={noteDrafts.get(selected.path)}
           onDraftChange={draft => updateNoteDraft(selected.path, () => draft)} onSave={addNote} />
         {diff.patch && diff.revision && !diff.truncated && git?.changes.some(change => change.path === selected.path && change.status[1] !== ' ' && change.status[1] !== '?') && <div className="review-discard">
-          {discard === selected.path ? <><span>{t('files.discardQuestion')}</span><button className="danger" disabled={!!busy} onClick={() => mutate('discard', selected.path, diff.revision)}>{t('files.confirmDiscard')}</button><button onClick={() => setDiscard(null)}>{t('common.cancel')}</button></> : <button onClick={() => setDiscard(selected.path)}>{t('files.discard')}</button>}
+          {discard === selected.path ? <><span>{t('files.discardQuestion')}</span><button className="danger" disabled={!!busy} onClick={() => mutate({ action: 'discard', path: selected.path, revision: diff.revision })}>{t('files.confirmDiscard')}</button><button onClick={() => setDiscard(null)}>{t('common.cancel')}</button></> : <button onClick={() => setDiscard(selected.path)}>{t('files.discard')}</button>}
         </div>}
       </>}
     </section>}
