@@ -19,6 +19,7 @@ import { createQoderDescriptor } from './providers/qoder';
 import { loadPluginProviders } from './providers/plugins';
 import { TerminalManager } from './terminal-manager';
 import { MissingWorkspaceDirectoryError, WorkspaceFiles } from './workspace-files';
+import { RuntimeInstaller } from './runtime-install';
 import type { Snapshot } from '../shared/types';
 import { PROMPT_TEXT_LIMIT, SIDE_QUESTION_LIMIT, SIDE_QUESTION_REFERENCE_LIMIT } from '../shared/types';
 import type { TerminalOutputEvent } from '../shared/backend';
@@ -178,15 +179,26 @@ export async function createWorkbenchService(options: {
     let geminiProvider: AcpProvider | undefined;
     let cursorProvider: AcpProvider | undefined;
     let qoderProvider: AcpProvider | undefined;
-    async function refreshProviders(): Promise<void> {
+    const installer = new RuntimeInstaller(options.dataPath, async id => {
+      await refreshProviders();
+      return engine.liveSnapshot().providers.some(provider => provider.id === id && provider.available);
+    });
+    cleanup.push(() => installer.shutdown());
+    let providerRefresh: Promise<void> | undefined;
+    function refreshProviders(): Promise<void> {
+      if (providerRefresh) return providerRefresh;
+      providerRefresh = discoverProviders().finally(() => { providerRefresh = undefined; });
+      return providerRefresh;
+    }
+    async function discoverProviders(): Promise<void> {
       if (codexProvider) await codexProvider.refreshInfo();
-      else codexProvider = await createCodexProvider();
+      else codexProvider = await createCodexProvider(() => installer.managedBinary('codex'));
       const dataPath = dirname(engine.store.path);
       const [claude, pi, plugins] = await Promise.all([
-        createClaudeProvider(), createPiProvider({ dataPath }), loadPluginProviders(engine.pluginPath),
+        createClaudeProvider(), installer.managedBinary('pi').then(managedBinary => createPiProvider({ dataPath, managedBinary })), loadPluginProviders(engine.pluginPath),
         openCodeProvider ? openCodeProvider.refreshInfo() : createAcpProvider('opencode', 'OpenCode', () => createOpenCodeDescriptor({ dataPath })).then(provider => { openCodeProvider = provider; }),
         deepSeekProvider ? deepSeekProvider.refreshInfo() : createAcpProvider('deepseek-harness', 'DeepSeek Harness', () => createDeepSeekHarnessDescriptor({ dataPath })).then(provider => { deepSeekProvider = provider; }),
-        geminiProvider ? geminiProvider.refreshInfo() : createAcpProvider('gemini', 'Gemini CLI', () => createGeminiDescriptor({ dataPath })).then(provider => { geminiProvider = provider; }),
+        geminiProvider ? geminiProvider.refreshInfo() : createAcpProvider('gemini', 'Gemini CLI', async () => createGeminiDescriptor({ dataPath, managedBinary: await installer.managedBinary('gemini') })).then(provider => { geminiProvider = provider; }),
         cursorProvider ? cursorProvider.refreshInfo() : createAcpProvider('cursor', 'Cursor Agent', () => createCursorDescriptor({ dataPath })).then(provider => { cursorProvider = provider; }),
         qoderProvider ? qoderProvider.refreshInfo() : createAcpProvider('qoder', 'Qoder CLI', () => createQoderDescriptor()).then(provider => { qoderProvider = provider; }),
       ]);
@@ -260,6 +272,15 @@ export async function createWorkbenchService(options: {
       runId: idSchema.parse(runId), afterSeq: z.number().int().nonnegative().optional().parse(afterSeq), limit: z.number().int().min(1).max(1000).optional().parse(limit),
     }));
     handle('workbench:refresh-providers', () => refreshProviders());
+    handle('workbench:runtime-installs', () => installer.list());
+    handle('workbench:install-runtime', (_event, input) => {
+      const id = idSchema.parse(input);
+      if (!engine.liveSnapshot().providers.some(provider => provider.id === id && provider.source === 'builtin' && !provider.available)) {
+        throw new Error('Runtime installation is only available for missing built-in runtimes');
+      }
+      return installer.install(id);
+    });
+    handle('workbench:cancel-runtime-install', (_event, id) => installer.cancel(idSchema.parse(id)));
     handle('workbench:session-locations', (_event, id) => managedWorktrees!.sessionLocations(idSchema.parse(id)));
     handle('workbench:create-session', (_event, input: unknown) => {
       const parsed = sessionInputSchema.parse(input);
@@ -456,6 +477,7 @@ export async function createWorkbenchService(options: {
       terminalSnapshot: (id: string) => terminalManager.get(id),
       async shutdown(): Promise<void> {
         stopDiagnostics();
+        await installer.shutdown();
         const results = await Promise.allSettled([core.close(), terminalManager.shutdown(), engine.shutdown(), collaboration.close()]);
         results.push(...await Promise.allSettled([store.close(), diagnostics.flush()]));
         const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');

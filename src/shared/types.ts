@@ -30,6 +30,15 @@ export interface ProviderInfo {
   efforts?: string[];
 }
 
+export interface RuntimeInstall {
+  providerId: string;
+  manager: 'npm' | 'brew';
+  packageName: string;
+  prerequisiteMet: boolean;
+  phase: 'idle' | 'installing' | 'detecting' | 'cancelling' | 'cancelled' | 'complete' | 'failed';
+  problem?: 'install' | 'detect' | 'timeout';
+}
+
 export type WorkspaceTab =
   | { id: string; kind: 'agent'; sessionId: string }
   | { id: string; kind: 'terminal'; terminalId: string }
@@ -335,6 +344,9 @@ export interface WorkbenchAPI {
   snapshot(): Promise<Snapshot>;
   subscribe(listener: (snapshot: Snapshot) => void): () => void;
   refreshProviders(): Promise<void>;
+  runtimeInstalls(): Promise<RuntimeInstall[]>;
+  installRuntime(providerId: string): Promise<void>;
+  cancelRuntimeInstall(providerId: string): Promise<void>;
   chooseDirectory(): Promise<string | null>;
   createSession(input: CreateSessionInput): Promise<string>;
   sessionLocations(workspaceId: string): Promise<SessionLocations>;

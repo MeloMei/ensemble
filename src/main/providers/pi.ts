@@ -25,11 +25,11 @@ function modelEfforts(model: PiRecord): string[] {
   return EFFORTS.filter(level => mapping[level] !== null && (!['xhigh', 'max'].includes(level) || mapping[level] !== undefined));
 }
 
-export async function resolvePiBinary(): Promise<string | undefined> {
+export async function resolvePiBinary(managedBinary?: string): Promise<string | undefined> {
   const executable = process.platform === 'win32' ? 'pi.cmd' : 'pi';
   const nvmRoot = join(homedir(), '.nvm', 'versions', 'node');
   const versions = await readdir(nvmRoot).catch(() => [] as string[]);
-  const candidates = [process.env.PI_BINARY, ...(process.env.PATH ?? '').split(delimiter).filter(Boolean).map(directory => join(directory, executable)),
+  const candidates = [process.env.PI_BINARY, managedBinary, ...(process.env.PATH ?? '').split(delimiter).filter(Boolean).map(directory => join(directory, executable)),
     join(homedir(), '.local', 'bin', executable), join('/opt/homebrew/bin', executable), join('/usr/local/bin', executable),
     ...versions.sort((a, b) => b.localeCompare(a, undefined, { numeric: true })).map(version => join(nvmRoot, version, 'bin', executable))];
   for (const candidate of new Set(candidates)) {
@@ -62,8 +62,8 @@ function childEnvironment(binary: string): NodeJS.ProcessEnv {
   return { ...process.env, PATH: `${dirname(binary)}${delimiter}${process.env.PATH ?? ''}` };
 }
 
-export async function createPiProvider(options: { dataPath: string; binary?: string }): Promise<ProviderAdapter> {
-  const binary = options.binary ?? await resolvePiBinary();
+export async function createPiProvider(options: { dataPath: string; binary?: string; managedBinary?: string }): Promise<ProviderAdapter> {
+  const binary = options.binary ?? await resolvePiBinary(options.managedBinary);
   let sdkEntry: string | undefined;
   let detail = '没有找到 Pi。请安装官方 Pi CLI 后刷新，或设置 PI_BINARY。';
   let models: ProviderModel[] | undefined;
