@@ -413,6 +413,10 @@ export async function createWorkbenchService(options: {
     handle('workbench:deepseek-balance', () => readDeepSeekBalance());
 
     handle('workbench:import-attachments', (_event, paths) => attachments.importFiles(z.array(cwdSchema).max(ATTACHMENT_LIMITS.count).parse(paths)));
+    handle('workbench:import-workspace-attachments', async (_event, id, paths) => {
+      const files = await workspaceFiles.resolveFilePaths(workspaceCwd(id), cwdSchema.array().min(1).max(ATTACHMENT_LIMITS.count).parse(paths));
+      return attachments.importFiles(files);
+    });
 
     if (options.providers) engine.setProviders(options.providers.map(instrument), [], []);
     else await refreshProviders();

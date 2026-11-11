@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useMemo, useState, useRef, type CSSPrope
 import { ChevronRight, FileCode2, Folder, FolderOpen, Search } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { FileEntry } from '../shared/types';
+import { WORKSPACE_FILE_DRAG_TYPE } from './workspace-file-reference';
 import './WorkspaceFileTree.css';
 
 interface DirectoryBranch {
@@ -108,6 +109,10 @@ export function WorkspaceFileTree({ workspaceId, workspaceKey, entries, revision
       if (entry.kind === 'file') return <button key={entry.path} type="button"
         className={`tree-row file${selectedPath === entry.path ? ' selected' : ''}`} title={entry.path}
         aria-current={selectedPath === entry.path ? true : undefined} style={{ '--tree-depth': Math.min(depth, 10) } as CSSProperties}
+        draggable onDragStart={event => {
+          event.dataTransfer.setData(WORKSPACE_FILE_DRAG_TYPE, JSON.stringify({ workspaceId, path: entry.path }));
+          event.dataTransfer.effectAllowed = 'copy';
+        }}
         onClick={() => onOpen(entry.path)}>
         <FileCode2 size={14} aria-hidden="true" /><span className="tree-name">{entry.name}</span>
       </button>;

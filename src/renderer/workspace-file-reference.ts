@@ -1,5 +1,7 @@
 import { createContext } from 'react';
 
+export const WORKSPACE_FILE_DRAG_TYPE = 'application/x-ensemble-workspace-file';
+
 export interface FileReference {
   path: string;
   line?: number;

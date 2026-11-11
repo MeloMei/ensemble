@@ -157,8 +157,8 @@ export function App() {
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const updateDraft = useCallback((id: string, value: PromptInput, expected?: PromptInput) => {
-    if (!expected && !draftReady.current.has(id)) return;
-    if (expected && currentDrafts.current[id] && currentDrafts.current[id] !== expected) return;
+    if (!expected && !draftReady.current.has(id)) return false;
+    if (expected && currentDrafts.current[id] && currentDrafts.current[id] !== expected) return false;
     currentDrafts.current[id] = value;
     setDrafts(current => ({ ...current, [id]: value }));
     setDraftErrors(current => ({ ...current, [id]: '' }));
@@ -166,6 +166,7 @@ export function App() {
       if (currentDrafts.current[id] !== value) return;
       setDraftErrors(current => ({ ...current, [id]: error instanceof Error ? error.message : String(error) }));
     });
+    return true;
   }, []);
   useEffect(() => {
     let active = true;

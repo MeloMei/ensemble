@@ -3545,6 +3545,69 @@ const cases: Record<string, () => Promise<void>> = {
     await show({ ...session, queue: [] });
     assert(!document.querySelector('.composer-dock'), 'An empty session displays a composer dock');
   },
+  'CHAT-FILE-DROP: imports target the split under the pointer and reject unsupported files': async () => {
+    const left = { ...session, id: 'drop-left', draft: { text: 'Left draft' } };
+    const right = { ...session, id: 'drop-right', draft: { text: 'Right draft' } };
+    const project: Workspace = { ...workspace, activeTabId: 'left-tab', secondaryTabId: 'right-tab', tabs: [
+      { kind: 'agent', id: 'left-tab', sessionId: left.id }, { kind: 'agent', id: 'right-tab', sessionId: right.id },
+    ] };
+    const attachment = (name: string) => ({ id: name, name, kind: 'text' as const, size: 4, mimeType: 'text/plain', sha256: 'a'.repeat(64), ownedPath: `/owned/${name}` });
+    const uploads = deferred<NonNullable<PromptInput['attachments']>>();
+    const writes: [string, PromptInput][] = [];
+    const workspaceImports: [string, string[]][] = [];
+    let sends = 0;
+    window.workbench = {
+      ...applicationUpdateApi,
+      snapshot: async () => ({ ...collaborationSnapshot([]), providers: [provider], sessions: [left, right], workspaces: [project] }),
+      subscribe: () => () => {}, getConnection: async () => ({ status: 'connected', synced: true }),
+      onConnectionChanged: () => () => {}, onFocusSession: () => () => {}, watchSessions: async () => {}, setUnsavedFiles: () => {},
+      listFiles: async () => [{ path: 'project.md', name: 'project.md', kind: 'file', size: 4 }],
+      gitState: async () => ({ available: false }),
+      importDroppedAttachments: async (files: File[]) => {
+        if (files.some(file => file.name === 'unsupported.pdf')) throw new Error('PDF is not a supported attachment.');
+        assert(files.map(file => file.name).join('|') === 'one.txt|two.txt', 'Multi-file drop did not reach the importer in order');
+        return uploads.promise;
+      },
+      importWorkspaceAttachments: async (id: string, paths: string[]) => {
+        workspaceImports.push([id, paths]);
+        return paths.map(attachment);
+      },
+      saveSessionDraft: async (id: string, draft: PromptInput) => { writes.push([id, draft]); },
+      sendPrompt: async () => { sends++; },
+    } as unknown as Window['workbench'];
+    await render(<App />);
+    const chatPane = (id: string) => document.querySelector<HTMLElement>(`[data-chat-session-id="${id}"]`)!;
+    await waitFor(() => Boolean(chatPane(right.id) && document.querySelector('.workspace-file-tree .tree-row.file')), 'Both chats and the project tree must be visible');
+    const fire = async (target: Element, type: string, transfer: DataTransfer) => {
+      await act(async () => {
+        target.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: transfer }));
+        await tick();
+      });
+    };
+    const files = new DataTransfer();
+    for (const name of ['one.txt', 'two.txt']) files.items.add(new File(['note'], name));
+    const rightTarget = chatPane(right.id).querySelector('.message-scroll')!;
+    await fire(rightTarget, 'dragover', files);
+    assert(chatPane(right.id).querySelector('.chat-file-drop-target') && !chatPane(left.id).querySelector('.chat-file-drop-target'), 'Hover highlighted the wrong pane');
+    await fire(rightTarget, 'drop', files);
+    await change(chatPane(right.id).querySelector('textarea')!, 'Edited while importing');
+    await act(async () => { uploads.resolve([attachment('one.txt'), attachment('two.txt')]); await tick(); });
+    await waitFor(() => chatPane(right.id).querySelectorAll('.attachment-chip').length === 2, 'The right pane did not receive both attachments');
+    assert(writes.at(-1)?.[0] === right.id && writes.at(-1)?.[1].text === 'Edited while importing' && !chatPane(left.id).querySelector('.attachment-chip'),
+      'The drop wrote to the wrong draft or replaced newer text');
+
+    const projectFile = new DataTransfer();
+    await fire(document.querySelector('.workspace-file-tree .tree-row.file')!, 'dragstart', projectFile);
+    await fire(chatPane(left.id).querySelector('.chat-toolbar')!, 'drop', projectFile);
+    await waitFor(() => Boolean(chatPane(left.id).querySelector('.attachment-chip')), 'The file tree drop did not add an attachment to the left chat');
+    assert(JSON.stringify(workspaceImports) === JSON.stringify([[project.id, ['project.md']]]) && writes.at(-1)?.[0] === left.id, 'The tree drop used the wrong project or chat');
+
+    const rejected = new DataTransfer();
+    rejected.items.add(new File(['%PDF'], 'unsupported.pdf'));
+    await fire(rightTarget, 'drop', rejected);
+    await waitFor(() => [...chatPane(right.id).querySelectorAll('[role=alert]')].some(item => item.textContent?.includes('PDF is not a supported attachment.')), 'The rejection did not appear in the target chat');
+    assert(sends === 0 && writes.length === 3 && chatPane(right.id).querySelectorAll('.attachment-chip').length === 2, 'A rejected drop changed a draft or sent a message');
+  },
   'SPLIT-DROP: session tabs preview four edges and preserve physical panes on focus changes': async () => {
     const primarySession = { ...session, title: 'Primary split session' };
     const otherSession = { ...session, id: 'other-split-session', title: 'Other split session' };

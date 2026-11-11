@@ -10,6 +10,9 @@
   container-type: inline-size;
 }
 
+.chat-file-drop-target { position: absolute; inset: 5px; z-index: 20; display: grid; place-items: center; pointer-events: none; border: 1px solid var(--accent); border-radius: var(--radius-panel); }
+.chat-file-drop-target > span { display: inline-flex; align-items: center; gap: 7px; padding: 8px 12px; color: var(--accent); background: var(--surface-raised); border: 1px solid var(--accent); border-radius: var(--radius-control); }
+
 .chat-pane .chat-toolbar { display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 8px 24px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .chat-pane .chat-toolbar-heading { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .chat-pane .chat-toolbar-heading > svg { color: var(--muted); }
