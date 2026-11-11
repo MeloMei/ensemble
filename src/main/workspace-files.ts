@@ -7,7 +7,7 @@ import { constants } from 'node:fs';
 import { lstat, open, opendir, realpath, rename, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { TextDecoder } from 'node:util';
-import type { FileContent, FileDiff, FileEntry, GitBranchComparison, GitCommitPreview, GitHistory, GitHistoryCommit, GitMutation, GitState,
+import type { FileContent, FileDiff, FileEntry, GitBranchChange, GitBranchComparison, GitCommitPreview, GitHistory, GitHistoryCommit, GitMutation, GitState,
   WorkspaceFileMatch, WorkspaceTextMatch, WorkspaceTextSearch } from '../shared/types';
 import { parsePorcelainV1Records, type PorcelainV1Record } from './vendor/orca/porcelain-v1-records';
 
@@ -538,6 +538,29 @@ export class WorkspaceFiles {
   async gitBranchRefs(cwd: string): Promise<string[]> {
     const root = await workspaceRoot(cwd);
     return (await branchRefs(root, ['refs/heads/', 'refs/remotes/'])).map(({ ref }) => ref);
+  }
+
+  async changeGitBranch(cwd: string, change: GitBranchChange): Promise<GitState> {
+    const root = await workspaceRoot(cwd);
+    const repository = await mutationKey(root);
+    return serialized(repository, async () => {
+      const ref = `refs/heads/${change.name}`;
+      if (!change.name || change.name.startsWith('-') || change.name.includes('\0')
+        || (await branchGit(repository, ['check-ref-format', ref], { allowedCodes: [0, 1] })).code !== 0) {
+        throw new Error('Enter a valid local branch name');
+      }
+      const status = await this.gitState(repository);
+      if (!status.available) throw new Error(status.error ?? 'Git repository is unavailable');
+      if (status.branch !== change.expectedBranch) throw new Error('The current branch changed; refresh before switching');
+      if (status.changes.length) throw new Error('Commit or stash your changes before changing branches');
+      const refs = await branchRefs(repository, ['refs/heads/']);
+      if (refs.some(item => item.ref === ref) !== (change.action === 'switch')) {
+        throw new Error(change.action === 'switch' ? 'This local branch is unavailable' : 'This branch already exists');
+      }
+      const args = change.action === 'create' ? ['switch', '-c', change.name] : ['switch', '--no-guess', '--', change.name];
+      await git(repository, args);
+      return this.gitState(root);
+    });
   }
 
   async gitHistory(cwd: string, query: string, allBranches: boolean, limit: number): Promise<GitHistory> {

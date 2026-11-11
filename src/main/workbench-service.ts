@@ -227,7 +227,7 @@ export async function createWorkbenchService(options: {
 
 
     const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>();
-    const workspaceMutations = new Set(['workbench:create-terminal', 'workbench:write-file', 'workbench:git-mutate', 'workbench:git-commit',
+    const workspaceMutations = new Set(['workbench:create-terminal', 'workbench:write-file', 'workbench:git-mutate', 'workbench:git-commit', 'workbench:change-git-branch',
       'workbench:save-skill', 'workbench:save-mcp-settings', 'workbench:test-mcp-server']);
     const handle = (channel: string, handler: (event: unknown, ...args: unknown[]) => unknown) => {
       handlers.set(channel, (event, ...args) => workspaceMutations.has(channel)
@@ -450,6 +450,14 @@ export async function createWorkbenchService(options: {
     handle('workbench:git-branch-refs', (_event, id) => workspaceFiles.gitBranchRefs(workspaceCwd(id)));
     handle('workbench:git-branch-comparison', (_event, id, targetRef) =>
       workspaceFiles.gitBranchComparison(workspaceCwd(id), z.string().min(1).max(4096).parse(targetRef)));
+    handle('workbench:change-git-branch', (_event, rawId, value) => {
+      const id = idSchema.parse(rawId);
+      if (managedWorktrees!.isManaged(id)) throw new Error('Managed worktrees keep the branch assigned when they are created');
+      const cwd = workspaceCwd(id);
+      const change = z.object({ action: z.enum(['switch', 'create']), name: z.string().min(1).max(256),
+        expectedBranch: z.string().min(1).max(4096) }).strict().parse(value);
+      return engine.withProjectMutation(cwd, () => workspaceFiles.changeGitBranch(cwd, change));
+    });
     handle('workbench:git-history', (_event, id, query, allBranches, limit) =>
       workspaceFiles.gitHistory(workspaceCwd(id), z.string().trim().max(256).parse(query), z.boolean().parse(allBranches), z.number().int().min(1).max(500).parse(limit)));
     handle('workbench:git-commit-files', (_event, id, sha) => workspaceFiles.gitCommitFiles(workspaceCwd(id), idSchema.parse(sha)));

@@ -145,6 +145,7 @@ export interface GitHistoryCommit {
   sha: string; parents: string[]; subject: string; author: string; authoredAt: string; refs: string;
 }
 export interface GitHistory { commits: GitHistoryCommit[]; limited: boolean }
+export interface GitBranchChange { action: 'switch' | 'create'; name: string; expectedBranch: string }
 export interface FileDiff { path: string; patch: string; binary: boolean; truncated: boolean; revision?: string }
 
 export interface AgentMessageSource { sessionId: string; title: string; providerId: string; reply?: true }
@@ -405,6 +406,7 @@ export interface WorkbenchAPI {
   gitState(workspaceId: string): Promise<GitState>;
   gitBranchRefs(workspaceId: string): Promise<string[]>;
   gitBranchComparison(workspaceId: string, targetRef: string): Promise<GitBranchComparison>;
+  changeGitBranch(workspaceId: string, change: GitBranchChange): Promise<GitState>;
   gitHistory(workspaceId: string, query: string, allBranches: boolean, limit: number): Promise<GitHistory>;
   gitCommitFiles(workspaceId: string, sha: string): Promise<string[]>;
   gitCommitDiff(workspaceId: string, sha: string, path: string): Promise<FileDiff>;

@@ -10,6 +10,7 @@ import { CodeEditor, type CodeEditorHandle, type CodeEditorPosition } from './Co
 import { FileEditorTabs } from './FileEditorTabs';
 import { DiffReview } from './DiffReview';
 import { GitHistory } from './GitHistory';
+import { GitBranchControl } from './GitBranchControl';
 import { WorkspaceFileTree } from './WorkspaceFileTree';
 import { FileDraftStore } from './file-drafts';
 import { diffRangeLines, reviewFeedback, reviewNoteSchema, type DiffNoteDraft, type ReviewNote } from './review-notes';
@@ -384,7 +385,18 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
       <button disabled={missingDirectory} className={view === 'changes' ? 'active' : ''} aria-pressed={view === 'changes'} onClick={() => setView('changes')}><GitCompareArrows size={13} />{t('files.changes')}{git?.available && <span>{git.changes.length}</span>}</button>
       <button disabled={missingDirectory} className={view === 'pr' ? 'active' : ''} aria-pressed={view === 'pr'} onClick={() => { setView('pr'); run('pr', refreshPullRequest); }}><GitPullRequest size={13} />PR / CI</button>
     </div>
-    {!missingDirectory && <div className="file-branch"><GitBranch size={13} /><span>{git?.available ? git.branch : t('files.notGitLabel')}</span>
+    {!missingDirectory && <div className="file-branch"><GitBranch size={13} />{git?.available
+      ? <GitBranchControl workspaceId={workspace.id} branch={git.branch}
+          blocked={workspace.worktree || workspace.managedWorktreeAlias ? t('files.gitBranchManaged')
+            : fileDrafts.hasUnsettledEdits() ? t('files.gitBranchSaveFirst') : git.changes.length ? t('files.gitBranchCleanFirst') : undefined}
+          onChanged={state => {
+            setGit(state); setCheckedChanges(new Set()); setPreview(null);
+            run('refresh', async () => {
+              await refresh();
+              if (selected) await load(selected.path, selected.mode, true);
+            });
+          }} />
+      : <span>{t('files.notGitLabel')}</span>}
       {view === 'changes' && <BranchComparison workspaceId={workspace.id} />}
       {view === 'changes' && git?.available && <GitHistory workspaceId={workspace.id} />}
       {git?.available && <button className="review-text-button" disabled={!!busy || hasUnsavedFiles} onClick={() => run('preview', async () => setPreview(await window.workbench.gitCommitPreview(workspace.id)))}>{t('files.commitPreview')}</button>}

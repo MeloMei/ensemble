@@ -2262,6 +2262,32 @@ const cases: Record<string, () => Promise<void>> = {
     assert(JSON.stringify(calls) === JSON.stringify([[currentProject.id], [currentProject.id, remote], [currentProject.id, local], [currentProject.id, remote]]),
       'Branch comparison used a different workspace or did not send the full selected ref');
   },
+  'GIT-BRANCH-CONTROL: create and switch update the current branch after Git reports success': async () => {
+    let branch = 'main';
+    const operations: string[] = [];
+    window.workbench = {
+      listFiles: async () => [], setUnsavedFiles: () => {},
+      gitState: async () => ({ available: true, branch, changes: [] }),
+      gitBranchRefs: async () => ['refs/heads/main', 'refs/heads/review', 'refs/remotes/origin/remote'],
+      changeGitBranch: async (_workspaceId: string, change: { action: string; name: string; expectedBranch: string }) => {
+        operations.push([change.action, change.name, change.expectedBranch].join(':'));
+        branch = change.name;
+        return { available: true, branch, changes: [] };
+      },
+    } as unknown as Window['workbench'];
+    await render(<FileReviewPanel workspace={{ ...workspace, id: 'git-branch-control' }} refreshKey="git-branch" perform={perform} />);
+    await settle();
+    const open = () => act(async () => { document.querySelector<HTMLButtonElement>('.git-branch-control')!.click(); await tick(); });
+    await open();
+    await chooseOption(button('workspace:files.gitBranchSelect'), 'review');
+    await click('workspace:files.gitBranchSwitch');
+    await waitFor(() => document.querySelector('.git-branch-control span')?.textContent === 'review', 'The selected local branch was not shown');
+    await open();
+    await change(input('.git-branch-dialog input'), 'feature/new');
+    await click('workspace:files.gitBranchCreate');
+    await waitFor(() => document.querySelector('.git-branch-control span')?.textContent === 'feature/new', 'The created branch was not shown');
+    assert(operations.join(',') === 'switch:review:main,create:feature/new:review', 'The branch operation used the wrong checkout or action');
+  },
   'GIT-HISTORY: search and branch scope lead to the selected committed file': async () => {
     const main = { sha: 'a'.repeat(40), parents: [], subject: 'Main history', author: 'Fixture', authoredAt: '2026-10-01T00:00:00Z', refs: 'main' };
     const topic = { ...main, sha: 'b'.repeat(40), parents: [main.sha], subject: 'Topic change', refs: 'topic' };
