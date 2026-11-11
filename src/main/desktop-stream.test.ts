@@ -87,6 +87,9 @@ test('main frame reload and renderer loss release view subscriptions without tou
       setTimeout, clearTimeout, AbortController, console,
     });
     await until(() => !!window && handlers.has('workbench:watch-sessions'));
+    const dictationStatus = handlers.get('workbench:dictation-status')!;
+    assert.throws(() => dictationStatus({ ...sender, senderFrame: { parent: {} } }), /windowMismatch/);
+    assert.equal((dictationStatus(sender) as { unavailable: string }).unavailable, process.platform === 'darwin' ? 'helperMissing' : 'platform');
     await handlers.get('workbench:watch-sessions')!(sender, ['active-session']);
     ipcMain.emit('workbench:watch-terminal', sender, 'terminal-one');
     await until(() => terminalStreams.length === 1);

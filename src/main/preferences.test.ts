@@ -12,14 +12,16 @@ test('language preferences serialize changes, survive restart and retain unrelat
     const preferences = new DesktopPreferences(dataPath);
     await preferences.load();
     assert.equal(preferences.languagePreference, 'system');
-    await Promise.all([preferences.setLanguagePreference('en'), preferences.setAutoCheckUpdates(false), preferences.setLanguagePreference('zh-CN')]);
+    await Promise.all([preferences.setLanguagePreference('en'), preferences.setAutoCheckUpdates(false), preferences.setLanguagePreference('zh-CN'),
+      preferences.setDictationLanguage('en-US')]);
     assert.equal(preferences.languagePreference, 'zh-CN');
     assert.deepEqual(JSON.parse(await readFile(join(dataPath, 'preferences.json'), 'utf8')), {
-      theme: 'dark', custom: { compact: true }, languagePreference: 'zh-CN', autoCheckUpdates: false,
+      theme: 'dark', custom: { compact: true }, languagePreference: 'zh-CN', autoCheckUpdates: false, dictationLanguage: 'en-US',
     });
     const reopened = new DesktopPreferences(dataPath);
     await reopened.load();
     assert.equal(reopened.languagePreference, 'zh-CN');
+    assert.equal(reopened.dictationLanguage, 'en-US');
     assert.equal(reopened.autoCheckUpdates, false);
   } finally { await rm(dataPath, { recursive: true, force: true }); }
 });

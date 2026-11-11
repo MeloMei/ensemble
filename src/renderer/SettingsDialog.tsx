@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { FolderCog, Keyboard, MessageCircle, Palette, Plug, Search } from 'lucide-react';
 import type { Session, Snapshot, Workspace } from '../shared/types';
 import { AppearanceSettings } from './AppearanceSettings';
+import { DictationSettings } from './DictationSettings';
 import { LanguageOptions } from './language';
 import { ApplicationUpdateSettings, type useApplicationUpdates } from './ApplicationUpdates';
 import { AppSelect } from './AppSelect';
@@ -147,6 +148,7 @@ export function SettingsDialog({ snapshot, workspace, sessions, session, perform
           {visited.has('general') && <>
             <header className="settings-section-heading"><h3>{t('settings.general')}</h3><p>{t('settings.generalDescription')}</p></header>
             <div data-setting-anchor="language"><LanguageOptions /></div>
+            <DictationSettings />
             <AppearanceSettings />
             <NotificationSettings perform={perform} />
             <WindowCaptureSettings perform={perform} />

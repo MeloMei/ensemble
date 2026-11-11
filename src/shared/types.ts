@@ -1,3 +1,4 @@
+import type { DictationError, DictationEvent, DictationLanguage, DictationStatus } from './dictation';
 import type { CollaborationEvent, CollaborationState, CollaborationIdentity, SessionCollaboration } from './collaboration';
 import type { LanguagePreference, LanguageState } from './i18n';
 import type { DisplayText } from './display-text';
@@ -481,6 +482,12 @@ export interface WorkbenchAPI {
   notificationStatus(): Promise<NotificationStatus>;
   notificationPreferences(): Promise<NotificationPreferences>;
   setNotificationPreferences(patch: Partial<NotificationPreferences>): Promise<NotificationPreferences>;
+  dictationStatus(): Promise<DictationStatus>;
+  setDictationLanguage(language: DictationLanguage): Promise<void>;
+  startDictation(id: string, sessionId: string): Promise<DictationError | undefined>;
+  stopDictation(id: string): Promise<void>;
+  cancelDictation(id: string): Promise<void>;
+  onDictationEvent(listener: (event: DictationEvent) => void): () => void;
   captureWindow(): Promise<PromptAttachment | undefined>;
   cancelWindowCapture(): Promise<void>;
   windowCaptureShortcut(): Promise<boolean>;
