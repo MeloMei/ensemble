@@ -367,6 +367,8 @@ export interface WorkbenchAPI {
   gitBranchComparison(workspaceId: string, targetRef: string): Promise<GitBranchComparison>;
   fileDiff(workspaceId: string, relativePath: string): Promise<FileDiff>;
   chooseAttachments(): Promise<PromptAttachment[]>;
+  importDroppedAttachments(files: File[]): Promise<PromptAttachment[] | null>;
+  importWorkspaceAttachments(workspaceId: string, paths: string[]): Promise<PromptAttachment[]>;
   importPastedImage(name: string, bytes: Uint8Array): Promise<PromptAttachment>;
   readImageAttachment(attachment: PromptAttachment): Promise<string>;
   sendPrompt(sessionId: string, input: PromptInput, commandId?: string, expectedProviderId?: string): Promise<void | { rejected: SendPromptRejectionReason }>;

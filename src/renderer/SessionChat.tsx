@@ -39,7 +39,7 @@ import { SearchPicker, type SearchPickerSection } from './ui-kit';
 import { FoldableText } from './ui-kit/FoldableText';
 import { expandConversation, type TraceEntry } from './conversation-index';
 import { measureConversationRow, useReadingAnchor, useSessionReadingPosition } from './useSessionReadingPosition';
-import { WorkspaceFileNavigation, workspaceFileReference } from './workspace-file-reference';
+import { WORKSPACE_FILE_DRAG_TYPE, WorkspaceFileNavigation, workspaceFileReference } from './workspace-file-reference';
 import { diffLines } from './review-notes';
 import { questionExcerpt } from '../shared/side-question';
 import { permissionTiersFor, sessionPermissionSchema } from '../shared/session-permissions';
@@ -56,7 +56,7 @@ interface SessionChatProps {
   pending: Set<string>;
   draft: PromptInput;
   draftError?: string;
-  onDraftChange: (value: PromptInput, expected?: PromptInput) => void;
+  onDraftChange: (value: PromptInput, expected?: PromptInput) => void | boolean;
   readOnly?: boolean;
   sessions?: Session[];
   openSession: (id: string) => void;
@@ -77,6 +77,12 @@ const activeStatuses = new Set<Session['status']>(['running', 'waiting_approval'
 const clipboardImageExtensions: Readonly<Record<string, string>> = {
   'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp',
 };
+
+function droppedFileSource(event: DragEvent<HTMLElement>) {
+  if (!(event.target instanceof Node) || !event.currentTarget.contains(event.target)) return;
+  if (event.dataTransfer.types.includes(WORKSPACE_FILE_DRAG_TYPE)) return 'workspace';
+  if (event.dataTransfer.types.includes('Files')) return 'system';
+}
 
 function QuestionApproval({ approval, pending, perform }: ApprovalProps) {
   const { t } = useTranslation('workspace');
@@ -1037,6 +1043,7 @@ export function SessionChat({
   const promptLengthIssue = Boolean(draft.evidence?.length && draftPromptText(draft).length > PROMPT_TEXT_LIMIT);
   const [attachmentError, setAttachmentError] = useState('');
   const [importingAttachments, setImportingAttachments] = useState(false);
+  const [fileDragOver, setFileDragOver] = useState(false);
   const [runtimeSelection, setRuntimeSelection] = useState<RuntimeSelection>();
   const submittedRuntime = useRef<RuntimeSelection>(undefined);
   const runtimeStatusId = useId();
@@ -1499,7 +1506,7 @@ export function SessionChat({
     });
   };
 
-  const importAttachments = (load: () => Promise<PromptAttachment[]>, source: 'picker' | 'clipboard') => {
+  const importAttachments = (load: () => Promise<PromptAttachment[]>, source: 'picker' | 'clipboard' | 'drop') => {
     if (attachmentLock.current || sendLock.current) return;
     attachmentLock.current = true;
     setImportingAttachments(true);
@@ -1511,7 +1518,11 @@ export function SessionChat({
         const current = currentDraft.current;
         const next = [...(current.attachments ?? []), ...selected];
         if (source === 'clipboard' && attachmentLimitIssue(next)) throw new Error(t('evidence.pasteLimit'));
-        onDraftChange({ ...current, attachments: next }, current);
+        if (source === 'drop') {
+          if (attachmentLimitIssue(next)) throw new Error(t('chat.dropAttachmentLimit'));
+          if (selected.some(file => !supportsAttachment(file.kind))) throw new Error(t('chat.dropAttachmentUnsupported'));
+        }
+        if (onDraftChange({ ...current, attachments: next }, current) === false) throw new Error(t('chat.attachmentDraftChanged'));
       } catch (error) {
         setAttachmentError(error instanceof Error ? error.message : String(error));
       } finally {
@@ -1521,7 +1532,47 @@ export function SessionChat({
     })();
   };
 
-  return <section data-chat-session-id={session.id} className={`chat-pane${readOnly ? ' chat-pane-readonly' : ''}`} aria-label={session.title}>
+  const canDropFiles = !readOnly && !session.archived && historyReady && connected && !busy && !importingAttachments;
+  const dropFiles = (event: DragEvent<HTMLElement>) => {
+    const source = droppedFileSource(event);
+    if (!source) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setFileDragOver(false);
+    if (!canDropFiles || attachmentLock.current || sendLock.current) return;
+    if (!attachmentsSupported) { setAttachmentError(t('chat.pluginAttachmentsUnsupported')); return; }
+    const files = [...event.dataTransfer.files];
+    const projectFile = event.dataTransfer.getData(WORKSPACE_FILE_DRAG_TYPE);
+    if (attachments.length >= ATTACHMENT_LIMITS.count || (source === 'system' && attachmentLimitIssue([...attachments, ...files]))) {
+      setAttachmentError(t('chat.dropAttachmentLimit'));
+      return;
+    }
+    importAttachments(async () => {
+      if (source === 'workspace') {
+        const file = JSON.parse(projectFile) as { workspaceId?: unknown; path?: unknown } | null;
+        if (!workspaceId || file?.workspaceId !== workspaceId || typeof file.path !== 'string') throw new Error(t('chat.dropWorkspaceFileUnavailable'));
+        return window.workbench.importWorkspaceAttachments(workspaceId, [file.path]);
+      }
+      const selected = await window.workbench.importDroppedAttachments(files);
+      if (!selected) throw new Error(t('chat.dropFileUnavailable'));
+      return selected;
+    }, 'drop');
+  };
+
+  return <section data-chat-session-id={session.id} className={`chat-pane${readOnly ? ' chat-pane-readonly' : ''}`} aria-label={session.title}
+    onDragOver={event => {
+      if (!droppedFileSource(event)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = canDropFiles ? 'copy' : 'none';
+      setFileDragOver(canDropFiles && attachmentsSupported);
+    }}
+    onDragLeave={event => {
+      if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setFileDragOver(false);
+    }}
+    onDrop={dropFiles}>
+    {fileDragOver && canDropFiles && <div className="chat-file-drop-target" aria-hidden="true">
+      <span><Paperclip size={16} />{t('chat.dropToAttach')}</span>
+    </div>}
     <header className="chat-toolbar">
       <div className="chat-toolbar-heading">
         <MessageCircle size={14} /><h2 title={session.title}>{session.title}</h2>

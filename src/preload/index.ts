@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { Snapshot, UnsavedFileSummary, WorkbenchAPI } from '../shared/types';
 import { DraftWriter } from '../shared/draft-writer';
 import { TerminalInputWriter } from '../shared/terminal-input-writer';
@@ -155,6 +155,11 @@ const api: WorkbenchAPI = {
   gitBranchComparison: (workspaceId, targetRef) => ipcRenderer.invoke('workbench:git-branch-comparison', workspaceId, targetRef),
   fileDiff: (workspaceId, path) => ipcRenderer.invoke('workbench:file-diff', workspaceId, path),
   chooseAttachments: () => ipcRenderer.invoke('workbench:choose-attachments'),
+  importDroppedAttachments: async files => {
+    const paths = files.map(file => webUtils.getPathForFile(file));
+    return paths.length && paths.every(Boolean) ? ipcRenderer.invoke('workbench:import-attachments', paths) : null;
+  },
+  importWorkspaceAttachments: (id, paths) => ipcRenderer.invoke('workbench:import-workspace-attachments', id, paths),
   importPastedImage: (name, bytes) => ipcRenderer.invoke('workbench:import-pasted-image', name, bytes),
   readImageAttachment: attachment => ipcRenderer.invoke('workbench:read-image-attachment', attachment),
   sendPrompt: async (id, input, commandId, expectedProviderId) => {

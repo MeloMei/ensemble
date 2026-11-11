@@ -400,6 +400,11 @@ export class WorkspaceFiles {
     return { path: normalizedRelative(relativePath), ...contents, language: language(relativePath) };
   }
 
+  async resolveFilePaths(cwd: string, relativePaths: string[]): Promise<string[]> {
+    const root = await workspaceRoot(cwd);
+    return Promise.all(relativePaths.map(relativePath => scopedPath(root, relativePath)));
+  }
+
   async write(cwd: string, input: { path: string; content: string; revision: string }): Promise<FileContent> {
     const root = await workspaceRoot(cwd);
     return serialized(await mutationKey(root), async () => {
