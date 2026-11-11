@@ -2523,6 +2523,7 @@ const cases: Record<string, () => Promise<void>> = {
     await waitFor(() => Boolean(document.querySelector('.context-usage-trigger')), 'The current context usage was missing');
     const card = () => document.querySelector<HTMLElement>('.ui-detail-card:not([data-state=closed])');
     const move = async (target: Element, vertical = .5) => {
+      await act(async () => { target.scrollIntoView({ block: 'nearest' }); await tick(); });
       const { x, y, width, height } = target.getBoundingClientRect();
       await act(async () => {
         await rendererInput({ type: 'mouseMoved', x: Math.floor(x + width / 2), y: Math.floor(y + height * vertical) });
