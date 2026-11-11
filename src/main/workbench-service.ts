@@ -282,6 +282,10 @@ export async function createWorkbenchService(options: {
       engine.removeQueuedPrompt(idSchema.parse(id), idSchema.parse(itemId), queueRevisionSchema.parse(revision), commandIdSchema.parse(commandId), queueEditIdSchema.optional().parse(editId)));
     handle('workbench:move-queued-prompt', (_event, id, itemId, targetId, expectedOrder, commandId) =>
       engine.moveQueuedPrompt(idSchema.parse(id), idSchema.parse(itemId), idSchema.parse(targetId), idSchema.array().parse(expectedOrder), commandIdSchema.parse(commandId)));
+    handle('workbench:interrupt-for-queued-prompt', (_event, id, itemId, order, attemptId, commandId) =>
+      engine.interruptForQueuedPrompt(idSchema.parse(id), idSchema.parse(itemId), idSchema.array().parse(order), idSchema.parse(attemptId), idSchema.parse(commandId)));
+    handle('workbench:steer-queued-prompt', (_event, id, itemId, revision, attemptId, commandId) =>
+      engine.steerQueuedPrompt(idSchema.parse(id), idSchema.parse(itemId), queueRevisionSchema.parse(revision), idSchema.parse(attemptId), idSchema.parse(commandId)));
     handle('workbench:set-session-queue-paused', (_event, id, paused) => engine.setSessionQueuePaused(idSchema.parse(id), z.boolean().parse(paused)));
     handle('workbench:reconcile-session-delivery', (_event, id) => engine.reconcileSessionDelivery(idSchema.parse(id)));
     handle('workbench:provider-health', (_event, cwd) => engine.liveSnapshot().providers.map(provider => health.describe(provider, cwdSchema.optional().parse(cwd))));

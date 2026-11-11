@@ -7,6 +7,7 @@ import { delimiter, join } from 'node:path';
 import { promisify } from 'node:util';
 import { abortError, asError, JsonRpcProcess, RpcError, type RpcExit, type RpcNotification, type RpcRequest } from './json-rpc';
 import type { DeliveryReconciliation, ProviderAdapter, TurnContext } from './types';
+import { ProviderSteerRejected } from './types';
 import type { MessageDelivery, ProviderModel, Session } from '../../shared/types';
 import type { DisplayText } from '../../shared/display-text';
 import { SESSION_PERMISSION_TIERS } from '../../shared/session-permissions';
@@ -35,6 +36,7 @@ function codexPermissionParams(session: Session) {
 }
 
 interface TurnHandlers {
+  steer(text: string): Promise<{ nativeThreadId: string; nativeTurnId: string }>;
   notification(message: RpcNotification): void;
   request(message: RpcRequest): Promise<unknown>;
   fail(error: Error): void;
@@ -172,7 +174,7 @@ export async function createCodexProvider(findManagedBinary?: () => Promise<stri
     tracksDelivery: true,
     info: {
       id: 'codex', name: 'Codex', source: 'builtin', available: false, detail, detailI18n,
-      capabilities: { resume: true, approvals: true, images: true, rewind: true, permissions: true, permissionTiers: SESSION_PERMISSION_TIERS, effort: true },
+      capabilities: { resume: true, approvals: true, images: true, rewind: true, steer: true, permissions: true, permissionTiers: SESSION_PERMISSION_TIERS, effort: true },
     },
     async refreshInfo() {
       let protocolReady: boolean | undefined;
@@ -204,6 +206,11 @@ export async function createCodexProvider(findManagedBinary?: () => Promise<stri
       const idle = [...sessions].filter(([, connection]) => !connection.handlers);
       for (const [id] of idle) sessions.delete(id);
       await Promise.all(idle.map(([, connection]) => connection.close()));
+    },
+    async steer(sessionId, text) {
+      const handlers = sessions.get(sessionId)?.handlers;
+      if (!handlers) throw new ProviderSteerRejected('Codex 当前没有可接收消息的回合。');
+      return handlers.steer(text);
     },
     async run(context) {
       let prepared = false;
@@ -438,6 +445,20 @@ async function runCodex(connection: CodexSessionConnection, context: TurnContext
   };
   const rpc = connection.rpc;
   connection.handlers = {
+    async steer(text) {
+      if (settled || !threadId || !turnId || context.signal.aborted) throw new ProviderSteerRejected('Codex 当前没有可接收消息的回合。');
+      const expectedTurnId = turnId;
+      try {
+        const result = await rpc.request<{ turnId?: string }>('turn/steer', {
+          threadId, expectedTurnId, input: [{ type: 'text', text, text_elements: [] }],
+        }, { signal: context.signal, timeoutMs: 8000 });
+        if (result.turnId !== expectedTurnId) throw new Error('Codex 未确认预期回合。');
+        return { nativeThreadId: threadId, nativeTurnId: expectedTurnId };
+      } catch (error) {
+        if (error instanceof RpcError) throw new ProviderSteerRejected(error.message, { cause: error });
+        throw error;
+      }
+    },
     notification: onNotification,
     request: async request => {
       if (!submissionAttempted) throw new RpcError(-32000, '当前任务尚未发送');

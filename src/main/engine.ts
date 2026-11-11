@@ -4,10 +4,13 @@ import { isAbsolute, relative, sep } from 'node:path';
 import { z } from 'zod';
 import type {
   AgentMail, AgentMessageSource, ApprovalInput, CollaborationCaller, CreateSessionInput, DraftEvidence, McpServerConfig, PromptInput, ProviderInfo,
-  ParkedSessionRuntime, QueuedPromptMoveResult, RuntimeCommand, RuntimeModelConfiguration, SendPromptRejectionReason, Session, SessionAttempt, SessionCommandReceipt, SessionContinuationTarget, SessionModelSelection, SessionQueueItem, SessionSettings, SessionSkillAssignment, SessionSkillAssignmentReceipt, SessionStatus, SessionUpdate, SideQuestionInput, SideQuestionReceipt, Snapshot, TerminalInfo, Workflow,
+  ParkedSessionRuntime, QueuedPromptMoveResult, QueuedPromptSteerResult, RuntimeCommand, RuntimeModelConfiguration, SendPromptRejectionReason,
+  Session, SessionAttempt, SessionCommandReceipt, SessionContinuationTarget, SessionModelSelection, SessionQueueItem, SessionSettings,
+  SessionSkillAssignment, SessionSkillAssignmentReceipt, SessionStatus, SessionUpdate, SideQuestionInput, SideQuestionReceipt, Snapshot, TerminalInfo, Workflow,
   WorkflowInput, Workspace, WorkspaceManagement, WorkspaceSplitInput, WorkspaceTab,
 } from '../shared/types';
 import type { LoadedPromptAttachment, ProviderAdapter, ProviderEvent } from './providers/types';
+import { ProviderSteerRejected } from './providers/types';
 import { PROMPT_TEXT_LIMIT, SIDE_QUESTION_LIMIT } from '../shared/types';
 import { questionExcerpt } from '../shared/side-question';
 import { validQuestionAnswers } from '../shared/question-answers';
@@ -20,7 +23,7 @@ import { previousSessionCommand, runSessionCommand, sessionCommandReceipt } from
 import { recordSessionAttention } from './attention';
 import { addDraftEvidence, draftPromptText, hasPromptInput, samePromptDraft } from '../shared/draft-evidence';
 import { attachmentLimitIssue, supportsPromptAttachment } from '../shared/prompt-attachments';
-import { canMoveQueuedPrompt } from '../shared/prompt-queue';
+import { canMoveQueuedPrompt, canSteerQueuedPrompt } from '../shared/prompt-queue';
 import { permissionTiersFor } from '../shared/session-permissions';
 import { modelEffortChoices } from '../shared/model-efforts';
 import { runtimeHandoff } from './runtime-handoff';
@@ -59,6 +62,7 @@ interface LogicalTask {
   done: Promise<void>; resolve: () => void; children: Set<string>; workersCreated: number;
   executing: boolean; queued: boolean; turnKey?: string; rounds: number; maxPhysicalTurns?: number;
   modelId?: string; settings?: SessionSettings;
+  continueWith?: string;
 }
 interface QueuedTurn { task: LogicalTask; input: PromptInput; userMessageId: string }
 interface ObservedRuntimeModel { adapter: ProviderAdapter; model: RuntimeModelConfiguration; requestedEffort?: string }
@@ -128,6 +132,7 @@ export class WorkbenchEngine {
   private unavailableProviders: ProviderInfo[] = [];
   private pluginErrors: string[] = [];
   private active = new Map<string, LogicalTask>();
+  private pendingSteers = new Map<string, { itemId: string; done: Promise<QueuedPromptSteerResult> }>();
   private runtimeCommands = new Map<string, { providerId: string; commands: RuntimeCommand[] }>();
   private runtimeModels = new Map<string, Map<string, ObservedRuntimeModel>>();
   private providerAccountChanges = new Set<string>();
@@ -1004,7 +1009,7 @@ export class WorkbenchEngine {
     this.assertOpen();
     const session = this.session(id);
     const item = this.queuedPrompt(session, itemId);
-    if (item.agentSource) throw new Error('来自其他会话的消息只能移除。');
+    if (item.agentSource || item.steeringUnconfirmed) throw new Error('这条排队消息只能移除。');
     const edit = item.edit;
     const lease = edit?.lease;
     if (lease && lease.ownerId !== ownerId && lease.expiresAt > Date.now()) {
@@ -1079,6 +1084,7 @@ export class WorkbenchEngine {
     const session = this.session(id);
     const { replayed } = runSessionCommand(this.store, 'queue-remove', commandId, { id, itemId, revision, editId }, () => {
       const item = this.queuedPrompt(session, itemId);
+      if (this.pendingSteers.get(id)?.itemId === itemId) throw new Error('正在确认当前回合是否收到消息。');
       if (item.edit?.id !== editId || (item.revision ?? 0) !== revision) throw new Error('这条排队消息正在编辑或已变更。');
       this.removeQueuedItems(session, queued => queued.id === item.id);
     });
@@ -1106,6 +1112,86 @@ export class WorkbenchEngine {
       this.drainSessionQueue(id);
     }
     return result;
+  }
+
+  interruptForQueuedPrompt(id: string, itemId: string, expectedOrder: string[], attemptId: string, commandId: string): QueuedPromptMoveResult {
+    this.assertOpen();
+    const session = this.session(id);
+    const task = this.active.get(id);
+    const { result, replayed } = runSessionCommand<QueuedPromptMoveResult>(this.store, 'queue-interrupt', commandId, { id, itemId, expectedOrder, attemptId }, () => {
+      const queue = session.queue ?? [];
+      if (queue.length !== expectedOrder.length || queue.some((item, index) => item.id !== expectedOrder[index])) return 'queue-changed';
+      const from = expectedOrder.indexOf(itemId);
+      const item = queue[from];
+      if (!task || task.attempt.id !== attemptId || task.controller.signal.aborted || this.pendingSteers.has(id) || session.queuePaused
+        || !item || item.agentSource || item.edit || item.steeringUnconfirmed || (from > 0 && !canMoveQueuedPrompt(queue, from, 0))) return 'blocked';
+      if (from > 0) queue.unshift(...queue.splice(from, 1));
+      session.updatedAt = now();
+      return 'moved';
+    });
+    if (result === 'moved' && !replayed && task) {
+      task.continueWith = itemId;
+      this.publish(this.liveSnapshot());
+      this.cancelTask(task);
+    }
+    return result;
+  }
+
+  async steerQueuedPrompt(id: string, itemId: string, revision: number, attemptId: string, commandId: string): Promise<QueuedPromptSteerResult> {
+    this.assertOpen();
+    const session = this.session(id);
+    const task = this.active.get(id);
+    const adapter = this.adapters.get(session.providerId);
+    const item = session.queue?.find(queued => queued.id === itemId);
+    const input = { id, itemId, revision, attemptId };
+    const finalId = `queue-steer-final:${createHash('sha256').update(commandId).digest('hex')}`;
+    const start = runSessionCommand(this.store, 'queue-steer', commandId, input, () => {
+      if (!item || !canSteerQueuedPrompt(item) || (item.revision ?? 0) !== revision || !task?.turnKey || task.attempt.id !== attemptId
+        || task.controller.signal.aborted || this.pendingSteers.has(id) || session.status !== 'running' || !adapter?.steer
+        || item.modelId !== task.modelId || JSON.stringify(item.settings) !== JSON.stringify(task.settings)) return false;
+      item.steeringUnconfirmed = true;
+      item.revision = revision + 1;
+      item.updatedAt = session.updatedAt = now();
+      return true;
+    });
+    if (!start.result) return 'rejected';
+    if (start.replayed || !item || !adapter?.steer) {
+      return previousSessionCommand<QueuedPromptSteerResult>(this.store, 'queue-steer-final', finalId, input)?.result ?? 'unconfirmed';
+    }
+    const dispatch = adapter.steer.bind(adapter);
+    const text = item.input.text;
+    const done = Promise.resolve().then(async (): Promise<QueuedPromptSteerResult> => {
+      let delivered: Awaited<ReturnType<typeof dispatch>>;
+      try { delivered = await dispatch(id, text); }
+      catch (error) {
+        if (!(error instanceof ProviderSteerRejected)) return 'unconfirmed';
+        return runSessionCommand<QueuedPromptSteerResult>(this.store, 'queue-steer-final', finalId, input, () => {
+          const current = this.session(id);
+          const queued = this.queuedPrompt(current, itemId);
+          delete queued.steeringUnconfirmed;
+          queued.updatedAt = current.updatedAt = now();
+          return 'rejected';
+        }).result;
+      }
+      return runSessionCommand<QueuedPromptSteerResult>(this.store, 'queue-steer-final', finalId, input, () => {
+        const current = this.session(id);
+        this.removeQueuedItems(current, queued => queued.id === itemId);
+        const messageId = randomUUID();
+        const createdAt = now();
+        current.messages.push({ id: messageId, role: 'user', text, createdAt,
+          nativeTurnId: delivered.nativeTurnId, delivery: { id: messageId, clientUserMessageId: messageId, status: 'accepted',
+            createdAt, updatedAt: createdAt, ...delivered } });
+        current.updatedAt = createdAt;
+        return 'sent';
+      }).result;
+    }).finally(() => {
+      this.pendingSteers.delete(id);
+      this.publish(this.liveSnapshot());
+      this.drainSessionQueue(id);
+    });
+    this.pendingSteers.set(id, { itemId, done });
+    this.publish(this.liveSnapshot());
+    return done;
   }
 
   setSessionQueuePaused(id: string, paused: boolean): void {
@@ -1138,7 +1224,7 @@ export class WorkbenchEngine {
   private drainSessionQueue(id: string): void {
     const session = this.session(id);
     const item = session.queue?.[0];
-    if (this.closing || this.active.has(id) || session.queuePaused || !item || item.edit) { this.waitingForProject.delete(id); return; }
+    if (this.closing || this.active.has(id) || this.pendingSteers.has(id) || session.queuePaused || !item || item.edit || item.steeringUnconfirmed) { this.waitingForProject.delete(id); return; }
     try {
       if (item.agentSource?.reply) {
         const handoff = this.store.state.collaboration.sessionHandoffs?.find(entry => entry.returnTo?.queueItemId === item.id);
@@ -1431,6 +1517,7 @@ export class WorkbenchEngine {
   private finishTask(task: LogicalTask, status: 'completed' | 'failed' | 'cancelled', error?: string): void {
     if (this.active.get(task.sessionId) !== task) return;
     const session = this.session(task.sessionId);
+    const runNext = status === 'cancelled' && task.continueWith !== undefined && session.queue?.[0]?.id === task.continueWith && !session.queuePaused;
     const returnedTo = this.store.atomic(() => {
       session.error = error; task.attempt.error = error; task.attempt.endedAt = now();
       if (status !== 'completed') {
@@ -1440,7 +1527,7 @@ export class WorkbenchEngine {
           message.delivery.status = 'rejected'; message.delivery.updatedAt = now();
           message.delivery.reason = '回合在调用运行时前结束，消息未发送。';
         }
-        this.holdSessionQueue(session, status === 'cancelled' ? '任务已停止，剩余消息等待手动恢复。' : '上一轮失败，请检查后恢复队列。');
+        if (!runNext) this.holdSessionQueue(session, status === 'cancelled' ? '任务已停止，剩余消息等待手动恢复。' : '上一轮失败，请检查后恢复队列。');
       }
       this.moveSessionState(session, status);
       return this.enqueueSessionReplies(session, task.attempt);
@@ -1459,7 +1546,7 @@ export class WorkbenchEngine {
     this.changed();
     this.observe({ type: 'settled', sessionId: session.id, attemptId: task.attempt.id, status, output: sessionTurnOutput(session, task.attempt), error });
     task.resolve();
-    if (status === 'completed') returnedTo.add(session.id);
+    if (status === 'completed' || runNext) returnedTo.add(session.id);
     for (const id of returnedTo) this.drainSessionQueue(id);
   }
 
@@ -1479,6 +1566,11 @@ export class WorkbenchEngine {
       return { sessionId: id, attemptId: task?.attempt.id ?? null };
     });
     if (command.replayed || !task) { if (!command.replayed) this.publish(this.liveSnapshot()); return; }
+    task.continueWith = undefined;
+    this.cancelTask(task);
+  }
+
+  private cancelTask(task: LogicalTask): void {
     task.controller.abort();
     for (const child of task.children) this.cancelSession(child);
     if (!task.executing) void this.finishCancellation(task);
@@ -1749,6 +1841,7 @@ export class WorkbenchEngine {
     for (const task of tasks) this.cancelSession(task.sessionId);
     await Promise.all([
       ...tasks.map(item => item.done),
+      ...[...this.pendingSteers.values()].map(operation => operation.done.catch(() => {})),
       ...[...this.projectMutations].map(operation => operation.catch(() => {})),
     ]);
     const results = await Promise.allSettled([...this.disposableAdapters].map(adapter => adapter.dispose!()).concat(this.store.flush()));
