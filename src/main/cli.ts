@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join } from 'node:path';
 import { writeFile } from 'node:fs/promises';
 import { connectBackend } from './backend-client';
 import { daemonCommand } from './backend-daemon';
+import { serveRemoteStdio } from './remote-stdio';
 import { DATA_DIRECTORY_NAME } from '../shared/app-identity';
 
 const { values, positionals } = parseArgs({ allowPositionals: true, options: {
@@ -41,9 +42,12 @@ async function run(action: string): Promise<unknown> {
 }
 
 try {
-  const content = JSON.stringify(await run(positionals[0] ?? 'status'), null, 2) + '\n';
-  if (values.output) await writeFile(values.output, content, { mode: 0o600, flag: 'wx' });
-  else process.stdout.write(content);
+  if (positionals[0] === 'remote-stdio') await serveRemoteStdio(dataPath);
+  else {
+    const content = JSON.stringify(await run(positionals[0] ?? 'status'), null, 2) + '\n';
+    if (values.output) await writeFile(values.output, content, { mode: 0o600, flag: 'wx' });
+    else process.stdout.write(content);
+  }
 } catch (error) {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
   process.exitCode = 1;

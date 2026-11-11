@@ -1,6 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { FolderCog, Keyboard, MessageCircle, Palette, Plug, Search } from 'lucide-react';
+import { FolderCog, Keyboard, MessageCircle, Monitor, Palette, Plug, Search } from 'lucide-react';
 import type { Session, Snapshot, Workspace } from '../shared/types';
 import { AppearanceSettings } from './AppearanceSettings';
 import { DictationSettings } from './DictationSettings';
@@ -14,6 +14,7 @@ import { Modal, type Perform } from './ui';
 import { NotificationSettings } from './NotificationSettings';
 import { WindowCaptureSettings } from './WindowCapture';
 import { ShortcutSettings } from './ShortcutSettings';
+import { RemoteDevicesPanel } from './RemoteDevicesPanel';
 import { composingShortcut, useShortcuts } from './app-shortcuts';
 import { searchableSettings, type SettingsSection, type SettingsTarget } from './settings-targets';
 import './SettingsDialog.css';
@@ -55,6 +56,7 @@ export function SettingsDialog({ snapshot, workspace, sessions, session, perform
     { id: 'general', label: t('settings.general'), Icon: Palette },
     { id: 'shortcuts', label: t('shortcuts.title'), Icon: Keyboard },
     { id: 'providers', label: t('app.providers'), Icon: Plug },
+    { id: 'remote', label: t('remote.title'), Icon: Monitor },
     { id: 'project', label: t('settings.project'), Icon: FolderCog },
     { id: 'session', label: t('settings.session'), Icon: MessageCircle },
   ] as const;
@@ -163,6 +165,9 @@ export function SettingsDialog({ snapshot, workspace, sessions, session, perform
             <header className="settings-section-heading"><h3>{t('app.providers')}</h3><p>{t('provider.refreshAfterSetup')}</p></header>
             {snapshot && <div data-setting-anchor="providers"><ProvidersContent snapshot={snapshot} perform={perform} pending={pending} /></div>}
           </>}
+        </section>
+        <section className="settings-panel" id={`${id}-remote`} role="tabpanel" aria-labelledby={`${id}-remote-tab`} hidden={section !== 'remote'}>
+          {visited.has('remote') && <RemoteDevicesPanel visible={section === 'remote'} perform={perform} pending={pending} />}
         </section>
         <section className="settings-panel" id={`${id}-project`} role="tabpanel" aria-labelledby={`${id}-project-tab`} hidden={section !== 'project'}>
           {visited.has('project') && <>

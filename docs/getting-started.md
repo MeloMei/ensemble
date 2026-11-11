@@ -160,6 +160,12 @@ macOS uses a LaunchAgent when the user is logged into the graphical session. Lin
 
 For an existing desktop data directory, quit Ensemble and run `bin/workbench stop` if its ordinary backend is still running before installing the service. Clients with the same data directory use the service. Uninstall the service before using the desktop app's automatic updater with that data directory.
 
+## Connect to a remote device
+
+Set up the headless backend on each remote machine. Verify the host key and SSH key login in your terminal first. Add each machine in **Settings → Remote devices** with its SSH host or config alias and the absolute path to its `bin/workbench` executable. If the remote service uses a custom data directory, enter that path too. For Node.js installed through nvm or another version manager, use `command -v node` on the remote machine and enter that executable path in device settings.
+
+Select a device to browse its active conversations, read recent messages, send a text prompt, and respond to permissions or questions. The backend continues to listen only on its own loopback interface. The remote CLI runs over SSH and uses the logged-in account's local backend connection.
+
 ## Connect an external agent
 
 Open **Collaboration → Agent MCP connections**, give the agent a name, and authorize its project directories and platform runtimes. Copy the generated configuration into the original client. The credential is shown only when issued and can be revoked independently.

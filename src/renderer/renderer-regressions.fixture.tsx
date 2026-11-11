@@ -3598,6 +3598,40 @@ const cases: Record<string, () => Promise<void>> = {
     assertDraft();
     assert(errors.length === 0, errors.join('\n'));
   },
+  'REMOTE-DEVICES: approvals and messages follow the selected SSH device': async () => {
+    const devices = ['laptop', 'desktop'].map(id => ({ id, name: id, destination: `me@${id}`, cliPath: '/fixture/bin/workbench' }));
+    const requests: { device: string; action: string; approvalId?: string; text?: string }[] = [];
+    let approved = false;
+    Object.assign(window, { workbench: {
+      listRemoteDevices: async () => devices,
+      remoteDeviceRequest: async (device: string, input: { action: string; sessionId?: string; approvalId?: string; text?: string }) => {
+        requests.push({ device, action: input.action, approvalId: input.approvalId, text: input.text });
+        if (input.action !== 'snapshot') { approved ||= input.action === 'approve'; return; }
+        const current = { id: 'shared-session-id', title: `${device} conversation`, providerId: 'codex', status: 'running', pendingApprovals: Number(!approved) };
+        return { sessions: [current], limited: false, ...(input.sessionId ? { selected: {
+          session: current, messages: [{ id: 'message', role: 'assistant', text: `Result on ${device}`, createdAt: session.createdAt }],
+          approvals: approved ? [] : [{ id: `${device}-approval`, sessionId: current.id, title: 'Allow command', detail: 'Explicit approval',
+            choices: [{ id: 'accept', label: 'Allow fixture command' }] }],
+        } } : {}) };
+      },
+    } });
+    await render(<SettingsDialog snapshot={null} sessions={[]} perform={perform} pending={new Set()} updates={idleUpdates}
+      initialSection="remote" openSession={() => {}} onClose={() => {}} />);
+    await waitFor(() => Boolean(document.querySelector('button[aria-label="Remote conversation"]')), 'Remote sessions did not load');
+    await chooseOption(button('shell:remote.session'), 'shared-session-id');
+    await waitFor(() => document.body.textContent?.includes('Result on laptop') === true, 'Laptop transcript did not appear');
+    await chooseOption(button('shell:remote.device'), 'desktop');
+    await waitFor(() => document.body.textContent?.includes('Result on laptop') === false, 'Laptop transcript remained after switching devices');
+    await chooseOption(button('shell:remote.session'), 'shared-session-id');
+    await waitFor(() => document.body.textContent?.includes('Result on desktop') === true, 'Desktop transcript did not appear');
+    const approve = [...document.querySelectorAll('button')].find(item => item.textContent === 'Allow fixture command');
+    assert(approve, 'Remote approval was missing');
+    await act(async () => { approve.click(); await tick(); });
+    await settle();
+    await waitFor(() => !document.body.textContent?.includes('Allow fixture command'), 'Approval did not clear');
+    assert(requests.some(request => request.device === 'desktop' && request.approvalId === 'desktop-approval'), 'Approval was routed to the wrong device');
+    assert(!requests.some(request => request.device === 'laptop' && request.action === 'approve'), 'Laptop received a desktop approval');
+  },
   'DRAFT-SLASH: native commands and one-turn Skills complete at the cursor without sending': async () => {
     let sent: PromptInput | undefined;
     let settingsOpened = 0;

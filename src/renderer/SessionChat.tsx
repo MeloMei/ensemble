@@ -77,7 +77,20 @@ interface SessionChatProps {
   onOpenEvidence?: (source: DraftEvidenceSource) => void;
 }
 
-type ApprovalProps = Pick<SessionChatProps, 'pending' | 'perform'> & { approval: Approval };
+type ApprovalProps = Pick<SessionChatProps, 'pending' | 'perform'> & {
+  approval: Approval;
+  transport?: {
+    scope: string;
+    disabled: boolean;
+    decide: (id: string, choiceId: string) => Promise<void>;
+    answer: (id: string, answers: Record<string, string[]>) => Promise<void>;
+  };
+};
+
+const approvalScope = (approval: Approval, transport: ApprovalProps['transport']) =>
+  transport ? `${transport.scope}:approval:${approval.id}` : `approval:${approval.id}`;
+const approvalPending = (approval: Approval, transport: ApprovalProps['transport']) =>
+  transport ? approvalScope(approval, transport) : `approval-${approval.id}`;
 
 const activeStatuses = new Set<Session['status']>(['running', 'waiting_approval', 'waiting_children', 'queued']);
 const clipboardImageExtensions: Readonly<Record<string, string>> = {
@@ -90,7 +103,7 @@ function droppedFileSource(event: DragEvent<HTMLElement>) {
   if (event.dataTransfer.types.includes('Files')) return 'system';
 }
 
-function QuestionApproval({ approval, pending, perform }: ApprovalProps) {
+function QuestionApproval({ approval, pending, perform, transport }: ApprovalProps) {
   const { t } = useTranslation('workspace');
   const [selected, setSelected] = useState<Record<string, string[]>>({});
   const [free, setFree] = useState<Record<string, string>>({});
@@ -100,12 +113,14 @@ function QuestionApproval({ approval, pending, perform }: ApprovalProps) {
     [...(selected[question.id] ?? []), ...(question.allowCustomAnswer !== false && free[question.id]?.trim() ? [free[question.id].trim()] : [])],
   ]));
   const valid = validQuestionAnswers(questions, answers);
-  const busy = pending.has(`approval-${approval.id}`);
+  const key = approvalPending(approval, transport);
+  const busy = pending.has(key);
+  const disabled = busy || transport?.disabled;
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (!valid || busy) return;
-    void perform(`approval-${approval.id}`, () => runSessionCommand(`approval:${approval.id}`, answers,
-      commandId => window.workbench.answerQuestions(approval.id, answers, commandId)));
+    if (!valid || disabled) return;
+    void perform(key, () => transport ? transport.answer(approval.id, answers)
+      : runSessionCommand(approvalScope(approval, transport), answers, commandId => window.workbench.answerQuestions(approval.id, answers, commandId)));
   };
 
   return <form className="approval-card question-approval" onSubmit={submit}>
@@ -118,7 +133,7 @@ function QuestionApproval({ approval, pending, perform }: ApprovalProps) {
         {question.options.map(option => {
           const checked = (selected[question.id] ?? []).includes(option.label);
           return <button type="button" className={checked ? 'selected' : ''} key={option.label}
-            aria-pressed={checked} disabled={busy} onClick={() => {
+            aria-pressed={checked} disabled={disabled} onClick={() => {
               setSelected(current => ({
                 ...current,
                 [question.id]: question.multiSelect
@@ -137,14 +152,14 @@ function QuestionApproval({ approval, pending, perform }: ApprovalProps) {
         })}
       </div>
       {question.allowCustomAnswer !== false && <input aria-label={t('approval.otherAnswer', { question: renderDisplayText(question.header || question.question, question.headerI18n) })} value={free[question.id] ?? ''}
-        disabled={busy} placeholder={question.multiSelect ? t('approval.otherPlaceholder') : t('approval.answerPlaceholder')}
+        disabled={disabled} placeholder={question.multiSelect ? t('approval.otherPlaceholder') : t('approval.answerPlaceholder')}
         onChange={event => {
           setFree(current => ({ ...current, [question.id]: event.target.value }));
           if (!question.multiSelect) setSelected(current => ({ ...current, [question.id]: [] }));
         }} />}
     </fieldset>)}
     <div className="question-submit">
-      <button className="button primary small" disabled={!valid || busy}>
+      <button className="button primary small" disabled={!valid || disabled}>
         {busy ? <LoaderCircle className="spin" size={14} /> : <Check size={14} />}{t('approval.submit')}</button>
     </div>
   </form>;
@@ -157,17 +172,18 @@ function ApprovalHeading({ title, caption, busy }: { title: string; caption: str
   </div>;
 }
 
-function ApprovalCard({ approval, pending, perform }: ApprovalProps) {
+export function ApprovalCard({ approval, pending, perform, transport }: ApprovalProps) {
   const { t } = useTranslation('workspace');
-  if (approval.questions?.length) return <QuestionApproval approval={approval} pending={pending} perform={perform} />;
-  const busy = pending.has(`approval-${approval.id}`);
+  if (approval.questions?.length) return <QuestionApproval approval={approval} pending={pending} perform={perform} transport={transport} />;
+  const key = approvalPending(approval, transport);
+  const busy = pending.has(key);
   return <section className="approval-card" aria-busy={busy}>
     <ApprovalHeading title={renderDisplayText(approval.title, approval.titleI18n)} caption={t('approval.confirmCaption')} busy={busy} />
     <p>{approval.detail}</p>
     <div className="approval-actions">
-      {approval.choices.map(choice => <button key={choice.id} className="button small" disabled={busy}
-        onClick={() => void perform(`approval-${approval.id}`, () => runSessionCommand(`approval:${approval.id}`, choice.id,
-          commandId => window.workbench.decideApproval(approval.id, choice.id, commandId)))}>
+      {approval.choices.map(choice => <button key={choice.id} className="button small" disabled={busy || transport?.disabled}
+        onClick={() => void perform(key, () => transport ? transport.decide(approval.id, choice.id)
+          : runSessionCommand(approvalScope(approval, transport), choice.id, commandId => window.workbench.decideApproval(approval.id, choice.id, commandId)))}>
         {renderDisplayText(choice.label, choice.labelI18n)}
       </button>)}
     </div>

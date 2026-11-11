@@ -1,7 +1,7 @@
 import type { TFunction } from 'i18next';
 import { shortcutActionIds, shortcutActions, shortcutSearchText, type ShortcutAction } from './app-shortcuts';
 
-export type SettingsSection = 'general' | 'providers' | 'project' | 'session' | 'shortcuts';
+export type SettingsSection = 'general' | 'providers' | 'project' | 'session' | 'shortcuts' | 'remote';
 
 export const settingsTargets = [
   { id: 'language', section: 'general', label: 'preferences.language', keywords: '语言 中文 English locale' },
@@ -20,6 +20,7 @@ export const settingsTargets = [
   { id: 'notification-sound', section: 'general', label: 'settings.notifications.sound', keywords: '通知 声音 sound mute' },
   { id: 'window-capture', section: 'general', label: 'settings.capture.shortcut', keywords: '截图 窗口 shortcut capture window screenshot' },
   { id: 'providers', section: 'providers', label: 'app.providers', keywords: '运行时 Agent runtime provider' },
+  { id: 'remote-devices', section: 'remote', label: 'remote.title', keywords: '远程 设备 remote device ssh' },
   { id: 'project-path', section: 'project', label: 'settings.projectScope', keywords: '项目 目录 workspace path' },
   { id: 'project-skills', section: 'project', label: 'settings.search.skills', keywords: '技能 Skills tool 项目 workspace' },
   { id: 'project-mcp', section: 'project', label: 'settings.search.mcp', keywords: '项目 服务 MCP server' },
@@ -33,7 +34,7 @@ export const settingsTargets = [
 export type SettingsTarget = Pick<typeof settingsTargets[number], 'id' | 'section'>;
 
 const sectionLabels: Record<SettingsSection, string> = {
-  general: 'settings.general', providers: 'app.providers', project: 'settings.project', session: 'settings.session', shortcuts: 'shortcuts.title',
+  general: 'settings.general', providers: 'app.providers', project: 'settings.project', session: 'settings.session', shortcuts: 'shortcuts.title', remote: 'remote.title',
 };
 
 export function searchableSettings(t: TFunction<'shell'>, workspace?: string, session?: string, binding?: (action: ShortcutAction) => string | undefined) {
