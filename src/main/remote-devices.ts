@@ -96,6 +96,7 @@ export class RemoteDevices {
     if (!parsed.success) throw new Error('远程 CLI 的响应与当前版本不兼容。');
     if (!parsed.data.ok) throw new Error(parsed.data.error);
     if (request.action === 'snapshot' && !parsed.data.snapshot) throw new Error('远程 CLI 没有返回会话。');
+    if (request.action === 'create' && !parsed.data.snapshot?.selected) throw new Error('远程 CLI 没有返回创建的会话。');
     return parsed.data.snapshot;
   }
 }

@@ -7,3 +7,4 @@
 .remote-session-messages p { white-space: pre-wrap; overflow-wrap: anywhere; }
 .remote-message-form { display: grid; gap: 8px; justify-items: end; }
 .remote-message-form textarea { min-height: 64px; resize: vertical; }
+.remote-device-status { margin: 0; color: var(--muted); }

@@ -1,14 +1,22 @@
 import { z } from 'zod';
 
 const id = z.string().min(1).max(200);
-const absolutePath = z.string().startsWith('/').max(2048).refine(value => !/[\u0000-\u001f\u007f]/.test(value));
+const absolutePath = (max: number) => z.string().startsWith('/').max(max).refine(value => !/[\u0000-\u001f\u007f]/.test(value));
+const sshPath = absolutePath(2048);
+const projectPath = absolutePath(4096);
+
+export const remoteCreationInput = z.object({
+  cwd: projectPath,
+  providerId: id,
+  title: z.string().trim().max(200).optional(),
+}).strict();
 
 export const remoteDeviceInput = z.object({
   name: z.string().trim().min(1).max(80),
   destination: z.string().trim().max(255).regex(/^(?:[a-zA-Z0-9_][a-zA-Z0-9_.-]*@)?[a-zA-Z0-9_][a-zA-Z0-9_.-]*$/),
-  cliPath: absolutePath,
-  nodePath: absolutePath.optional(),
-  dataPath: absolutePath.optional(),
+  cliPath: sshPath,
+  nodePath: sshPath.optional(),
+  dataPath: sshPath.optional(),
 }).strict();
 
 export type RemoteDeviceInput = z.infer<typeof remoteDeviceInput>;
@@ -16,6 +24,7 @@ export type RemoteDevice = RemoteDeviceInput & { id: string };
 
 export const remoteRequest = z.discriminatedUnion('action', [
   z.object({ action: z.literal('snapshot'), sessionId: id.optional() }).strict(),
+  remoteCreationInput.extend({ action: z.literal('create'), commandId: z.string().uuid() }),
   z.object({ action: z.literal('send'), sessionId: id, providerId: id, text: z.string().trim().min(1).max(40000), commandId: z.string().uuid() }).strict(),
   z.object({ action: z.literal('approve'), approvalId: id, choiceId: id, commandId: z.string().uuid() }).strict(),
   z.object({ action: z.literal('answer'), approvalId: id, answers: z.record(z.array(z.string().min(1).max(2000)).min(1).max(50)), commandId: z.string().uuid() }).strict(),
@@ -35,7 +44,10 @@ const approval = z.object({
     options: z.array(option), multiSelect: z.boolean(), allowCustomAnswer: z.boolean().optional(),
   })).optional(),
 });
+const project = z.object({ cwd: projectPath, name: z.string().max(200) });
+const runtime = z.object({ id, name: z.string().max(200) });
 const snapshot = z.object({
+  creation: z.object({ projects: z.array(project).max(200), runtimes: z.array(runtime).max(200) }).optional(),
   sessions: z.array(sessionSummary).max(200), limited: z.boolean(),
   selected: z.object({ session: sessionSummary, messages: z.array(message).max(40), approvals: z.array(approval) }).optional(),
 });

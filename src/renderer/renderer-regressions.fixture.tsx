@@ -3598,30 +3598,71 @@ const cases: Record<string, () => Promise<void>> = {
     assertDraft();
     assert(errors.length === 0, errors.join('\n'));
   },
-  'REMOTE-DEVICES: approvals and messages follow the selected SSH device': async () => {
+  'REMOTE-DEVICES: creation, approvals and connection status follow the selected SSH device': async () => {
+    type Request = import('../shared/remote-devices').RemoteRequest;
+    type Summary = import('../shared/remote-devices').RemoteSessionSummary;
     const devices = ['laptop', 'desktop'].map(id => ({ id, name: id, destination: `me@${id}`, cliPath: '/fixture/bin/workbench' }));
-    const requests: { device: string; action: string; approvalId?: string; text?: string }[] = [];
+    const requests: { device: string; input: Request }[] = [];
+    const created = new Map<string, Map<string, Summary>>();
+    const firstCheck = deferred<void>();
+    let desktopUnavailable = true;
+    let loseCreateReply = true;
     let approved = false;
     Object.assign(window, { workbench: {
       listRemoteDevices: async () => devices,
-      remoteDeviceRequest: async (device: string, input: { action: string; sessionId?: string; approvalId?: string; text?: string }) => {
-        requests.push({ device, action: input.action, approvalId: input.approvalId, text: input.text });
+      remoteDeviceRequest: async (device: string, input: Request) => {
+        requests.push({ device, input });
+        if (device === 'desktop' && desktopUnavailable) throw new Error('Desktop offline');
+        if (input.action === 'create') {
+          const receipts = created.get(device) ?? new Map<string, Summary>();
+          created.set(device, receipts);
+          if (!receipts.has(input.commandId)) receipts.set(input.commandId, {
+            id: 'created-' + input.commandId, title: input.title || 'New conversation', providerId: input.providerId, status: 'idle',
+            updatedAt: session.updatedAt, pendingApprovals: 0,
+          });
+          if (loseCreateReply) { loseCreateReply = false; throw new Error('Reply lost'); }
+          return snapshot(device, receipts.get(input.commandId)!.id);
+        }
         if (input.action !== 'snapshot') { approved ||= input.action === 'approve'; return; }
-        const current = { id: 'shared-session-id', title: `${device} conversation`, providerId: 'codex', status: 'running', pendingApprovals: Number(!approved) };
-        return { sessions: [current], limited: false, ...(input.sessionId ? { selected: {
-          session: current, messages: [{ id: 'message', role: 'assistant', text: `Result on ${device}`, createdAt: session.createdAt }],
-          approvals: approved ? [] : [{ id: `${device}-approval`, sessionId: current.id, title: 'Allow command', detail: 'Explicit approval',
-            choices: [{ id: 'accept', label: 'Allow fixture command' }] }],
-        } } : {}) };
+        if (device === 'laptop') await firstCheck.promise;
+        return snapshot(device, input.sessionId);
       },
     } });
-    await render(<SettingsDialog snapshot={null} sessions={[]} perform={perform} pending={new Set()} updates={idleUpdates}
-      initialSection="remote" openSession={() => {}} onClose={() => {}} />);
-    await waitFor(() => Boolean(document.querySelector('button[aria-label="Remote conversation"]')), 'Remote sessions did not load');
+    function snapshot(device: string, selectedId?: string) {
+      const existing: Summary = { id: 'shared-session-id', title: `${device} conversation`, providerId: 'codex', status: 'running',
+        pendingApprovals: Number(!approved), updatedAt: session.updatedAt };
+      const sessions = [existing, ...(created.get(device)?.values() ?? [])];
+      const selected = sessions.find(item => item.id === selectedId);
+      return { sessions, limited: false, creation: {
+        projects: device === 'laptop' ? [{ name: 'Laptop project', cwd: '/remote/laptop' }] : [],
+        runtimes: [{ id: 'codex', name: 'Codex' }],
+      }, ...(selected ? { selected: {
+        session: selected, messages: selected === existing
+          ? [{ id: 'message', role: 'assistant', text: `Result on ${device}`, createdAt: session.createdAt }] : [],
+        approvals: approved || selected !== existing ? [] : [{ id: `${device}-approval`, sessionId: existing.id, title: 'Allow command', detail: 'Explicit approval',
+          choices: [{ id: 'accept', label: 'Allow fixture command' }] }],
+      } } : {}) };
+    }
+    const panel = () => <SettingsDialog snapshot={null} sessions={[]} perform={perform} pending={new Set()} updates={idleUpdates}
+      initialSection="remote" openSession={() => {}} onClose={() => {}} />;
+    const status = () => document.querySelector('.remote-device-status')?.textContent;
+    await render(panel());
+    await waitFor(() => status() === translate('shell:remote.status.unchecked'), 'An unchecked device did not show its state');
+    assert(!requests.some(request => request.device === 'desktop'), 'The unselected device was checked automatically');
+    firstCheck.resolve();
+    await waitFor(() => status() === translate('shell:remote.status.connected'), 'Connected status did not appear');
+    await click('shell:remote.newSession');
+    await chooseOption(button('shell:remote.project'), '/remote/laptop');
+    assert(!document.querySelector('input[name=remote-directory]'), 'Choosing a registered project still requires entering its path');
     await chooseOption(button('shell:remote.session'), 'shared-session-id');
     await waitFor(() => document.body.textContent?.includes('Result on laptop') === true, 'Laptop transcript did not appear');
+
     await chooseOption(button('shell:remote.device'), 'desktop');
-    await waitFor(() => document.body.textContent?.includes('Result on laptop') === false, 'Laptop transcript remained after switching devices');
+    await waitFor(() => status() === translate('shell:remote.status.unavailable'), 'An unavailable device did not show its state');
+    assert(!document.body.textContent?.includes('Result on laptop'), 'Laptop transcript remained after switching devices');
+    desktopUnavailable = false;
+    await click('shell:common.reload');
+    await waitFor(() => status() === translate('shell:remote.status.connected'), 'Desktop did not recover after refresh');
     await chooseOption(button('shell:remote.session'), 'shared-session-id');
     await waitFor(() => document.body.textContent?.includes('Result on desktop') === true, 'Desktop transcript did not appear');
     const approve = [...document.querySelectorAll('button')].find(item => item.textContent === 'Allow fixture command');
@@ -3629,8 +3670,40 @@ const cases: Record<string, () => Promise<void>> = {
     await act(async () => { approve.click(); await tick(); });
     await settle();
     await waitFor(() => !document.body.textContent?.includes('Allow fixture command'), 'Approval did not clear');
-    assert(requests.some(request => request.device === 'desktop' && request.approvalId === 'desktop-approval'), 'Approval was routed to the wrong device');
-    assert(!requests.some(request => request.device === 'laptop' && request.action === 'approve'), 'Laptop received a desktop approval');
+    assert(requests.some(({ device, input }) => device === 'desktop' && input.action === 'approve' && input.approvalId === 'desktop-approval'), 'Approval was routed to the wrong device');
+    assert(!requests.some(({ device, input }) => device === 'laptop' && input.action === 'approve'), 'Laptop received a desktop approval');
+
+    const fillCreation = async () => {
+      await click('shell:remote.newSession');
+      await chooseOption(button('shell:remote.runtime'), 'codex');
+      await change(input('input[name=remote-directory]'), 'relative/path');
+      assert(button('shell:remote.create').disabled, 'A relative path could be submitted');
+      await change(input('input[name=remote-directory]'), '/remote/desktop-new');
+      await change(input('input[name=remote-title]'), 'Created on desktop');
+    };
+    await fillCreation();
+    await click('shell:remote.create');
+    await settle();
+    assert(errors.pop() === 'Error: Reply lost', 'A lost reply did not leave a retryable creation');
+    const stored = Object.keys(localStorage).find(key => key.startsWith('ensemble:remote-command:desktop:'));
+    assert(stored && localStorage.getItem(stored)?.includes([...created.get('desktop')!.keys()][0]), 'The creation command ID was not persisted');
+    await render(<div />);
+    await render(panel());
+    await waitFor(() => status() === translate('shell:remote.status.connected'), 'Laptop did not reconnect after reopening settings');
+    assert(!document.body.textContent?.includes('Created on desktop'), 'Desktop conversation appeared on laptop');
+    await chooseOption(button('shell:remote.device'), 'desktop');
+    await waitFor(() => status() === translate('shell:remote.status.connected'), 'Desktop did not reconnect');
+    await fillCreation();
+    await click('shell:remote.create');
+    await settle();
+    await waitFor(() => document.querySelector('.remote-session h4')?.textContent === 'Created on desktop', 'Created conversation did not open');
+    const creates = requests.filter(({ input }) => input.action === 'create');
+    assert(creates.length === 2 && creates.every(({ device, input }) => device === 'desktop' && input.action === 'create'
+      && input.cwd === '/remote/desktop-new' && input.providerId === 'codex'), 'Creation did not stay on the selected device and directory');
+    assert(creates[0].input.action === 'create' && creates[1].input.action === 'create'
+      && creates[0].input.commandId === creates[1].input.commandId && created.get('desktop')?.size === 1,
+    'Retry after reopening settings created a duplicate conversation');
+    assert(!localStorage.getItem(stored), 'A confirmed creation kept a stale pending command');
   },
   'DRAFT-SLASH: native commands and one-turn Skills complete at the cursor without sending': async () => {
     let sent: PromptInput | undefined;

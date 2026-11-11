@@ -1,5 +1,5 @@
 import { connectBackend, type BackendClient } from './backend-client';
-import { REMOTE_REPLY_BYTES, REMOTE_REQUEST_BYTES, remoteRequest, type RemoteDeviceSnapshot, type RemoteReply, type RemoteRequest, type RemoteSessionSummary } from '../shared/remote-devices';
+import { REMOTE_REPLY_BYTES, REMOTE_REQUEST_BYTES, remoteCreationInput, remoteRequest, type RemoteDeviceSnapshot, type RemoteReply, type RemoteRequest, type RemoteSessionSummary } from '../shared/remote-devices';
 import type { Session, Snapshot } from '../shared/types';
 
 function summarize(session: Session): RemoteSessionSummary {
@@ -18,20 +18,40 @@ export async function callRemote(backend: BackendClient, request: RemoteRequest)
     case 'answer':
       await backend.call('workbench:answer-questions', request.approvalId, request.answers, request.commandId);
       return;
-    case 'snapshot': {
-      const query = request.sessionId ? `?session=${encodeURIComponent(request.sessionId)}` : '';
-      const snapshot = await backend.request<Snapshot>(`/snapshot${query}`);
-      const recent = snapshot.sessions.filter(session => !session.archived)
-        .sort((left, right) => Number(Boolean(right.approvals.length)) - Number(Boolean(left.approvals.length)) || right.updatedAt.localeCompare(left.updatedAt));
-      const selected = recent.find(session => session.id === request.sessionId);
-      return { sessions: recent.slice(0, 200).map(summarize), limited: recent.length > 200,
-        ...(selected ? { selected: {
-          session: summarize(selected), approvals: selected.approvals,
-          messages: selected.messages.filter(message => message.role !== 'activity').slice(-40).map(({ id, role, text, createdAt }) =>
-            ({ id, role, text: text.length > 12000 ? text.slice(0, 11999) + '…' : text, createdAt })),
-        } } : {}) };
+    case 'create': {
+      const sessionId = await backend.call<string>('workbench:create-session', {
+        title: request.title ?? '', cwd: request.cwd, providerId: request.providerId, commandId: request.commandId,
+      });
+      return remoteSnapshot(backend, sessionId);
     }
+    case 'snapshot': return remoteSnapshot(backend, request.sessionId);
   }
+}
+
+async function remoteSnapshot(backend: BackendClient, sessionId?: string): Promise<RemoteDeviceSnapshot> {
+  const query = sessionId ? `?session=${encodeURIComponent(sessionId)}` : '';
+  const snapshot = await backend.request<Snapshot>(`/snapshot${query}`);
+  const recent = snapshot.sessions.filter(session => !session.archived)
+    .sort((left, right) => Number(Boolean(right.approvals.length)) - Number(Boolean(left.approvals.length)) || right.updatedAt.localeCompare(left.updatedAt));
+  const selected = recent.find(session => session.id === sessionId);
+  const projects = new Map<string, string>();
+  for (const { archived, cwd, name } of snapshot.workspaces) {
+    if (projects.size >= 200) break;
+    if (!archived && !projects.has(cwd) && remoteCreationInput.shape.cwd.safeParse(cwd).success) projects.set(cwd, name.slice(0, 200));
+  }
+  return {
+    sessions: recent.slice(0, 200).map(summarize), limited: recent.length > 200,
+    creation: {
+      projects: [...projects].map(([cwd, name]) => ({ name, cwd })),
+      runtimes: snapshot.providers.filter(provider => provider.available).slice(0, 200)
+        .map(({ id, name }) => ({ id, name: name.slice(0, 200) })),
+    },
+    ...(selected ? { selected: {
+      session: summarize(selected), approvals: selected.approvals,
+      messages: selected.messages.filter(message => message.role !== 'activity').slice(-40).map(({ id, role, text, createdAt }) =>
+        ({ id, role, text: text.length > 12000 ? text.slice(0, 11999) + '…' : text, createdAt })),
+    } } : {}),
+  };
 }
 
 export async function serveRemoteStdio(dataPath: string): Promise<void> {
