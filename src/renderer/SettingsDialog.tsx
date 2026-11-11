@@ -1,6 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { FolderCog, MessageCircle, Palette, Plug, Search } from 'lucide-react';
+import { FolderCog, Keyboard, MessageCircle, Palette, Plug, Search } from 'lucide-react';
 import type { Session, Snapshot, Workspace } from '../shared/types';
 import { AppearanceSettings } from './AppearanceSettings';
 import { LanguageOptions } from './language';
@@ -12,6 +12,8 @@ import { SessionSettingsPanel } from './SessionChat';
 import { Modal, type Perform } from './ui';
 import { NotificationSettings } from './NotificationSettings';
 import { WindowCaptureSettings } from './WindowCapture';
+import { ShortcutSettings } from './ShortcutSettings';
+import { composingShortcut, useShortcuts } from './app-shortcuts';
 import { searchableSettings, type SettingsSection, type SettingsTarget } from './settings-targets';
 import './SettingsDialog.css';
 
@@ -32,6 +34,7 @@ export function SettingsDialog({ snapshot, workspace, sessions, session, perform
   onClose: () => void;
 }) {
   const { t } = useTranslation('shell');
+  const shortcuts = useShortcuts();
   const [section, setSection] = useState(initialSection);
   const [visited, setVisited] = useState<Set<SettingsSection>>(() => new Set([initialSection]));
   const [projectId, setProjectId] = useState(workspace?.id);
@@ -49,6 +52,7 @@ export function SettingsDialog({ snapshot, workspace, sessions, session, perform
   if (projectId !== projectWorkspace?.id) setProjectId(projectWorkspace?.id);
   const sections = [
     { id: 'general', label: t('settings.general'), Icon: Palette },
+    { id: 'shortcuts', label: t('shortcuts.title'), Icon: Keyboard },
     { id: 'providers', label: t('app.providers'), Icon: Plug },
     { id: 'project', label: t('settings.project'), Icon: FolderCog },
     { id: 'session', label: t('settings.session'), Icon: MessageCircle },
@@ -62,7 +66,7 @@ export function SettingsDialog({ snapshot, workspace, sessions, session, perform
   };
   const close = () => guardProjectEdits(onClose);
   const words = query.trim().toLocaleLowerCase().split(/\s+/u).filter(Boolean);
-  const results = words.length ? searchableSettings(t, projectWorkspace?.name, session?.title).filter(item => {
+  const results = words.length ? searchableSettings(t, projectWorkspace?.name, session?.title, shortcuts.binding).filter(item => {
     const text = [item.title, item.detail, item.keywords].join(' ').toLocaleLowerCase();
     return words.every(word => text.includes(word));
   }) : [];
@@ -86,7 +90,8 @@ export function SettingsDialog({ snapshot, workspace, sessions, session, perform
 
   useEffect(() => {
     const find = (event: KeyboardEvent) => {
-      if (event.key.toLowerCase() !== 'f' || !(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey || event.isComposing) return;
+      if (event.key.toLowerCase() !== 'f' || !(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey
+        || composingShortcut(event) || (event.target instanceof Element && event.target.closest('[data-shortcut-recording]'))) return;
       if (document.activeElement?.closest('dialog[open]') !== search.current?.closest('dialog[open]')) return;
       event.preventDefault();
       event.stopPropagation();
@@ -147,6 +152,9 @@ export function SettingsDialog({ snapshot, workspace, sessions, session, perform
             <WindowCaptureSettings perform={perform} />
             <div data-setting-anchor="updates"><ApplicationUpdateSettings {...updates} /></div>
           </>}
+        </section>
+        <section className="settings-panel" id={`${id}-shortcuts`} role="tabpanel" aria-labelledby={`${id}-shortcuts-tab`} hidden={section !== 'shortcuts'}>
+          {visited.has('shortcuts') && <ShortcutSettings />}
         </section>
         <section className="settings-panel" id={`${id}-providers`} role="tabpanel" aria-labelledby={`${id}-providers-tab`} hidden={section !== 'providers'}>
           {visited.has('providers') && <>

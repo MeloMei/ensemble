@@ -1,6 +1,7 @@
 import type { TFunction } from 'i18next';
+import { shortcutActionIds, shortcutActions, shortcutSearchText, type ShortcutAction } from './app-shortcuts';
 
-export type SettingsSection = 'general' | 'providers' | 'project' | 'session';
+export type SettingsSection = 'general' | 'providers' | 'project' | 'session' | 'shortcuts';
 
 export const settingsTargets = [
   { id: 'language', section: 'general', label: 'preferences.language', keywords: '语言 中文 English locale' },
@@ -22,19 +23,24 @@ export const settingsTargets = [
   { id: 'project-skills', section: 'project', label: 'settings.search.skills', keywords: '技能 Skills tool 项目 workspace' },
   { id: 'project-mcp', section: 'project', label: 'settings.search.mcp', keywords: '项目 服务 MCP server' },
   { id: 'session-skills', section: 'session', label: 'settings.search.sessionSkills', keywords: '会话 技能 session skill' },
+  ...shortcutActionIds.map(action => ({
+    id: `shortcut-${action}`, section: 'shortcuts', label: shortcutActions[action].label,
+    keywords: `快捷键 keyboard shortcut ${shortcutActions[action].keywords}`, shortcut: action,
+  } as const)),
 ] as const satisfies readonly { id: string; section: SettingsSection; label: string; keywords: string }[];
 
-export type SettingsTarget = typeof settingsTargets[number];
+export type SettingsTarget = Pick<typeof settingsTargets[number], 'id' | 'section'>;
 
 const sectionLabels: Record<SettingsSection, string> = {
-  general: 'settings.general', providers: 'app.providers', project: 'settings.project', session: 'settings.session',
+  general: 'settings.general', providers: 'app.providers', project: 'settings.project', session: 'settings.session', shortcuts: 'shortcuts.title',
 };
 
-export function searchableSettings(t: TFunction<'shell'>, workspace?: string, session?: string) {
+export function searchableSettings(t: TFunction<'shell'>, workspace?: string, session?: string, binding?: (action: ShortcutAction) => string | undefined) {
   return settingsTargets.flatMap(target => {
     if (target.id === 'window-capture' && !navigator.platform.startsWith('Mac')) return [];
     if ((target.section === 'project' && !workspace) || (target.section === 'session' && !session)) return [];
     const scope = target.section === 'project' ? workspace : target.section === 'session' ? session : undefined;
-    return [{ ...target, title: t(target.label), detail: [t(sectionLabels[target.section]), scope].filter(Boolean).join(' · ') }];
+    const keys = 'shortcut' in target ? shortcutSearchText(binding?.(target.shortcut)) : '';
+    return [{ ...target, keywords: [target.keywords, keys].filter(Boolean).join(' '), title: t(target.label), detail: [t(sectionLabels[target.section]), scope].filter(Boolean).join(' · ') }];
   });
 }

@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useReducedMotion } from './appearance';
+import { displayShortcut, useShortcutDispatch, useShortcuts, type ShortcutAction } from './app-shortcuts';
 import { SPRING_SNAPPY, motionPopover } from './vendor/open-claude-ui/ClaudeMotionPresets';
 import type { DraftEvidence, PromptAttachment, PromptInput, ProviderInfo, Session, Snapshot, Workspace, WorkspaceTab } from '../shared/types';
 import type { BackendConnectionState } from '../shared/backend';
@@ -74,6 +75,11 @@ function AttentionBadge({ session }: { session: Session }) {
 
 export function App() {
   const { t } = useTranslation('shell');
+  const shortcuts = useShortcuts();
+  const shortcutAttributes = (action: ShortcutAction, label: string) => {
+    const binding = shortcuts.binding(action);
+    return { 'aria-keyshortcuts': binding, title: binding ? t('shortcuts.hint', { label, shortcut: displayShortcut(binding) }) : label };
+  };
   const applicationUpdates = useApplicationUpdates();
   const sidebar = useWorkspaceSidebar();
   const reducedMotion = useReducedMotion();
@@ -96,6 +102,7 @@ export function App() {
   const [workflowId, setWorkflowId] = useState<string | null>(null);
   const [newWorkflow, setNewWorkflow] = useState(false);
   const [dialog, setDialog] = useState<Dialog>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general');
   const [settingsTarget, setSettingsTarget] = useState<SettingsTarget>();
   const openSettings = useCallback((section: SettingsSection = 'general', target?: SettingsTarget) => {
@@ -103,16 +110,6 @@ export function App() {
     setSettingsSection(section);
     setDialog('settings');
   }, []);
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== ',' || !(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey
-        || event.isComposing || document.querySelector('dialog[open]')) return;
-      event.preventDefault();
-      openSettings();
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [openSettings]);
   const [tabMenu, setTabMenu] = useState(false);
   const [draggedTab, setDraggedTab] = useState<{ workspaceId: string; tabId: string; activeTabId: string | null; secondaryTabId: string | null }>();
   const tabMenuContainer = useRef<HTMLDivElement>(null);
@@ -359,17 +356,6 @@ export function App() {
     selectWorkspace(workspace.id);
     setDialog('agent');
   }, [workspace?.id, selectWorkspace]);
-  useEffect(() => {
-    if (!workspace || !connected || dialog) return;
-    const handleKey = (event: KeyboardEvent) => {
-      if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'n'
-        || event.isComposing || event.repeat || document.querySelector('dialog[open]')) return;
-      event.preventDefault();
-      openAgentDialog();
-    };
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, [workspace?.id, connected, dialog, openAgentDialog]);
   const openLocalTerminal = () => {
     if (!workspace || pending.has('create-terminal')) return;
     setPage('workspace');
@@ -430,6 +416,16 @@ export function App() {
       ?? mainElement.current?.querySelector<HTMLElement>('.workspace-heading h1'))?.focus({ preventScroll: true });
   };
   const visits = useVisitHistory(visit, canVisit, restoreVisit, focusVisit, connected && !dialog);
+  const toggleFiles = () => setRightPane(value => !value);
+  useShortcutDispatch({
+    commandPalette: () => setPaletteOpen(true),
+    settings: () => openSettings(),
+    visitBack: visits.canBack ? visits.back : undefined,
+    visitForward: visits.canForward ? visits.forward : undefined,
+    newSession: workspace && connected ? openAgentDialog : undefined,
+    toggleSidebar: sidebar.toggle,
+    toggleFiles: page === 'workspace' && workspace ? toggleFiles : undefined,
+  });
   const [terminalFocus, setTerminalFocus] = useState<{ id: string }>();
   const returnToComposer = useCallback(() => {
     if (!activeSession) return;
@@ -619,9 +615,10 @@ export function App() {
 
   return <WorkspaceFileNavigation.Provider value={fileNavigation}><div ref={sidebar.container} className="workbench" data-sidebar-collapsed={sidebar.collapsed || undefined}>
     <WorkspaceSidebar layout={sidebar}><div className="sidebar-titlebar"><img className="brand-symbol" src={ensembleLogo} alt="" /><span>{PRODUCT_NAME}<span className="brand-period">.</span></span></div>
-      <CommandPalette projects={workspaces} sessions={sessions} providers={providers} onSelectProject={selectWorkspace} onSelectSession={openSession}
+      <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} shortcut={shortcuts.binding('commandPalette')}
+        projects={workspaces} sessions={sessions} providers={providers} onSelectProject={selectWorkspace} onSelectSession={openSession}
         fileWorkspaceId={fileNavigation ? workspace?.id : undefined} onOpenFile={fileNavigation?.open}
-        settings={searchableSettings(t, workspace?.name, activeSession?.title).map(item => ({
+        settings={searchableSettings(t, workspace?.name, activeSession?.title, shortcuts.binding).map(item => ({
           id: `setting:${item.id}`, label: item.title, detail: item.detail, keywords: item.keywords,
           icon: <Settings2 size={16} aria-hidden="true" />, run: () => openSettings(item.section, item),
         }))}
@@ -653,7 +650,7 @@ export function App() {
           renderSession={session => renderSidebarSession(session, workspaces.find(project => project.id === sidebarSessionGroups.projectBySession.get(session.id))?.name)} />
         {sidebarItems}
       </motion.div>
-      <div className={`sidebar-connection connection-${connected ? 'connected' : connection.status}`}><i /><span>{connected ? t('app.connected') : t(`connection.${connection.status}`)}</span><small>{t('app.thisMachine')}</small></div><footer className="sidebar-footer"><button onClick={() => setDialog('workspace')}><Plus size={15} />{t('app.addProject')}</button><IconButton label={t('preferences.open')} onClick={() => openSettings()}><Settings2 size={16} /></IconButton></footer>
+      <div className={`sidebar-connection connection-${connected ? 'connected' : connection.status}`}><i /><span>{connected ? t('app.connected') : t(`connection.${connection.status}`)}</span><small>{t('app.thisMachine')}</small></div><footer className="sidebar-footer"><button onClick={() => setDialog('workspace')}><Plus size={15} />{t('app.addProject')}</button><IconButton label={t('preferences.open')} {...shortcutAttributes('settings', t('preferences.open'))} onClick={() => openSettings()}><Settings2 size={16} /></IconButton></footer>
     </WorkspaceSidebar>
 
     <main ref={mainElement} className={`main-workspace ${page === 'workspace' && workspace && rightPane ? 'with-file-panel' : ''}`}
@@ -665,19 +662,21 @@ export function App() {
       }}><header className="workspace-header">
       <div className="workspace-heading">
         <IconButton id={`${sidebar.id}-toggle`} label={t(sidebar.collapsed ? 'app.showSidebar' : 'app.hideSidebar')}
+          {...shortcutAttributes('toggleSidebar', t(sidebar.collapsed ? 'app.showSidebar' : 'app.hideSidebar'))}
           aria-expanded={!sidebar.collapsed} aria-controls={sidebar.id} onClick={sidebar.toggle}><PanelLeft size={16} /></IconButton>
         <div className="visit-history-controls" role="group" aria-label={t('app.visitHistory')}>
-          <IconButton label={t('app.visitBack')} title={t('app.visitBackHint')} aria-keyshortcuts="Meta+[" disabled={!visits.canBack} onClick={visits.back}><ArrowLeft size={15} /></IconButton>
-          <IconButton label={t('app.visitForward')} title={t('app.visitForwardHint')} aria-keyshortcuts="Meta+]" disabled={!visits.canForward} onClick={visits.forward}><ArrowRight size={15} /></IconButton>
+          <IconButton label={t('app.visitBack')} {...shortcutAttributes('visitBack', t('app.visitBack'))} disabled={!visits.canBack} onClick={visits.back}><ArrowLeft size={15} /></IconButton>
+          <IconButton label={t('app.visitForward')} {...shortcutAttributes('visitForward', t('app.visitForward'))} disabled={!visits.canForward} onClick={visits.forward}><ArrowRight size={15} /></IconButton>
         </div>
         {page === 'workspace' && workspace ? <><FolderOpen size={16} /><h1 tabIndex={-1} title={workspace.name}>{workspace.name}</h1><span title={workspace.cwd}>{pathName(workspace.cwd)}</span><IconButton label={workspace.pinned ? t('app.unpin') : t('app.pin')} aria-pressed={workspace.pinned} onClick={() => void perform('pin-workspace', () => window.workbench.updateWorkspace(workspace.id, { pinned: !workspace.pinned }))}><Pin size={13} fill={workspace.pinned ? 'currentColor' : 'none'} /></IconButton></> : <h1 tabIndex={-1}>{{ workspace: PRODUCT_NAME, attention: t('attention.inboxTitle'), history: t('app.history'), workflows: t('app.workflows'), collaboration: t('app.agentCollaboration') }[page]}</h1>}
       </div>
       <div className="workspace-header-actions">{page === 'workspace' && workspace && <><Tooltip label={t('app.collaboration')}><button className="header-button" aria-label={t('app.collaboration')} title={t('app.collaboration')} onClick={openCollaboration}><Network size={14} /><span>{t('app.collaboration')}</span></button></Tooltip><button className="header-button" disabled={workspace.tabs.length < 2} onClick={() => void perform('split', () => window.workbench.splitWorkspace(workspace.id, secondaryTab ? {} : { tabId: workspace.tabs.find(tab => tab.id !== activeTab?.id)?.id, direction: 'horizontal' }))}>{secondaryTab ? t('app.mergePanes') : t('app.splitPanes')}</button>{secondaryTab && <button className="header-button" onClick={() => void perform('split-direction', () => window.workbench.splitWorkspace(workspace.id, { tabId: secondaryTab.id, direction: workspace.splitDirection === 'vertical' ? 'horizontal' : 'vertical' }))}>{t('app.changeDirection')}</button>}</>}<span className="local-indicator"><i />{t('app.local')}</span>{page === 'workspace' && <Tooltip label={t('app.openCodex')}><button className="header-button" onClick={() => setDialog('codex')} aria-label={t('app.openCodex')} title={t('app.openCodexHint')}><ArrowUpRight size={13} /><span>Codex App</span></button></Tooltip>}{page === 'workspace' && workspace && <>
         {filePane.requested && filePane.tooNarrow && <span className="file-pane-space-note" id={`${filePane.id}-space`} role="status">{t('app.filesNeedSpace')}</span>}
         <IconButton id={`${filePane.id}-toggle`} label={filePane.requested ? t('app.hideFiles') : t('app.showFiles')}
-          title={filePane.tooNarrow ? t('app.filesNeedSpace') : undefined} aria-pressed={filePane.requested} aria-controls={filePane.id}
+          {...shortcutAttributes('toggleFiles', t(filePane.tooNarrow ? 'app.filesNeedSpace' : filePane.requested ? 'app.hideFiles' : 'app.showFiles'))}
+          aria-pressed={filePane.requested} aria-controls={filePane.id}
           aria-describedby={filePane.requested && filePane.tooNarrow ? `${filePane.id}-space` : undefined}
-          onClick={() => setRightPane(value => !value)}><PanelRight size={16} /></IconButton>
+          onClick={toggleFiles}><PanelRight size={16} /></IconButton>
       </>}</div>
     </header>
       <ApplicationUpdateNotice state={applicationUpdates.state} onOpen={() => openSettings('general')} />

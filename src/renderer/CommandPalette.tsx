@@ -8,6 +8,7 @@ import { Modal } from './ui';
 import { SearchPicker, type SearchPickerSection } from './ui-kit';
 import type { FileReference } from './workspace-file-reference';
 import { useWorkspaceFileMatches, useWorkspaceTextMatches } from './workspace-file-search';
+import { displayShortcut, primaryShortcut, shortcutFromEvent } from './app-shortcuts';
 import './CommandPalette.css';
 
 export interface CommandEntry {
@@ -31,51 +32,34 @@ interface CommandPaletteProps {
   onSelectSession: (id: string) => void;
 }
 
-const isMac = navigator.platform.startsWith('Mac');
-const shortcutModifier = isMac ? 'Meta' : 'Control';
-const shortcutBadge = isMac ? '⌘' : 'Ctrl+';
 const scopes = ['all', 'sessions', 'commands', 'files', 'settings'] as const;
 type Scope = typeof scopes[number];
 
-function hasShortcutModifier(event: KeyboardEvent) {
-  const modifier = isMac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
-  return modifier && !event.altKey && !event.shiftKey && !event.isComposing && event.keyCode !== 229 && !event.defaultPrevented;
-}
-
-export function CommandPalette(props: CommandPaletteProps) {
+export function CommandPalette({ open, onOpenChange, shortcut, ...props }: CommandPaletteProps & {
+  open: boolean;
+  onOpenChange(open: boolean): void;
+  shortcut?: string;
+}) {
   const { t } = useTranslation('shell');
-  const { top } = useContext(OverlayContext);
-  const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
   const search = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (!hasShortcutModifier(event) || event.key.toLowerCase() !== 'k') return;
-      if (top && !top.contains(search.current)) return;
-      event.preventDefault();
-      event.stopPropagation();
-      if (!event.repeat) setOpen(current => !current);
-    };
-    window.addEventListener('keydown', onKeyDown, true);
-    return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, [top]);
-
   return <>
     <button type="button" className="command-palette-trigger" ref={trigger} aria-label={t('commandPalette.trigger')} aria-haspopup="dialog" aria-expanded={open}
-      aria-keyshortcuts={`${shortcutModifier}+K`}
-      onClick={event => { event.currentTarget.focus({ preventScroll: true }); setOpen(true); }}>
+      aria-keyshortcuts={shortcut}
+      onClick={event => { event.currentTarget.focus({ preventScroll: true }); onOpenChange(true); }}>
       <Search size={15} aria-hidden="true" />
       <span>{t('commandPalette.trigger')}</span>
-      <kbd aria-hidden="true">{shortcutBadge}K</kbd>
+      {shortcut && <kbd aria-hidden="true">{displayShortcut(shortcut)}</kbd>}
     </button>
-    {open && <PaletteDialog {...props} search={search} trigger={trigger} onClose={() => setOpen(false)} />}
+    {open && <PaletteDialog {...props} search={search} trigger={trigger} shortcut={shortcut} onClose={() => onOpenChange(false)} />}
   </>;
 }
 
-function PaletteDialog({ actions, settings = [], fileWorkspaceId, onOpenFile, projects, sessions, providers, onSelectProject, onSelectSession, search, trigger, onClose }: CommandPaletteProps & {
+function PaletteDialog({ actions, settings = [], fileWorkspaceId, onOpenFile, projects, sessions, providers, onSelectProject, onSelectSession, search, trigger, shortcut, onClose }: CommandPaletteProps & {
   search: RefObject<HTMLInputElement | null>;
   trigger: RefObject<HTMLButtonElement | null>;
+  shortcut?: string;
   onClose: () => void;
 }) {
   const { t } = useTranslation('shell');
@@ -88,18 +72,21 @@ function PaletteDialog({ actions, settings = [], fileWorkspaceId, onOpenFile, pr
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!hasShortcutModifier(event) || !/^[1-5]$/.test(event.key) || !top?.contains(search.current)
+      if (event.defaultPrevented || !top?.contains(search.current)
         || !(event.target instanceof Node) || !top.contains(event.target)) return;
+      const pressed = shortcutFromEvent(event);
+      const index = scopes.findIndex((_, index) => primaryShortcut(String(index + 1)) === pressed);
+      if (index < 0 && (!pressed || pressed !== shortcut)) return;
       event.preventDefault();
       event.stopPropagation();
-      if (!event.repeat) {
-        setScope(scopes[Number(event.key) - 1]);
-        search.current?.focus({ preventScroll: true });
-      }
+      if (event.repeat) return;
+      if (index < 0) { onClose(); return; }
+      setScope(scopes[index]);
+      search.current?.focus({ preventScroll: true });
     };
     window.addEventListener('keydown', onKeyDown, true);
     return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, [search, top]);
+  }, [search, top, shortcut, onClose]);
 
   const projectNames = new Map(projects.map(project => [project.cwd, project.name]));
   const providerNames = new Map(providers.map(provider => [provider.id, provider.name]));
@@ -166,9 +153,9 @@ function PaletteDialog({ actions, settings = [], fileWorkspaceId, onOpenFile, pr
           event.currentTarget.querySelectorAll('button')[next]?.focus({ preventScroll: true });
         }}>
         {scopes.map((value, index) => <button key={value} id={tabId(value)} type="button" role="tab" aria-selected={scope === value}
-          aria-controls={panelId} aria-keyshortcuts={`${shortcutModifier}+${index + 1}`} tabIndex={scope === value ? 0 : -1}
+          aria-controls={panelId} aria-keyshortcuts={primaryShortcut(String(index + 1))} tabIndex={scope === value ? 0 : -1}
           onClick={event => { setScope(value); if (event.detail) focusSearch(); }}>
-          {t(`commandPalette.${value}`)}<kbd aria-hidden="true">{shortcutBadge}{index + 1}</kbd>
+          {t(`commandPalette.${value}`)}<kbd aria-hidden="true">{displayShortcut(primaryShortcut(String(index + 1)))}</kbd>
         </button>)}
       </div> }}
       onSelect={id => {
