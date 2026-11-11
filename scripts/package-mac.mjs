@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { fileSha256, macReleaseAssets } from './mac-release-assets.mjs';
 import { buildMacDictation, macDictationUsageDescriptions } from './build-mac-dictation.mjs';
 import { buildMacUpdateInstaller } from './build-mac-update-installer.mjs';
+import { buildMacNotifications } from './build-mac-notifications.mjs';
 
 if (process.platform !== 'darwin') throw new Error('此打包命令用于本机 macOS。');
 const projectRoot = fileURLToPath(new URL('../', import.meta.url));
@@ -44,7 +45,8 @@ try {
     out: temporaryDirectory, overwrite: true, asar: false, prune: true,
     appBundleId: 'local.agent-workbench.desktop',
     appCategoryType: 'public.app-category.developer-tools',
-    extendInfo: macDictationUsageDescriptions,
+    protocols: [{ name: 'Ensemble Notification', schemes: ['ensemble-notification'] }],
+    extendInfo: { ...macDictationUsageDescriptions, NSPrincipalClass: 'AtomApplication' },
     icon,
     ignore: [nonRuntimeEntries, /^\/bin\/apply-app-update\.sh$/],
   });
@@ -52,6 +54,7 @@ try {
   await mkdir(releaseDirectory, { recursive: true });
   const app = join(paths[0], `${productName}.app`);
   await buildMacUpdateInstaller({ destination: join(app, 'Contents', 'Helpers', 'Ensemble Installer.app') });
+  await buildMacNotifications({ destination: join(app, 'Contents', 'Helpers', 'Ensemble Notifications.app') });
   await buildMacDictation({ destination: join(app, 'Contents', 'Helpers', 'Ensemble Dictation.app') });
   await run('codesign', ['--force', '--deep', '--sign', '-', app]);
   await run('codesign', ['--verify', '--deep', '--strict', app]);

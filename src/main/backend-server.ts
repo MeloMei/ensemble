@@ -3,7 +3,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { BackendEndpoint, TerminalOutputEvent } from '../shared/backend';
-import { BACKEND_STREAM_VERSION } from '../shared/backend';
+import { BACKEND_STREAM_VERSION, DESKTOP_FOREGROUND_PARAM, DESKTOP_NOTIFICATIONS_PARAM } from '../shared/backend';
 import type { Snapshot } from '../shared/types';
 import { createWorkbenchService, type WorkbenchService } from './workbench-service';
 import { WorkbenchCommandRejection } from './engine';
@@ -11,6 +11,8 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { createWorkbenchMcpServer } from './mcp-server';
 import { SnapshotProjection } from './snapshot-projection';
 import { BoundedEventStream } from './bounded-event-stream';
+import { BackgroundNotifications } from './background-notifications';
+import type { BackgroundNotificationDriver } from './mac-notification-helper';
 
 function sessionIds(input: unknown): string[] {
   if (!Array.isArray(input) || input.length > 8 || input.some(id => typeof id !== 'string' || !id || id.length > 200)) throw new Error('会话订阅格式无效。');
@@ -51,6 +53,7 @@ export async function startBackend(options: {
   dataPath: string; command: string; bridgePath: string;
   managedService?: string;
   providers?: Parameters<typeof createWorkbenchService>[0]['providers'];
+  backgroundNotifications?: BackgroundNotificationDriver;
 }) {
   await mkdir(options.dataPath, { recursive: true, mode: 0o700 });
   const instanceId = randomUUID();
@@ -63,7 +66,9 @@ export async function startBackend(options: {
       if (candidate > 0 && candidate <= 65535) port = candidate;
     }
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error; }
-  const streams = new Map<string, { writer: BoundedEventStream; projection: SnapshotProjection }>();
+  const streams = new Map<string, { writer: BoundedEventStream; projection: SnapshotProjection; sessions: string[] }>();
+  const desktopNotificationStreams = new Map<string, boolean>();
+  const notifications = options.backgroundNotifications ? new BackgroundNotifications(options.dataPath, options.backgroundNotifications) : undefined;
   const terminalStreams = new Set<{ terminalId: string; writer: BoundedEventStream }>();
   const token = randomBytes(32).toString('hex');
   let service: WorkbenchService | undefined;
@@ -71,6 +76,7 @@ export async function startBackend(options: {
   let revision = 0;
   const publish = (snapshot: Snapshot) => {
     revision++;
+    if (service && !closed) notifications?.observe(snapshot, [...desktopNotificationStreams.values()].includes(true));
     for (const { writer, projection } of streams.values()) {
       if (writer.paused) continue;
       const frame = projection.frame(snapshot, revision);
@@ -100,7 +106,8 @@ export async function startBackend(options: {
       const url = new URL(request.url ?? '/', 'http://127.0.0.1');
       if (request.method === 'GET' && request.url === '/health') {
         response.setHeader('Content-Type', 'application/json');
-        response.end(JSON.stringify({ instanceId, ready: !!service, streamVersion: BACKEND_STREAM_VERSION })); return;
+        response.end(JSON.stringify({ instanceId, ready: !!service, streamVersion: BACKEND_STREAM_VERSION,
+          backgroundNotifications: Boolean(notifications) })); return;
       }
       if (!service || closed) throw new Error('后台尚未就绪。');
       if (request.method === 'GET' && request.url === '/commands') {
@@ -117,25 +124,42 @@ export async function startBackend(options: {
       if (request.method === 'GET' && url.pathname === '/events') {
         const ids = sessionIds(url.searchParams.getAll('session'));
         const id = randomUUID();
+        const desktopNotifications = url.searchParams.get(DESKTOP_NOTIFICATIONS_PARAM) === '1';
+        const desktopForeground = url.searchParams.get(DESKTOP_FOREGROUND_PARAM);
+        if (desktopForeground !== null && (!desktopNotifications || (desktopForeground !== '0' && desktopForeground !== '1'))) {
+          throw new Error('桌面通知订阅格式无效。');
+        }
         const projection = new SnapshotProjection(instanceId, id, new Set(ids));
         response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
         const writer = new BoundedEventStream(response, () => {
           projection.reset();
           const frame = projection.frame(service!.streamSnapshot(), revision);
           if (frame) writer.send('snapshot', frame);
-        }, () => streams.delete(id));
-        const entry = { writer, projection };
+        }, () => {
+          streams.delete(id);
+          desktopNotificationStreams.delete(id);
+        });
+        const entry = { writer, projection, sessions: ids };
         streams.set(id, entry);
+        if (desktopNotifications) desktopNotificationStreams.set(id, desktopForeground === '1');
         writer.send('snapshot', projection.frame(service.streamSnapshot(), revision));
         return;
       }
       if (request.method === 'POST' && request.url === '/watch') {
-        const body = await readBody(request) as { subscriptionId?: unknown; sessionIds?: unknown };
-        const stream = typeof body?.subscriptionId === 'string' ? streams.get(body.subscriptionId) : undefined;
+        const body = await readBody(request) as { subscriptionId?: unknown; sessionIds?: unknown; desktopForeground?: unknown };
+        const subscriptionId = typeof body?.subscriptionId === 'string' ? body.subscriptionId : '';
+        const stream = streams.get(subscriptionId);
         if (!stream) throw new Error('后台订阅已结束。');
         const ids = sessionIds(body.sessionIds);
-        stream.projection.watch(ids);
-        if (!stream.writer.paused) stream.writer.send('snapshot', stream.projection.frame(service.streamSnapshot(), revision));
+        if (body.desktopForeground !== undefined) {
+          if (typeof body.desktopForeground !== 'boolean' || !desktopNotificationStreams.has(subscriptionId)) throw new Error('桌面通知订阅格式无效。');
+          desktopNotificationStreams.set(subscriptionId, body.desktopForeground);
+        }
+        if (ids.length !== stream.sessions.length || ids.some((id, index) => id !== stream.sessions[index])) {
+          stream.sessions = ids;
+          stream.projection.watch(ids);
+          if (!stream.writer.paused) stream.writer.send('snapshot', stream.projection.frame(service.streamSnapshot(), revision));
+        }
         response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ result: null })); return;
       }
       if (request.method === 'GET' && url.pathname === '/terminal-events') {
@@ -170,6 +194,7 @@ export async function startBackend(options: {
   });
   try {
     service = await createWorkbenchService({ ...options, publish, publishTerminal });
+    notifications?.observe(service.streamSnapshot());
     try { await listen(server, port); }
     catch (error) {
       if (!port || (error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error;
@@ -191,13 +216,14 @@ export async function startBackend(options: {
         server.closeAllConnections();
         await new Promise<void>(resolve => server.close(() => resolve()));
         const results = await Promise.allSettled([saveEndpoint(endpointPath, { ...endpoint, stoppedAt: new Date().toISOString() })]);
-        results.push(...await Promise.allSettled([service!.shutdown()]));
+        results.push(...await Promise.allSettled([service!.shutdown(), notifications?.close()]));
         const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
         if (failures.length) throw new AggregateError(failures.map(result => result.reason), '后台关闭失败');
       },
     };
   } catch (error) {
     server.close();
+    await notifications?.close();
     await service?.shutdown().catch(() => {});
     throw error;
   }

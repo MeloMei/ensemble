@@ -2,7 +2,7 @@ import { mkdir, open, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import type { BackendConnectionState, BackendEndpoint, BackendReply, BackendStreamError, SnapshotFrame, TerminalOutputEvent } from '../shared/backend';
-import { BACKEND_STREAM_VERSION } from '../shared/backend';
+import { BACKEND_STREAM_VERSION, DESKTOP_FOREGROUND_PARAM, DESKTOP_NOTIFICATIONS_PARAM } from '../shared/backend';
 import type { Snapshot } from '../shared/types';
 import { SnapshotGapError, SnapshotReplica } from '../shared/snapshot-stream';
 import { managedBackend } from './backend-discovery';
@@ -49,11 +49,12 @@ export class BackendConnectionTracker {
 
 export class BackendClient {
   private sessions: string[] = [];
+  private desktopForeground?: boolean;
   private subscriptionId?: string;
   private subscriptionController?: AbortController;
   private watchUpdates?: Promise<void>;
   private watchRequested = false;
-  constructor(readonly endpoint: BackendEndpoint, readonly streamVersion?: number) {}
+  constructor(readonly endpoint: BackendEndpoint, readonly streamVersion?: number, readonly backgroundNotifications = false) {}
 
   assertSnapshotStreaming(): void {
     if (this.streamVersion !== BACKEND_STREAM_VERSION) throw new BackendProtocolError('后台版本与当前客户端不兼容，请结束旧后台后重新启动工作台。');
@@ -77,6 +78,20 @@ export class BackendClient {
   watchSessions(ids: string[]): Promise<void> {
     if (ids.length > 8 || ids.some(id => typeof id !== 'string' || !id || id.length > 200)) return Promise.reject(new Error('会话订阅格式无效。'));
     this.sessions = [...new Set(ids)];
+    return this.scheduleWatch();
+  }
+
+  setDesktopForeground(foreground: boolean): Promise<void> {
+    if (this.desktopForeground === undefined || this.desktopForeground === foreground) return Promise.resolve();
+    this.desktopForeground = foreground;
+    return this.scheduleWatch();
+  }
+
+  private watchState() {
+    return { sessionIds: this.sessions, desktopForeground: this.desktopForeground };
+  }
+
+  private scheduleWatch(): Promise<void> {
     this.watchRequested = true;
     return this.watchUpdates ??= Promise.resolve().then(() => this.updateWatch());
   }
@@ -89,7 +104,7 @@ export class BackendClient {
         const subscriptionId = this.subscriptionId;
         if (!subscriptionId) continue;
         const controller = this.subscriptionController;
-        const body = JSON.stringify({ subscriptionId, sessionIds: this.sessions });
+        const body = JSON.stringify({ subscriptionId, ...this.watchState() });
         if (body === applied) continue;
         try {
           const response = await fetch(`${this.endpoint.url}/watch`, { method: 'POST', headers: {
@@ -111,14 +126,19 @@ export class BackendClient {
     return this.request(`/snapshot?${query}`);
   }
 
-  async subscribe(listener: (snapshot: Snapshot, frame: SnapshotFrame) => void, signal: AbortSignal): Promise<void> {
+  async subscribe(listener: (snapshot: Snapshot, frame: SnapshotFrame) => void, signal: AbortSignal, options?: { desktopForeground: boolean }): Promise<void> {
     this.subscriptionController?.abort(new Error('后台状态订阅已替换。'));
     const controller = new AbortController();
     this.subscriptionController = controller;
     this.subscriptionId = undefined;
+    this.desktopForeground = options?.desktopForeground;
     const streamSignal = AbortSignal.any([signal, controller.signal]);
     const query = new URLSearchParams(this.sessions.map(id => ['session', id]));
-    const initial = JSON.stringify(this.sessions);
+    if (this.desktopForeground !== undefined) {
+      query.set(DESKTOP_NOTIFICATIONS_PARAM, '1');
+      query.set(DESKTOP_FOREGROUND_PARAM, this.desktopForeground ? '1' : '0');
+    }
+    const initial = JSON.stringify(this.watchState());
     const replica = new SnapshotReplica();
     let subscriptionId: string | undefined;
     let first = true;
@@ -132,9 +152,9 @@ export class BackendClient {
           subscriptionId = frame.subscriptionId; this.subscriptionId = subscriptionId;
         }
         if (snapshot) listener(snapshot, frame);
-        if (first && frame.type === 'reset' && initial !== JSON.stringify(this.sessions) && this.subscriptionId === subscriptionId) {
+        if (first && frame.type === 'reset' && initial !== JSON.stringify(this.watchState()) && this.subscriptionId === subscriptionId) {
           first = false;
-          await this.watchSessions(this.sessions);
+          await this.scheduleWatch();
         }
         first = false;
       }, streamSignal);
@@ -142,6 +162,7 @@ export class BackendClient {
       if (this.subscriptionController === controller) {
         this.subscriptionController = undefined;
         this.subscriptionId = undefined;
+        this.desktopForeground = undefined;
       }
     }
   }
@@ -204,9 +225,9 @@ export async function connectBackend(dataPath: string, launch?: { command: strin
       if (endpoint.stoppedAt) return undefined;
       if (endpoint.version !== 1 || !/^http:\/\/127\.0\.0\.1:\d+$/.test(endpoint.url) || !/^[a-f0-9]{64}$/.test(endpoint.token)) throw new Error('后台连接记录无效。');
       const response = await fetch(`${endpoint.url}/health`, { headers: { Authorization: `Bearer ${endpoint.token}` }, signal: AbortSignal.timeout(1000) });
-      const health = await response.json() as { instanceId: string; ready: boolean; streamVersion?: number };
+      const health = await response.json() as { instanceId: string; ready: boolean; streamVersion?: number; backgroundNotifications?: boolean };
       if (!response.ok || !health.ready || health.instanceId !== endpoint.instanceId) return undefined;
-      return new BackendClient(endpoint, health.streamVersion);
+      return new BackendClient(endpoint, health.streamVersion, health.backgroundNotifications === true);
     } catch { return undefined; }
   };
   const existing = await read(); if (existing) return existing;

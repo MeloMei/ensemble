@@ -45,6 +45,7 @@
 .notification-settings { margin: 20px 0; }
 .notification-setting-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 9px 6px; border-bottom: 1px solid var(--border); font-size: var(--font-size-12); }
 .notification-setting-row:has(input:disabled) { color: var(--muted); }
+.notification-setting-detail { display: block; color: var(--muted); margin-top: 4px; }
 .window-capture-preview { display: block; width: 100%; max-height: 220px; object-fit: contain; border-radius: var(--radius-control); }
 .setting-search-highlight { outline: 1px solid var(--accent); outline-offset: 2px; border-radius: var(--radius-control); background-color: var(--hover); }
 .custom-acp-form { display: grid; gap: 12px; margin-top: 12px; }

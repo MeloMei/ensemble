@@ -158,6 +158,8 @@ bin/workbench daemon status
 
 macOS 使用图形登录会话中的 LaunchAgent。Linux 使用 systemd 用户服务，退出登录后继续运行需要账号已开启 systemd lingering。后台异常退出时，服务会重启后台。可以用 `daemon stop`、`daemon start`、`daemon restart` 或 `daemon uninstall` 控制服务。卸载会保留会话和数据。通过 `daemon status` 查看后台是否已可连接。macOS 的日志在 `backend.log`，Linux 的日志在 systemd 用户日志中。
 
+如果希望退出 Ensemble 后继续收到 macOS 系统通知，请使用同一安装包中的后台。需要设为用户服务时，用同一数据目录执行 `"/Applications/Ensemble.app/Contents/Resources/app/bin/workbench" daemon install`。打开 **设置 → 通用 → 桌面通知**，开启 **退出 Ensemble 后继续通知**，并在 macOS 中允许 Ensemble Notifications。点击通知可回到对应会话。通过 `build:headless` 构建的源码后台和 Linux 后台没有 macOS 通知助手。
+
 如果要复用桌面应用的数据目录，请先退出 Ensemble。如果普通后台仍在运行，先执行 `bin/workbench stop` 再安装服务。使用同一数据目录的客户端会连接该服务。通过桌面应用安装更新前，请先卸载该数据目录对应的服务。
 
 ## 连接远程设备

@@ -238,11 +238,6 @@ export function App() {
     sidebar.container.current?.querySelector<HTMLButtonElement>(`[data-sidebar-session-id="${CSS.escape(id)}"] .row-actions-trigger`)?.focus();
   }, [sidebarSessionPrefs, sidebar.container]);
   useEffect(() => {
-    if (!connected || !snapshot || applicationReady.current) return;
-    applicationReady.current = true;
-    void window.workbench.confirmApplicationUpdateReady().catch(error => report(error));
-  }, [connected, snapshot, report]);
-  useEffect(() => {
     if (connected && snapshot) void recoverSessionCommands();
   }, [connected, snapshot]);
   const watchedIds = JSON.stringify(page === 'workspace' ? [activeTab, secondaryTab].flatMap(tab => tab?.kind === 'agent' ? [tab.sessionId] : [])
@@ -293,6 +288,11 @@ export function App() {
   }, [perform, selectWorkspace, t]);
   const openForkSource = useCallback((id: string, messageId?: string) => openSession(id, false, false, messageId), [openSession]);
   useEffect(() => window.workbench.onFocusSession(target => openSession(target.sessionId, false, target)), [openSession]);
+  useEffect(() => {
+    if (!connected || !snapshot || applicationReady.current) return;
+    applicationReady.current = true;
+    void window.workbench.confirmApplicationUpdateReady().catch(error => report(error));
+  }, [connected, snapshot, report]);
   const appendToDraft = async (sessionId: string, save: () => Promise<PromptInput>, merge: (draft: PromptInput) => PromptInput) => {
     const before = currentDrafts.current[sessionId];
     const saved = await save();
@@ -752,7 +752,7 @@ export function App() {
     </Modal>}
     {dialog === 'settings' && <SettingsDialog snapshot={snapshot} workspace={workspace} sessions={sessions} session={activeSession}
       perform={perform} pending={pending} updates={applicationUpdates} initialSection={settingsSection} initialTarget={settingsTarget}
-      openSession={openSession} openSessionLink={openSessionLink} onClose={() => setDialog(null)} />}
+      openSession={openSession} openSessionLink={openSessionLink} backendConnection={connection} onClose={() => setDialog(null)} />}
     {projectManagement.dialog}
     {dialog === 'workspace' && <NewWorkspaceDialog perform={perform} pending={pending} onClose={() => setDialog(null)} onCreated={id => { setDialog(null); selectWorkspace(id); }} />}
     {dialog === 'agent' && workspace && <NewAgentDialog key={workspace.id} workspace={workspace} providers={providers}

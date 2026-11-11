@@ -7,10 +7,12 @@ import { z } from 'zod';
 import { BackendCommandError, BackendConnectionTracker, connectBackend, type BackendClient } from './backend-client';
 import { buildCodexLink } from './codex-link';
 import { WorkbenchNotifications } from './notifications';
+import { bundledMacNotificationHelper } from './mac-notification-helper';
+import { notificationLinkFromArguments, parseNotificationLink } from './notification-link';
 import { DesktopPreferences } from './preferences';
 import { DATA_DIRECTORY_NAME, PRODUCT_NAME } from '../shared/app-identity';
 import { initializeI18n, resolveLanguage, setLanguage, translate, type LanguagePreference, type LanguageState } from '../shared/i18n';
-import type { PromptAttachment, Snapshot, UnsavedFileSummary } from '../shared/types';
+import type { BackgroundNotificationAuthorization, PromptAttachment, SessionAttentionOpen, Snapshot, UnsavedFileSummary } from '../shared/types';
 import type { AppUpdateState } from '../shared/application-updates';
 import { ApplicationUpdates } from './application-updates';
 import { AttachmentService, attachmentMetadataSchema } from './attachment-service';
@@ -25,9 +27,11 @@ import { RemoteDevices } from './remote-devices';
 
 app.setName(PRODUCT_NAME);
 app.setPath('userData', process.env.WORKBENCH_DATA_DIR ?? join(app.getPath('appData'), DATA_DIRECTORY_NAME));
-const gotLock = app.requestSingleInstanceLock();
+const startupNotificationLink = notificationLinkFromArguments(process.argv);
+const gotLock = app.requestSingleInstanceLock(startupNotificationLink ? { notificationLink: startupNotificationLink } : undefined);
 if (!gotLock) app.quit();
 const root = dirname(fileURLToPath(import.meta.url));
+const backgroundNotificationHelper = bundledMacNotificationHelper(root);
 let window: BrowserWindow | null = null;
 let browsers: EmbeddedBrowsers | undefined;
 let backend: BackendClient;
@@ -39,6 +43,7 @@ let updateReadyAcknowledged = false;
 let quitting = false;
 let updatesDisposed = false;
 let notifications: WorkbenchNotifications;
+let pendingNotificationTarget = gotLock && startupNotificationLink ? parseNotificationLink(startupNotificationLink) : undefined;
 const preferences = new DesktopPreferences(app.getPath('userData'));
 const remoteDevices = new RemoteDevices(app.getPath('userData'));
 const attachments = new AttachmentService(join(app.getPath('userData'), 'attachments'));
@@ -68,6 +73,43 @@ const dictationId = z.string().uuid();
 
 function withoutBrowserViews<T>(action: () => Promise<T>): Promise<T> {
   return browsers ? browsers.withoutViews(action) : action();
+}
+
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  queueNotificationTarget(url);
+});
+
+function queueNotificationTarget(link: string | undefined): boolean {
+  if (!gotLock || quitting || !link) return false;
+  const target = parseNotificationLink(link);
+  if (!target) return false;
+  pendingNotificationTarget = target;
+  showPendingNotificationTarget();
+  return true;
+}
+
+function showPendingNotificationTarget(): void {
+  const target = pendingNotificationTarget;
+  if (!target || !window || window.isDestroyed() || window.webContents.isDestroyed()
+    || !rendererReady || !rendererConfirmed || !connection.current.synced || !latestSnapshot || quitting) return;
+  pendingNotificationTarget = undefined;
+  if (!latestSnapshot.sessions.some(session => session.id === target.sessionId)) return;
+  if (window.isMinimized()) window.restore();
+  window.show();
+  window.focus();
+  window.webContents.send('workbench:focus-session', target);
+}
+
+function desktopForeground(): boolean {
+  return Boolean(window && !window.isDestroyed() && window.isVisible() && !window.isMinimized() && window.isFocused());
+}
+
+function reportNotificationForeground(foreground = desktopForeground()): void {
+  if (subscription.signal.aborted || !backend) return;
+  void backend.setDesktopForeground(foreground).catch(error => {
+    if (!subscription.signal.aborted) process.stderr.write(`桌面通知状态同步失败：${String(error)}\n`);
+  });
 }
 
 async function captureSelectedWindow(): Promise<PromptAttachment | undefined> {
@@ -247,6 +289,36 @@ function registerIPC(commands: string[]): void {
   });
   handle('workbench:notification-status', () => notifications.status());
   handle('workbench:notification-preferences', () => preferences.notificationPreferences);
+  const backgroundAuthorization = async (): Promise<BackgroundNotificationAuthorization> => {
+    if (!backgroundNotificationHelper) return 'unsupported';
+    if (!connection.current.synced) return 'unavailable';
+    const client = backend;
+    if (!client.backgroundNotifications) return 'backend-unsupported';
+    const authorization = await backgroundNotificationHelper.status(subscription.signal).catch(() => 'unavailable' as const);
+    return backend === client && connection.current.synced ? authorization : 'unavailable';
+  };
+  handle('workbench:background-notification-status', backgroundAuthorization);
+  let backgroundPreferenceWrite = Promise.resolve();
+  handle('workbench:set-background-notifications', input => {
+    const enabled = z.boolean().parse(input);
+    const write = backgroundPreferenceWrite.then(async () => {
+      if (!enabled) await preferences.setNotificationPreferences({ afterQuit: false });
+      let authorization = await backgroundAuthorization();
+      if (enabled && preferences.notificationPreferences.enabled) {
+        const client = backend;
+        if (authorization === 'not-determined' && backgroundNotificationHelper) {
+          authorization = await backgroundNotificationHelper.authorize(subscription.signal).catch(() => 'unavailable');
+        }
+        if (authorization === 'authorized') {
+          if (backend !== client || !connection.current.synced || subscription.signal.aborted) authorization = 'unavailable';
+          else await preferences.setNotificationPreferences({ afterQuit: true });
+        }
+      }
+      return { preferences: preferences.notificationPreferences, authorization };
+    });
+    backgroundPreferenceWrite = write.then(() => {}, () => {});
+    return write;
+  });
   handle('workbench:dictation-status', () => ({ language: preferences.dictationLanguage, unavailable: dictation.unavailable() }));
   handle('workbench:set-dictation-language', language => preferences.setDictationLanguage(z.enum(dictationLanguages).parse(language)));
   handle('workbench:start-dictation', (inputId, inputSessionId) => {
@@ -289,7 +361,11 @@ function registerIPC(commands: string[]): void {
   handle('workbench:download-application-update', () => updates.download());
   handle('workbench:install-application-update', () => requestUpdateClose?.() ?? updates.snapshot);
   handle('workbench:set-application-update-auto-check', value => updates.setAutoCheck(z.boolean().parse(value)));
-  handle('workbench:application-update-ready', () => { rendererConfirmed = true; acknowledgeUpdateReady(); });
+  handle('workbench:application-update-ready', () => {
+    rendererConfirmed = true;
+    acknowledgeUpdateReady();
+    showPendingNotificationTarget();
+  });
 }
 
 function acknowledgeUpdateReady(): void {
@@ -326,6 +402,7 @@ function restoreTerminalWatches(): void {
 }
 
 function releaseViewSubscriptions(): void {
+  rendererConfirmed = false;
   watchedSessions = [];
   latestSnapshot = undefined;
   browsers?.reset();
@@ -364,8 +441,16 @@ async function createWindow(): Promise<void> {
     prepareClose('update', resolveClose);
   });
   currentWindow.on('focus', () => {
+    reportNotificationForeground();
     void synchronizeLanguage().catch(error => process.stderr.write(`Language preference refresh failed: ${String(error)}\n`));
   });
+  const reportBackground = () => reportNotificationForeground(false);
+  const reportForeground = () => reportNotificationForeground();
+  currentWindow.on('blur', reportBackground);
+  currentWindow.on('hide', reportBackground);
+  currentWindow.on('minimize', reportBackground);
+  currentWindow.on('show', reportForeground);
+  currentWindow.on('restore', reportForeground);
   allowWindowClose = false;
   discardPendingWork = false;
   currentWindow.on('close', event => {
@@ -391,7 +476,12 @@ async function createWindow(): Promise<void> {
     else allowWindowClose = false;
   });
   currentWindow.webContents.on('did-finish-load', () => { rendererFailure = undefined; });
-  currentWindow.once('ready-to-show', () => { rendererReady = true; currentWindow.show(); acknowledgeUpdateReady(); });
+  currentWindow.once('ready-to-show', () => {
+    rendererReady = true;
+    currentWindow.show();
+    acknowledgeUpdateReady();
+    showPendingNotificationTarget();
+  });
   window.webContents.setWindowOpenHandler(({ url }) => {
     try {
       const link = new URL(url);
@@ -412,6 +502,7 @@ async function createWindow(): Promise<void> {
       closeRequest = undefined;
     }
     if (window === currentWindow) { window = null; browsers = undefined; }
+    reportNotificationForeground(false);
     requestUpdateClose = undefined;
     releaseViewSubscriptions();
   });
@@ -445,7 +536,7 @@ if (gotLock) void app.whenReady().then(async () => {
   await updates.load();
   notifications = new WorkbenchNotifications(target => {
     window?.show(); window?.focus(); window?.webContents.send('workbench:focus-session', target);
-  }, undefined, () => preferences.notificationPreferences, () => window?.isFocused() === true);
+  }, undefined, () => preferences.notificationPreferences, desktopForeground);
   registerIPC(await backend.request<string[]>('/commands'));
   await createWindow();
   if (preferences.windowCaptureShortcut) registerWindowCapture();
@@ -456,13 +547,18 @@ if (gotLock) void app.whenReady().then(async () => {
       const generation = connection.begin(client.endpoint.instanceId);
       try {
         await client.watchSessions(watchedSessions);
+        let initial = true;
         await client.subscribe((snapshot, frame) => {
           if (subscription.signal.aborted || client !== backend || !connection.received(generation, frame)) return;
           latestSnapshot = snapshot;
           browsers?.updateTabs(snapshot.workspaces);
           acknowledgeUpdateReady();
-          notifications.observe(snapshot); window?.webContents.send('workbench:changed', snapshot);
-        }, subscription.signal);
+          showPendingNotificationTarget();
+          const backendSendsNotifications = client.backgroundNotifications && preferences.notificationPreferences.afterQuit;
+          notifications.observe(snapshot, initial || backendSendsNotifications);
+          initial = false;
+          window?.webContents.send('workbench:changed', snapshot);
+        }, subscription.signal, client.backgroundNotifications ? { desktopForeground: desktopForeground() } : undefined);
         connection.disconnected(generation);
       } catch (error) {
         if (subscription.signal.aborted) return;
@@ -482,7 +578,13 @@ if (gotLock) void app.whenReady().then(async () => {
   app.quit();
 });
 
-app.on('second-instance', () => { if (window?.isMinimized()) window.restore(); window?.focus(); });
+app.on('second-instance', (_event, argv, _workingDirectory, additionalData) => {
+  const forwarded = additionalData && typeof additionalData === 'object' && 'notificationLink' in additionalData
+    && typeof additionalData.notificationLink === 'string' ? additionalData.notificationLink : notificationLinkFromArguments(argv);
+  if (queueNotificationTarget(forwarded)) return;
+  if (window?.isMinimized()) window.restore();
+  window?.focus();
+});
 app.on('activate', () => { if (!quitting && backend && !window) void createWindow(); });
 app.on('window-all-closed', () => app.quit());
 app.on('before-quit', () => { windowCapture?.abort(); dictation.cancel(); });

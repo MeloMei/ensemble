@@ -512,7 +512,9 @@ export interface WorkbenchAPI {
   deepSeekBalance(): Promise<DeepSeekBalance>;
   notificationStatus(): Promise<NotificationStatus>;
   notificationPreferences(): Promise<NotificationPreferences>;
-  setNotificationPreferences(patch: Partial<NotificationPreferences>): Promise<NotificationPreferences>;
+  setNotificationPreferences(patch: Partial<Omit<NotificationPreferences, 'afterQuit'>>): Promise<NotificationPreferences>;
+  backgroundNotificationStatus(): Promise<BackgroundNotificationAuthorization>;
+  setBackgroundNotifications(enabled: boolean): Promise<{ preferences: NotificationPreferences; authorization: BackgroundNotificationAuthorization }>;
   dictationStatus(): Promise<DictationStatus>;
   setDictationLanguage(language: DictationLanguage): Promise<void>;
   startDictation(id: string, sessionId: string): Promise<DictationError | undefined>;
@@ -611,8 +613,10 @@ export interface NotificationPreferences {
   results: boolean;
   failures: boolean;
   sound: boolean;
+  afterQuit: boolean;
 }
 
+export type BackgroundNotificationAuthorization = 'authorized' | 'denied' | 'not-determined' | 'unsupported' | 'backend-unsupported' | 'unavailable';
 export interface NotificationStatus { supported: boolean; state: 'idle' | 'requested' | 'shown' | 'failed'; error?: string }
 
 declare global {
