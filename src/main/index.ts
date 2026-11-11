@@ -383,7 +383,11 @@ if (gotLock) void app.whenReady().then(async () => {
     getAutoCheck: () => preferences.autoCheckUpdates,
     setAutoCheck: enabled => preferences.setAutoCheckUpdates(enabled),
     publish: state => { if (window && !window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send('workbench:application-update-changed', state); },
-    prepareInstall: async token => { await backend.call('workbench:begin-application-update', token); return backend.endpoint.pid; },
+    prepareInstall: async token => {
+      if (backend.endpoint.managedService) throw new Error('后台由服务管理。请先卸载后台服务，再从桌面应用安装更新。');
+      await backend.call('workbench:begin-application-update', token);
+      return backend.endpoint.pid;
+    },
     cancelInstall: token => backend.call<void>('workbench:cancel-application-update', token),
     requestQuit: () => { allowWindowClose = true; window?.close(); },
   });

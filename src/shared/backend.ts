@@ -6,6 +6,7 @@ export interface BackendEndpoint {
   instanceId: string;
   startedAt: string;
   stoppedAt?: string;
+  managedService?: string;
 }
 
 export interface BackendReply<T = unknown> { result?: T; error?: string; errorCode?: SendPromptRejectionReason }

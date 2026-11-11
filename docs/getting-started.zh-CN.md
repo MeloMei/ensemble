@@ -143,6 +143,21 @@ macOS 默认数据目录为 `~/Library/Application Support/Agent Workbench`。�
 
 `backend.json` 包含本机管理凭据，文件权限为 `0600`。请妥善保存数据目录和签发的连接配置。后台仅监听 `127.0.0.1`，本机地址仍需认证。
 
+### 将后台设为用户服务
+
+在固定路径的源码目录中使用 Node.js 22.22 或更高版本。可以只构建 CLI 和后台，无需下载或启动 Electron。
+
+```sh
+ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci
+npm run build:headless
+bin/workbench daemon install
+bin/workbench daemon status
+```
+
+macOS 使用图形登录会话中的 LaunchAgent。Linux 使用 systemd 用户服务，退出登录后继续运行需要账号已开启 systemd lingering。后台异常退出时，服务会重启后台。可以用 `daemon stop`、`daemon start`、`daemon restart` 或 `daemon uninstall` 控制服务。卸载会保留会话和数据。通过 `daemon status` 查看后台是否已可连接。macOS 的日志在 `backend.log`，Linux 的日志在 systemd 用户日志中。
+
+如果要复用桌面应用的数据目录，请先退出 Ensemble。如果普通后台仍在运行，先执行 `bin/workbench stop` 再安装服务。使用同一数据目录的客户端会连接该服务。通过桌面应用安装更新前，请先卸载该数据目录对应的服务。
+
 ## 接入外部 Agent
 
 打开 **协作 → Agent MCP 接入**，填写 Agent 名称，授权项目目录和平台运行时，再把生成的配置加载到原客户端。凭据只在签发时展示，可以单独撤销。
