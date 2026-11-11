@@ -478,17 +478,18 @@ const cases: Record<string, () => Promise<void>> = {
       && selection.from === view.state.doc.line(42).from && selection.to === view.state.doc.line(45).to,
     'Jumping to a range in the open file did not preserve its draft or select the range');
     await openReference('other file');
-    await waitFor(() => document.body.textContent?.includes(translate('workspace:files.saveBeforeOpen')) === true, 'A dirty editor did not block opening a different file');
-    assert(editor() === view && reads.length === 1 && document.querySelector('.tab-select[aria-current="page"]')?.textContent?.includes(session.title),
-      'File navigation discarded the draft, read an unrelated file, or switched the conversation');
-    await act(async () => { view.dispatch({ changes: { from: 0, to: 'Draft: '.length } }); await tick(); });
+    await waitFor(() => editor()?.state.doc.lineAt(editor()!.state.selection.main.head).number === 8, 'The other reference did not open in a new tab');
+    assert(editor() !== view && reads.join() === 'src/view.ts,src/other.ts' && document.querySelector('.tab-select[aria-current="page"]')?.textContent?.includes(session.title),
+      'File navigation read an unrelated file or switched the conversation');
     await click('shell:commandPalette.trigger');
     await change(input('.command-palette input[role=combobox]'), 'Line 40');
     const hit = () => [...document.querySelectorAll<HTMLElement>('.command-palette [role=option]')]
       .find(item => item.textContent?.includes('src/view.ts:40:3'));
     await waitFor(() => !!hit(), 'The text result did not show the exact reference');
     await act(async () => { hit()?.click(); await tick(); });
-    await waitFor(() => view.state.selection.main.head === view.state.doc.line(40).from + 2, 'The search hit did not restore the line and column');
+    await waitFor(() => editor()?.state.selection.main.head === editor()!.state.doc.line(40).from + 2, 'The search hit did not restore the line and column');
+    assert(editor()!.state.doc.toString().startsWith('Draft: ') && Number(reads.length) === 2, 'Returning to the first file lost or reread its draft');
+    await act(async () => { editor()!.dispatch({ changes: { from: 0, to: 'Draft: '.length } }); await tick(); });
     await click('Diff');
     await waitFor(() => !!document.querySelector('.review-diff-line[data-reference]'), 'Diff did not reveal the search result line');
     const diffLine = document.querySelector('.review-diff-line[data-reference]');
@@ -746,6 +747,140 @@ const cases: Record<string, () => Promise<void>> = {
       await waitFor(() => reads.length === hiddenReads + 1, 'The disk check did not resume when the window regained focus');
     } finally {
       delayed.resolve(file(path, 'cleanup', original));
+      setVisibility(false);
+      if (visibility) Object.defineProperty(document, 'visibilityState', visibility); else Reflect.deleteProperty(document, 'visibilityState');
+      if (focus) Object.defineProperty(document, 'hasFocus', focus); else Reflect.deleteProperty(document, 'hasFocus');
+      if (preferences === null) localStorage.removeItem(key); else localStorage.setItem(key, preferences);
+    }
+  },
+  'FILE-TABS: independent drafts survive switches and guarded closes': async () => {
+    const key = 'ensemble.file-editor';
+    const preferences = localStorage.getItem(key);
+    localStorage.removeItem(key);
+    const visibility = Object.getOwnPropertyDescriptor(document, 'visibilityState');
+    const focus = Object.getOwnPropertyDescriptor(document, 'hasFocus');
+    let visible = false;
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visible ? 'visible' : 'hidden' });
+    Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => true });
+    const project = { ...workspace, id: 'file-tabs' };
+    const first = 'first.txt', second = 'second.txt', delayedPath = 'delayed.txt';
+    const delayed = deferred<FileContent>();
+    const createFile = (path: string, content: string, revision = path): FileContent => ({ path, content, revision, language: 'text', size: content.length });
+    const firstText = Array.from({ length: 120 }, (_, index) => `First line ${index + 1}`).join('\n');
+    const disk = new Map([[first, createFile(first, firstText)], [second, createFile(second, 'Second only')]]);
+    const reads: string[] = [];
+    const writes: Array<{ path: string; content: string; revision: string }> = [];
+    let summary: UnsavedFileSummary = { count: 0, names: [] };
+    window.workbench = {
+      listFiles: async () => [first, second, delayedPath].map(path => ({ path, name: path, kind: 'file', size: 0 })),
+      gitState: async () => ({ available: false }),
+      readFile: async (_id: string, path: string) => {
+        reads.push(path);
+        return path === delayedPath ? delayed.promise : disk.get(path) ?? null;
+      },
+      writeFile: async (_id: string, input: typeof writes[number]) => {
+        writes.push(input);
+        if (disk.get(input.path)?.revision !== input.revision) throw new Error('File changed on disk; reload before saving');
+        const written = createFile(input.path, input.content, `saved-${writes.length}`);
+        disk.set(input.path, written);
+        return written;
+      },
+      setUnsavedFiles: (value: UnsavedFileSummary) => { summary = value; },
+    } as unknown as Window['workbench'];
+    const view = () => {
+      const dom = document.querySelector<HTMLElement>('.review-editor .cm-editor');
+      assert(dom, 'The actual CodeMirror editor was not mounted');
+      return EditorView.findFromDOM(dom)!;
+    };
+    const tab = (path: string) => document.querySelector<HTMLButtonElement>(`.file-editor-tabs [role=tab][title="${path}"]`);
+    const activePath = () => document.querySelector('.file-editor-tabs [aria-selected=true]')?.getAttribute('title');
+    const open = (path: string) => act(async () => {
+      const row = [...document.querySelectorAll<HTMLButtonElement>('.tree-row')].find(row => row.title === path);
+      assert(row, `Missing file tree row for ${path}`);
+      row.click();
+      await tick();
+    });
+    const select = (path: string) => act(async () => { tab(path)?.click(); await tick(); });
+    const close = (path: string) => click(`Close ${path}`);
+    const edit = (suffix: string) => act(async () => {
+      const editor = view();
+      editor.dispatch({ changes: { from: editor.state.doc.length, insert: suffix } });
+      await tick();
+    });
+    const setVisibility = (next: boolean) => { visible = next; document.dispatchEvent(new Event('visibilitychange')); };
+    const checkNow = () => act(async () => { setVisibility(false); setVisibility(true); await tick(); });
+    const topLine = () => view().state.doc.lineAt(view().lineBlockAtHeight(view().scrollDOM.scrollTop).from).number;
+    try {
+      await render(<div data-test-actual-editor style={{ display: 'flex', width: 380, height: 540 }}><FileReviewPanel workspace={project} refreshKey="tabs" perform={perform} /></div>);
+      await open(first);
+      await edit('\nFirst draft');
+      const selection = { anchor: view().state.doc.line(54).from + 1, head: view().state.doc.line(54).from + 6 };
+      await act(async () => { view().dispatch({ selection, effects: EditorView.scrollIntoView(selection.head, { y: 'start' }) }); await tick(); });
+      await waitFor(() => view().scrollDOM.scrollTop > 300, 'The first tab could not be scrolled');
+      const scrolledLine = topLine();
+      const scrollTop = view().scrollDOM.scrollTop;
+      await open(second);
+      await edit('\nSecond draft');
+      assert(activePath() === second && document.querySelectorAll('.file-editor-tab[data-dirty=true]').length === 2 && summary.count === 2,
+        'Opening the second tab did not preserve two independent drafts');
+      await act(async () => {
+        tab(second)?.focus();
+        tab(second)?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true }));
+        await tick();
+      });
+      assert(activePath() === first && view().state.sliceDoc().endsWith('First draft')
+        && view().state.selection.main.anchor === selection.anchor && view().state.selection.main.head === selection.head,
+      'Keyboard switching lost the first draft or selection');
+      await waitFor(() => topLine() === scrolledLine, () => `Returning to the first tab moved line ${scrolledLine} at ${scrollTop}px to line ${topLine()} at ${view().scrollDOM.scrollTop}px`);
+      await click('workspace:editor.find');
+      assert(document.activeElement === input('.cm-file-find input'), 'Find did not open in the active tab');
+      await change(input('.cm-file-find input'), 'First draft');
+      await act(async () => {
+        document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+        await tick();
+      });
+      assert(view().state.sliceDoc(view().state.selection.main.from, view().state.selection.main.to) === 'First draft',
+        'Find did not search the active draft');
+
+      await open(delayedPath);
+      await select(second);
+      await act(async () => { delayed.resolve(createFile(delayedPath, 'Late read')); await tick(); });
+      assert(activePath() === second && !tab(delayedPath) && view().state.sliceDoc().endsWith('Second draft'),
+        'An old file read changed the active tab or replaced the second draft');
+      disk.set(first, createFile(first, 'External first edit', 'external'));
+      await checkNow();
+      assert(reads.at(-1) === second && !document.querySelector('[data-file-disk-status]'), 'The background check read an inactive tab');
+      await select(first);
+      await checkNow();
+      assert(document.querySelector('[data-file-disk-status="changed"]') && view().state.sliceDoc().endsWith('First draft'),
+        'The first tab lost its draft after a disk conflict');
+
+      await close(first);
+      await click('workspace:common.cancel');
+      assert(tab(first) && tab(second) && summary.count === 2, 'Cancel changed an open draft');
+      await close(first);
+      await click('workspace:files.saveAndClose');
+      assert(tab(first) && document.querySelector('dialog[open] [role=alert]') && writes[0]?.revision === first,
+        'A failed save closed the conflicted tab or used a newer revision');
+      await click('workspace:files.discardAndClose');
+      assert(!tab(first) && activePath() === second && view().state.sliceDoc().endsWith('Second draft') && Number(summary.count) === 1,
+        'Discarding the first tab changed the second draft');
+      await close(second);
+      await click('workspace:files.saveAndClose');
+      assert(!tab(second) && disk.get(second)?.content.endsWith('Second draft') && Number(summary.count) === 0,
+        'Save and close did not write and close the second tab');
+
+      await open(first);
+      await open(second);
+      await select(first);
+      await click('workspace:editor.autoSave');
+      await edit('\nBackground save');
+      await select(second);
+      await waitFor(() => disk.get(first)?.content.endsWith('Background save') === true, 'Switching away cancelled an already scheduled Auto Save', 130);
+      assert(activePath() === second && !tab(first)?.closest('[data-dirty=true]') && Number(summary.count) === 0,
+        'Saving an inactive tab changed the selected file or left it dirty');
+    } finally {
+      delayed.resolve(createFile(delayedPath, 'Cleanup'));
       setVisibility(false);
       if (visibility) Object.defineProperty(document, 'visibilityState', visibility); else Reflect.deleteProperty(document, 'visibilityState');
       if (focus) Object.defineProperty(document, 'hasFocus', focus); else Reflect.deleteProperty(document, 'hasFocus');

@@ -1,12 +1,13 @@
 import { useTranslation } from 'react-i18next';
 import { formatDate, renderDisplayText } from '../shared/i18n';
 import type { DisplayText } from '../shared/display-text';
-import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { FileCode2, Files, GitBranch, GitCompareArrows, GitPullRequest, LoaderCircle, Maximize2, MessageSquare, Minimize2, PanelRight, RefreshCw, Save, Search, Timer, WrapText, X } from 'lucide-react';
 import { z } from 'zod';
 import type { FileContent, FileDiff, FileEntry, GitCommitPreview, GitMutation, GitState, PullRequestReview, Session, Workspace } from '../shared/types';
 import { BranchComparison } from './BranchComparison';
-import { CodeEditor, type CodeEditorHandle } from './CodeEditor';
+import { CodeEditor, type CodeEditorHandle, type CodeEditorPosition } from './CodeEditor';
+import { FileEditorTabs } from './FileEditorTabs';
 import { DiffReview } from './DiffReview';
 import { GitHistory } from './GitHistory';
 import { WorkspaceFileTree } from './WorkspaceFileTree';
@@ -24,6 +25,9 @@ const writeFile = (workspaceId: string, input: Parameters<Window['workbench']['w
 const fileDrafts = new FileDraftStore(summary => window.workbench.setUnsavedFiles(summary), { delay: 1000, write: writeFile });
 const editorPreferencesKey = 'ensemble.file-editor';
 type EditorPreferences = { wrapLines: boolean; autoSave: boolean };
+type EditorTab = { path: string; position: CodeEditorPosition };
+type FileDraft = NonNullable<ReturnType<FileDraftStore['get']>>;
+const isDirty = (draft: FileDraft | undefined) => Boolean(draft && draft.text !== draft.original.content);
 
 function readEditorPreferences(): EditorPreferences {
   try {
@@ -70,19 +74,24 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
   const [missingDirectory, setMissingDirectory] = useState(false);
   const [git, setGit] = useState<GitState | null>(null);
   const [checkedChanges, setCheckedChanges] = useState<ReadonlySet<string>>(() => new Set());
-  const [selected, setSelected] = useState<{ path: string; mode: 'content' | 'diff' } | null>(null);
-  const [loadedPath, setLoadedPath] = useState<string | null>(null);
+  const [tabs, setTabs] = useState<{ open: EditorTab[]; active: string | null }>({ open: [], active: null });
+  const [diff, setDiff] = useState<FileDiff | null>(null);
   const [location, setLocation] = useState<FileReference>();
+  const [closingTab, setClosingTab] = useState<{ path: string; draft: FileDraft }>();
   const [editorPreferences, setEditorPreferences] = useState(readEditorPreferences);
+  const tabId = useId();
+  const activeTabButton = useRef<HTMLButtonElement>(null);
+  const focusAfterClose = useRef(false);
   const editor = useRef<CodeEditorHandle>(null);
   useSyncExternalStore(fileDrafts.subscribe, fileDrafts.getSnapshot);
-  const buffer = loadedPath === null ? undefined : fileDrafts.get(workspace.id, loadedPath);
+  const activeTab = tabs.open.find(tab => tab.path === tabs.active);
+  const selected = diff ? { path: diff.path, mode: 'diff' as const } : activeTab ? { path: activeTab.path, mode: 'content' as const } : null;
+  const buffer = selected?.mode === 'content' ? fileDrafts.get(workspace.id, selected.path) : undefined;
   const file = buffer?.original ?? null;
   const draft = buffer?.text ?? '';
-  const [diff, setDiff] = useState<FileDiff | null>(null);
   const [error, setError] = useState<FileNotice>('');
   const [operationBusy, setBusy] = useState(false);
-  const busy = operationBusy || (loadedPath !== null && fileDrafts.isSaving(workspace.id, loadedPath));
+  const busy = operationBusy || (file !== null && fileDrafts.isSaving(workspace.id, file.path));
   const [preview, setPreview] = useState<GitCommitPreview | null>(null);
   const [commitMessage, setCommitMessage] = useState('');
   const [discard, setDiscard] = useState<string | null>(null);
@@ -97,7 +106,12 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
   const reviewLayout = useRef<HTMLDivElement>(null);
   const responsiveDiff = view === 'changes' && selected?.mode === 'diff' && !expanded;
   const selectedChangeIndex = responsiveDiff ? git?.changes.findIndex(change => change.path === selected.path) ?? -1 : -1;
-  const dirty = !!file && draft !== file.content;
+  const dirty = isDirty(buffer);
+  const tabItems = tabs.open.map(({ path }) => ({
+    path, dirty: isDirty(fileDrafts.get(workspace.id, path)), saving: fileDrafts.isSaving(workspace.id, path),
+  }));
+  const hasUnsavedFiles = tabItems.some(tab => tab.dirty || tab.saving);
+  const closingBusy = closingTab !== undefined && (operationBusy || fileDrafts.isSaving(workspace.id, closingTab.path));
   const editorOpen = view !== 'pr' && selected?.mode === 'content' && selected.path === file?.path;
   const diskStatus = editorOpen ? buffer?.diskStatus : undefined;
   const diskNotice = diskStatus === 'changed' ? 'workspace:files.changedDraft'
@@ -115,6 +129,11 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
 
   useLayoutEffect(() => { fileDrafts.setAutoSave(editorPreferences.autoSave); }, [editorPreferences.autoSave]);
   useFileDiskCheck(fileDrafts, workspace.id, visible && editorOpen && !operationBusy ? file?.path : undefined, diskCheckBlocked);
+  useLayoutEffect(() => {
+    if (!focusAfterClose.current) return;
+    focusAfterClose.current = false;
+    activeTabButton.current?.focus({ preventScroll: true });
+  }, [tabs]);
 
   const toggleEditorPreference = (preference: keyof EditorPreferences) => {
     const next = { ...editorPreferences, [preference]: !editorPreferences[preference] };
@@ -168,8 +187,37 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
   const refreshPullRequest = async () => {
     setReview(await window.workbench.reviewPullRequest(workspace.id));
   };
+  const showFile = (path: string, reference?: FileReference) => {
+    setTabs(current => ({
+      open: current.open.some(tab => tab.path === path) ? current.open : [...current.open, { path, position: {} }],
+      active: path,
+    }));
+    setDiff(null);
+    setDiscard(null);
+    setLocation(current => reference ?? (current?.path === path ? current : undefined));
+    if (reference) setView('files');
+  };
+  const closeFile = (path: string, expected?: FileDraft) => {
+    const current = fileDrafts.get(workspace.id, path);
+    if (current && ((expected ? current !== expected : isDirty(current)) || !fileDrafts.discard(workspace.id, path, current))) {
+      throw new Error(t('files.closeChanged'));
+    }
+    if (path === tabs.active && !diff) {
+      fileGeneration.current++;
+      setLocation(undefined);
+      if (tabs.open.length === 1) setExpanded(false);
+    }
+    setTabs(current => {
+      const index = current.open.findIndex(tab => tab.path === path);
+      if (index < 0) return current;
+      const open = current.open.filter(tab => tab.path !== path);
+      const active = current.active === path ? open[Math.min(index, open.length - 1)]?.path ?? null : current.active;
+      return { open, active };
+    });
+    setClosingTab(current => current?.path === path ? undefined : current);
+    focusAfterClose.current = true;
+  };
   const load = async (filePath: string, mode: 'content' | 'diff', force = false, reference?: FileReference) => {
-    if (dirty && !force) throw new Error(t('files.saveBeforeOpen'));
     const token = ++fileGeneration.current;
     if (mode === 'content') {
       if (force) fileDrafts.suspendAutoSaveForDiscard(workspace.id, filePath);
@@ -181,8 +229,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
       if (token !== fileGeneration.current) return;
 
       if (contents === null && force) {
-        if (cached && !fileDrafts.discard(workspace.id, filePath, cached)) throw new Error(t('files.changedDraft'));
-        setSelected(null); setLoadedPath(null); setDiff(null); setExpanded(false);
+        closeFile(filePath, cached);
         return;
       }
       if (contents) {
@@ -196,37 +243,58 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
         }
         if (cached) fileDrafts.observeDisk(workspace.id, cached.original, contents === null ? 'missing' : 'unreadable');
       }
-      setLoadedPath(filePath); setDiff(null);
-    } else {
-      const patch = await window.workbench.fileDiff(workspace.id, filePath);
-      if (token !== fileGeneration.current) return;
-      setDiff(patch);
-      if (file?.path !== filePath) setLoadedPath(null);
+      showFile(filePath, reference);
+      return;
     }
-    setSelected({ path: filePath, mode }); setDiscard(null);
-    setLocation(current => reference ?? (current?.path === filePath ? current : undefined));
-    if (reference) setView('files');
+    let patch: FileDiff;
+    try { patch = await window.workbench.fileDiff(workspace.id, filePath); }
+    catch (failure) {
+      if (token !== fileGeneration.current) return;
+      throw failure;
+    }
+    if (token !== fileGeneration.current) return;
+    setDiff(patch);
+    setDiscard(null);
+    setLocation(current => current?.path === filePath ? current : undefined);
+  };
+  const openFile = (path: string, reference?: FileReference) => {
+    if (!tabs.open.some(tab => tab.path === path)) {
+      run('open', () => load(path, 'content', false, reference));
+      return;
+    }
+    fileGeneration.current++;
+    setError('');
+    showFile(path, reference);
+  };
+  const requestCloseFile = (path: string) => {
+    const current = fileDrafts.get(workspace.id, path);
+    if (fileDrafts.isSaving(workspace.id, path)) return;
+    setError('');
+    if (current && isDirty(current)) setClosingTab({ path, draft: current });
+    else closeFile(path);
+  };
+  const closeDiff = () => {
+    fileGeneration.current++;
+    setDiff(null);
+    setDiscard(null);
+    setLocation(current => current?.path === tabs.active ? current : undefined);
+    if (!tabs.active) setExpanded(false);
   };
 
   const request = navigation?.request;
   useEffect(() => {
-    if (!request || request.workspaceId !== workspace.id || busy) return;
+    if (!request || request.workspaceId !== workspace.id) return;
     let current = true;
     queueMicrotask(() => {
       if (!current) return;
       navigation?.consume(request);
-      if (selected?.mode === 'content' && selected.path === request.path && file) {
-        setView('files');
-        setLocation(request);
-        return;
-      }
-      run('open-reference', () => load(request.path, 'content', false, request));
+      openFile(request.path, request);
     });
     return () => { current = false; };
-  }, [request, busy, workspace.id]);
+  }, [request, workspace.id]);
 
   useEffect(() => {
-    setMissingDirectory(false); setGit(null); setSelected(null); setLoadedPath(null); setDiff(null); setLocation(undefined);
+    setMissingDirectory(false); setGit(null); setTabs({ open: [], active: null }); setDiff(null); setLocation(undefined); setClosingTab(undefined);
     setPreview(null); setReview(null); setNotes({ workspaceId: workspace.id, items: persistedNotes(workspace.id) });
     setNoteDrafts(new Map());
     return () => { directoryGeneration.current++; fileGeneration.current++; };
@@ -247,16 +315,23 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
     try { localStorage.setItem(`workbench:review:${workspace.id}`, JSON.stringify(notes.items)); }
     catch { setError({ key: 'workspace:files.notesSaveFailed' }); }
   }, [notes, workspace.id]);
-  const save = () => file && run('save', async () => {
-    await fileDrafts.save(workspace.id, file.path, input => writeFile(workspace.id, input));
-    await refresh();
-  });
+  const save = (path: string, close = false) => {
+    if (fileDrafts.isSaving(workspace.id, path)) return;
+    run('save', async () => {
+      if (isDirty(fileDrafts.get(workspace.id, path))) {
+        await fileDrafts.save(workspace.id, path, input => writeFile(workspace.id, input));
+      }
+      if (close) closeFile(path);
+      await refresh();
+    });
+  };
   const mutate = (input: GitMutation) => run(input.action, async () => {
+    const selectionToken = fileGeneration.current;
     const paths = new Set('paths' in input ? input.paths : [input.path]);
     const updated = await window.workbench.gitMutate(workspace.id, input);
     setGit(updated); setDiscard(null); setPreview(null);
     setCheckedChanges(current => new Set([...current].filter(path => !paths.has(path))));
-    if (selected && paths.has(selected.path)) await load(selected.path, 'diff');
+    if (selected && selectionToken === fileGeneration.current && paths.has(selected.path)) await load(selected.path, 'diff');
   });
   const updateNoteDraft = (path: string, update: (current: DiffNoteDraft | undefined) => DiffNoteDraft | undefined) => {
     setNoteDrafts(current => {
@@ -312,7 +387,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
     {!missingDirectory && <div className="file-branch"><GitBranch size={13} /><span>{git?.available ? git.branch : t('files.notGitLabel')}</span>
       {view === 'changes' && <BranchComparison workspaceId={workspace.id} />}
       {view === 'changes' && git?.available && <GitHistory workspaceId={workspace.id} />}
-      {git?.available && <button className="review-text-button" disabled={!!busy || dirty} onClick={() => run('preview', async () => setPreview(await window.workbench.gitCommitPreview(workspace.id)))}>{t('files.commitPreview')}</button>}
+      {git?.available && <button className="review-text-button" disabled={!!busy || hasUnsavedFiles} onClick={() => run('preview', async () => setPreview(await window.workbench.gitCommitPreview(workspace.id)))}>{t('files.commitPreview')}</button>}
     </div>}
     {notice && <div className="pane-note error-text" role="alert">{typeof notice === 'string' ? notice : renderDisplayText('', notice)}</div>}
     {diskNotice && <div className="pane-note error-text" role="status" data-file-disk-status={diskStatus}>{renderDisplayText('', { key: diskNotice })}</div>}
@@ -320,7 +395,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
     <WorkspaceFileTree key={workspaceKey} workspaceId={workspace.id}
       workspaceKey={workspaceKey} entries={tree?.entries ?? emptyEntries} revision={tree?.revision ?? 0}
       hidden={view !== 'files' || missingDirectory} selectedPath={selected?.path}
-      onOpen={path => run('open', () => load(path, 'content'))} />
+      onOpen={openFile} />
     {view === 'pr' && <section className="pr-review-body">
       {!review ? <p className="pane-note">{t('files.readPullRequest')}</p> : review.status !== 'ready' ? <p className="pane-note">{review.error}</p> : <>
         <div className="pr-review-summary"><span className="pr-review-icon"><GitPullRequest size={18} /></span>
@@ -337,12 +412,12 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
       </>}
     </section>}
     {view === 'changes' && changes.length > 0 && <div className="review-batch-actions">
-      <label><input type="checkbox" checked={allChecked} disabled={!!busy || dirty}
+      <label><input type="checkbox" checked={allChecked} disabled={!!busy || hasUnsavedFiles}
         ref={element => { if (element) element.indeterminate = checked.length > 0 && !allChecked; }}
         onChange={event => setCheckedChanges(new Set(event.target.checked ? changes.map(change => change.path) : []))} />{t('files.selectAllChanges')}</label>
-      <button className="review-text-button" disabled={!!busy || dirty || !stageable.length}
+      <button className="review-text-button" disabled={!!busy || hasUnsavedFiles || !stageable.length}
         onClick={() => mutate({ action: 'stage', paths: stageable })}>{t('files.stageSelected', { count: stageable.length })}</button>
-      <button className="review-text-button" disabled={!!busy || dirty || !unstageable.length}
+      <button className="review-text-button" disabled={!!busy || hasUnsavedFiles || !unstageable.length}
         onClick={() => mutate({ action: 'unstage', paths: unstageable })}>{t('files.unstageSelected', { count: unstageable.length })}</button>
     </div>}
     <div className="review-layout" ref={reviewLayout} data-responsive-diff={responsiveDiff || undefined}>
@@ -350,7 +425,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
       {!git?.available ? <div className="pane-note">{git?.error || t('files.notGit')}</div> : !git.changes.length ? <div className="pane-note">{t('files.clean')}</div> : git.changes.map((change, index) => <div className="review-change-row" key={change.path}
         data-after-selected={selectedChangeIndex >= 0 && index > selectedChangeIndex || undefined}>
         <div className="review-change-selection">
-          <input type="checkbox" aria-label={t('files.selectChange', { path: change.path })} checked={checkedChanges.has(change.path)} disabled={!!busy || dirty}
+          <input type="checkbox" aria-label={t('files.selectChange', { path: change.path })} checked={checkedChanges.has(change.path)} disabled={!!busy || hasUnsavedFiles}
             onChange={event => {
               const include = event.target.checked;
               setCheckedChanges(current => {
@@ -363,20 +438,27 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
             <GitCompareArrows size={13} /><span className="tree-name">{change.path}</span><code>{change.status}</code>
           </button>
         </div><div className="review-row-actions">
-          {change.status[1] !== ' ' && <button disabled={!!busy || dirty} onClick={() => mutate({ action: 'stage', path: change.path })}>{t('files.stage')}</button>}
-          {change.staged && <button disabled={!!busy || dirty} onClick={() => mutate({ action: 'unstage', path: change.path })}>{t('files.unstage')}</button>}
+          {change.status[1] !== ' ' && <button disabled={!!busy || hasUnsavedFiles} onClick={() => mutate({ action: 'stage', path: change.path })}>{t('files.stage')}</button>}
+          {change.staged && <button disabled={!!busy || hasUnsavedFiles} onClick={() => mutate({ action: 'unstage', path: change.path })}>{t('files.unstage')}</button>}
         </div>
       </div>)}
     </div>}
     {selected && <section className="file-inspector review-inspector" hidden={view === 'pr'}>
-      <div className="inspector-title"><FileCode2 size={14} /><span title={selected.path}>{selected.path}</span>{dirty && <span className="review-unsaved" title={t('files.unsavedTitle')}>{t('files.unsaved')}</span>}
+      {diff && <div className="inspector-title"><FileCode2 size={14} /><span title={selected.path}>{selected.path}</span>
         <IconButton label={expanded ? t('files.restorePanel') : t('files.expandPanel')} onClick={() => setExpanded(value => !value)}>{expanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}</IconButton>
-        <IconButton label={t('files.close')} disabled={dirty || !!busy} onClick={() => { fileGeneration.current++; setSelected(null); setLoadedPath(null); setDiff(null); setLocation(undefined); setExpanded(false); }}><X size={13} /></IconButton>
-      </div>
+        <IconButton label={t('files.close')} onClick={closeDiff}><X size={13} /></IconButton>
+      </div>}
+      {tabs.open.length > 0 && <div className="inspector-title file-editor-tabs-header">
+        <FileEditorTabs tabs={tabItems} activePath={file?.path} focusPath={tabs.active} id={tabId} activeButton={activeTabButton}
+          onActivate={openFile} onClose={requestCloseFile} />
+        {!diff && <IconButton label={expanded ? t('files.restorePanel') : t('files.expandPanel')} onClick={() => setExpanded(value => !value)}>
+          {expanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+        </IconButton>}
+      </div>}
       <div className="inspector-tabs">
-        <button className={selected.mode === 'content' ? 'active' : ''} disabled={!!busy || dirty} onClick={() => run('open', () => load(selected.path, 'content'))}>{t('files.edit')}</button>
-        <button className={selected.mode === 'diff' ? 'active' : ''} disabled={!!busy || dirty} onClick={() => run('open', () => load(selected.path, 'diff'))}>Diff</button>
-        {file && selected.mode === 'content' && <button className="review-save" disabled={!dirty || !!busy} onClick={save}><Save size={12} />{t('common.save')}</button>}
+        <button className={selected.mode === 'content' ? 'active' : ''} onClick={() => openFile(selected.path)}>{t('files.edit')}</button>
+        <button className={selected.mode === 'diff' ? 'active' : ''} disabled={!!busy} onClick={() => run('open', () => load(selected.path, 'diff'))}>Diff</button>
+        {file && <button className="review-save" disabled={!dirty || !!busy} onClick={() => save(file.path)}><Save size={12} />{t('common.save')}</button>}
         <button disabled={!!busy} onClick={() => run('reload', () => load(selected.path, selected.mode, true))}>{dirty ? t('files.reloadDiscard') : t('files.reload')}</button>
         {file && selected.mode === 'content' && <>
           <IconButton label={t('editor.find')} onClick={() => editor.current?.find()}><Search size={13} /></IconButton>
@@ -384,25 +466,42 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
           <IconButton label={t('editor.autoSave')} aria-pressed={editorPreferences.autoSave} onClick={() => toggleEditorPreference('autoSave')}><Timer size={13} /></IconButton>
         </>}
       </div>
-      {file && <div className="review-editor" hidden={selected.mode !== 'content'} onKeyDown={event => {
+      {file && activeTab && <div className="review-editor" id={`${tabId}-panel`} role="tabpanel"
+        aria-labelledby={`${tabId}-${tabs.open.indexOf(activeTab)}`} onKeyDown={event => {
         if (event.defaultPrevented || event.nativeEvent.isComposing || event.keyCode === 229 || event.altKey || event.shiftKey
           || !(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 's') return;
         event.preventDefault();
-        if (dirty && !busy && !event.repeat) save();
+        if (dirty && !busy && !event.repeat) save(file.path);
       }}>
         <CodeEditor ref={editor} key={`${workspace.id}:${file.path}`} value={draft} onChange={text => {
           fileDrafts.edit(workspace.id, file.path, text);
-        }} language={file.language} readOnly={operationBusy} wrapLines={editorPreferences.wrapLines} location={location} />
+        }} language={file.language} readOnly={operationBusy} wrapLines={editorPreferences.wrapLines} location={location} position={activeTab.position} />
       </div>}
       {diff && <>
         <DiffReview key={JSON.stringify([selected.path, diff.revision])} diff={diff} location={location} busy={busy} draft={noteDrafts.get(selected.path)}
           onDraftChange={draft => updateNoteDraft(selected.path, () => draft)} onSave={addNote} />
         {diff.patch && diff.revision && !diff.truncated && git?.changes.some(change => change.path === selected.path && change.status[1] !== ' ' && change.status[1] !== '?') && <div className="review-discard">
-          {discard === selected.path ? <><span>{t('files.discardQuestion')}</span><button className="danger" disabled={!!busy} onClick={() => mutate({ action: 'discard', path: selected.path, revision: diff.revision })}>{t('files.confirmDiscard')}</button><button onClick={() => setDiscard(null)}>{t('common.cancel')}</button></> : <button onClick={() => setDiscard(selected.path)}>{t('files.discard')}</button>}
+          {discard === selected.path ? <><span>{t('files.discardQuestion')}</span><button className="danger" disabled={!!busy || hasUnsavedFiles} onClick={() => mutate({ action: 'discard', path: selected.path, revision: diff.revision })}>{t('files.confirmDiscard')}</button><button onClick={() => setDiscard(null)}>{t('common.cancel')}</button></> : <button disabled={hasUnsavedFiles} onClick={() => setDiscard(selected.path)}>{t('files.discard')}</button>}
         </div>}
       </>}
     </section>}
     </div>
+    {closingTab && <Modal title={t('files.unsavedTitle')} subtitle={closingTab.path} busy={closingBusy}
+      fallbackFocus={activeTabButton} onClose={() => { setError(''); setClosingTab(undefined); }}>
+      {notice && <p className="pane-note error-text" role="alert">{typeof notice === 'string' ? notice : renderDisplayText('', notice)}</p>}
+      <div className="modal-actions">
+        <button className="button" autoFocus disabled={closingBusy} onClick={() => { setError(''); setClosingTab(undefined); }}>{t('common.cancel')}</button>
+        <button className="button danger" disabled={closingBusy} onClick={() => {
+          const current = fileDrafts.get(workspace.id, closingTab.path);
+          if (isDirty(current) && (current?.editVersion !== closingTab.draft.editVersion || current?.original !== closingTab.draft.original)) {
+            setError({ key: 'workspace:files.closeChanged' });
+            return;
+          }
+          closeFile(closingTab.path, current);
+        }}>{t('files.discardAndClose')}</button>
+        <button className="button primary" disabled={closingBusy} onClick={() => save(closingTab.path, true)}>{t('files.saveAndClose')}</button>
+      </div>
+    </Modal>}
     {!!currentNotes.length && <section className="review-notes"><strong><MessageSquare size={12} />{t('files.localNotes', { count: currentNotes.length })}</strong>
       {currentNotes.map(note => <div key={note.id}><small>{note.filePath}:{note.startLine !== undefined && note.startLine !== note.lineNumber ? `${note.startLine}–` : ''}{note.lineNumber} · {t(`files.scope.${note.scope}`)} · {t(`files.side.${note.side}`)}</small><p>{note.body}</p><button onClick={() => setNotes({ workspaceId: workspace.id, items: currentNotes.filter(item => item.id !== note.id) })}>{t('common.delete')}</button></div>)}
       <button disabled={!onFeedback || !sessions.length || !!busy} onClick={sendNotes}>{t('files.notesToDraft')}</button>
