@@ -423,10 +423,12 @@ export async function createWorkbenchService(options: {
       workspaceFiles.find(engine.workspace(idSchema.parse(workspaceId)).cwd, z.string().max(4096).parse(query)));
     handle('workbench:search-workspace-text', (_event, workspaceId, query) =>
       workspaceFiles.searchText(engine.workspace(idSchema.parse(workspaceId)).cwd, z.string().max(4096).parse(query)));
-    handle('workbench:read-file', async (_event, workspaceId: unknown, path: unknown) => {
-      try { return await workspaceFiles.read(engine.workspace(idSchema.parse(workspaceId)).cwd, z.string().min(1).max(4096).parse(path)); }
+    const fileReader = <T,>(read: (cwd: string, path: string) => Promise<T>) => async (_event: unknown, workspaceId: unknown, path: unknown) => {
+      try { return await read(engine.workspace(idSchema.parse(workspaceId)).cwd, z.string().min(1).max(4096).parse(path)); }
       catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
-    });
+    };
+    handle('workbench:read-file', fileReader((cwd, path) => workspaceFiles.read(cwd, path)));
+    handle('workbench:read-file-image', fileReader((cwd, path) => workspaceFiles.readImage(cwd, path)));
     handle('workbench:git-state', (_event, workspaceId: unknown) => workspaceFiles.gitState(engine.workspace(idSchema.parse(workspaceId)).cwd));
     handle('workbench:file-diff', (_event, workspaceId: unknown, path: unknown) => workspaceFiles.diff(engine.workspace(idSchema.parse(workspaceId)).cwd, z.string().min(1).max(4096).parse(path)));
     handle('workbench:send-prompt', (_event, id, input, commandId, expectedProviderId) =>

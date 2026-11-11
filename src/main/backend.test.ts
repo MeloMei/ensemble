@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
 import { startBackend } from './backend-server';
 import { BackendClient, BackendCommandError, connectBackend } from './backend-client';
 import { createWorkbenchService } from './workbench-service';
-import type { PromptAttachment, Snapshot } from '../shared/types';
+import type { FileImage, PromptAttachment, Snapshot } from '../shared/types';
 import type { CollaborationArtifactVersion } from '../shared/collaboration';
 import type { LoadedPromptAttachment, ProviderAdapter } from './providers/types';
 
@@ -54,6 +54,48 @@ test('file reads distinguish missing content from other filesystem and path erro
     await assert.rejects(service.call('workbench:read-file', [workspace, '../outside.txt']), /outside the workspace/);
     await rm(join(dataPath, 'notes.txt'));
     assert.equal(await service.call('workbench:read-file', [workspace, 'notes.txt']), null);
+  } finally { await service.shutdown(); await rm(dataPath, { recursive: true, force: true }); }
+});
+
+test('workspace image preview returns verified raster bytes and rejects out-of-scope and mislabeled files', async () => {
+  const dataPath = await realpath(await mkdtemp(join(tmpdir(), 'workbench-image-preview-')));
+  const project = join(dataPath, 'project');
+  const service = await createWorkbenchService({ dataPath, command: process.execPath, bridgePath: join(dataPath, 'bridge.cjs'), publish() {}, providers: [] });
+  try {
+    await mkdir(project);
+    const workspace = await service.engine.createWorkspace({ name: 'images', cwd: project });
+    const readImage = (path: string) => service.call('workbench:read-file-image', [workspace, path]) as Promise<FileImage | null>;
+    const images = [
+      ['preview.PNG', 'image/png', 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII='],
+      ['preview.jpeg', 'image/jpeg', '/9j/4AAQSkZJRgABAgAAAQABAAD//gAPTGF2YzYzLjEuMTAyAP/bAEMACAQEBAQEBQUFBQUFBgYGBgYGBgYGBgYGBgcHBwgICAcHBwYGBwcICAgICQkJCAgICAkJCgoKDAwLCw4ODhERFP/EAEwAAQEAAAAAAAAAAAAAAAAAAAAGAQEBAAAAAAAAAAAAAAAAAAAGBxABAAAAAAAAAAAAAAAAAAAAABEBAAAAAAAAAAAAAAAAAAAAAP/AABEIAAIAAgMBIgACEQADEQD/2gAMAwEAAhEDEQA/AIsATX9//9k='],
+      ['preview.gif', 'image/gif', 'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'],
+      ['preview.webp', 'image/webp', 'UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA'],
+    ];
+    for (const [path, mimeType, base64] of images) {
+      const bytes = Buffer.from(base64, 'base64');
+      await writeFile(join(project, path), bytes);
+      const preview = await readImage(path);
+      assert.ok(preview);
+      assert.equal(preview.mimeType, mimeType);
+      assert.equal(preview.path, path);
+      assert.equal(preview.size, bytes.length);
+      assert.deepEqual(Buffer.from(preview.base64, 'base64'), bytes);
+    }
+    const png = Buffer.from(images[0][2], 'base64');
+    await writeFile(join(dataPath, 'outside.png'), png);
+    await symlink(join(dataPath, 'outside.png'), join(project, 'outside-link.png'));
+    await assert.rejects(readImage('../outside.png'), /outside the workspace/);
+    await assert.rejects(readImage('outside-link.png'), /outside the workspace/);
+    await assert.rejects(readImage(join(project, 'preview.PNG')), /relative path/);
+    await writeFile(join(project, 'mislabeled.jpg'), png);
+    await assert.rejects(readImage('mislabeled.jpg'), /format does not match/);
+    await writeFile(join(project, 'script.png'), '<svg onload="alert(1)"></svg>');
+    await assert.rejects(readImage('script.png'), /format does not match/);
+    await writeFile(join(project, 'large.png'), Buffer.concat([png, Buffer.alloc(4 * 1024 * 1024)]));
+    await assert.rejects(readImage('large.png'), /4 MiB/);
+    assert.equal(await readImage('missing.png'), null);
+    await writeFile(join(project, 'unknown.bin'), Buffer.from([0, 255]));
+    await assert.rejects(service.call('workbench:read-file', [workspace, 'unknown.bin']), /Binary/);
   } finally { await service.shutdown(); await rm(dataPath, { recursive: true, force: true }); }
 });
 

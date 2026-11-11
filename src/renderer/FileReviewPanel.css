@@ -181,6 +181,21 @@
 .review-editor { flex: 1; min-height: 180px; overflow: hidden; }
 .review-inspector[hidden] { display: none; }
 .review-editor .code-editor-host { height: 100%; }
+.file-markdown-preview { box-sizing: border-box; height: 100%; overflow: auto; padding: 12px 14px;
+  color: var(--text); font-size: var(--font-size-13); line-height: 1.65; overflow-wrap: anywhere; }
+.file-markdown-preview > :first-child { margin-top: 0; }
+.file-markdown-preview h1 { font-size: var(--font-size-20); }
+.file-markdown-preview h2 { font-size: var(--font-size-16); }
+.file-markdown-preview h3, .file-markdown-preview h4 { font-size: var(--font-size-14); }
+.file-markdown-preview ul, .file-markdown-preview ol { padding-inline-start: 22px; }
+.file-markdown-preview blockquote { margin-inline: 0; padding-inline-start: 10px; border-inline-start: 2px solid var(--accent); color: var(--muted); }
+.file-markdown-preview code { font: var(--code-font-size)/1.6 var(--font-mono); }
+.file-markdown-preview pre { overflow: auto; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--surface); }
+.file-markdown-preview table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
+.file-markdown-preview :is(th, td) { padding: 5px 8px; border: 1px solid var(--border); text-align: start; }
+.file-markdown-link { display: inline; padding: 0; border: 0; background: transparent; color: var(--accent); font: inherit; text-decoration: underline; }
+.file-image-preview { display: grid; place-items: center; box-sizing: border-box; height: 100%; overflow: auto; padding: 12px; }
+.file-image-preview img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; }
 .review-diff { flex: 1; overflow: auto; min-height: 140px; padding: 7px 0; color: var(--text); font: var(--code-font-size)/1.75 var(--font-mono); }
 .review-diff-line { --diff-line-bg: var(--editor-bg); display: flex; min-width: max-content; background: var(--diff-line-bg); }
 .review-diff-gutter { position: sticky; inset-inline-start: 0; display: flex; flex: 0 0 71px; border-inline-end: 1px solid var(--border); background: var(--diff-line-bg); }
