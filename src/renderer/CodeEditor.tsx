@@ -1,12 +1,14 @@
 import { useTranslation } from 'react-i18next';
-import { useEffect, useRef } from 'react';
+import { useEffect, useImperativeHandle, useRef, type Ref } from 'react';
 import { Annotation, Compartment, EditorSelection, EditorState, Transaction } from '@codemirror/state';
-import { EditorView, drawSelection, highlightActiveLine, keymap, lineNumbers } from '@codemirror/view';
+import { EditorView, drawSelection, highlightActiveLine, keymap, lineNumbers, runScopeHandlers, type Panel } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
+import { SearchQuery, closeSearchPanel, findNext, findPrevious, getSearchQuery, openSearchPanel, search, searchKeymap, setSearchQuery } from '@codemirror/search';
 import { useAppearance } from './appearance';
 import type { FileReference } from './workspace-file-reference';
 
 const remoteUpdate = Annotation.define<boolean>();
+const findKeymap = searchKeymap.filter(binding => binding.scope === 'editor search-panel');
 const editorTheme = (dark: boolean) => EditorView.theme({
   '&': { height: '100%', fontSize: '12px', backgroundColor: 'var(--editor-bg)', color: 'var(--text)' },
   '.cm-scroller': { overflow: 'auto', fontFamily: '"SFMono-Regular", Menlo, monospace', lineHeight: '1.8' },
@@ -18,11 +20,77 @@ const editorTheme = (dark: boolean) => EditorView.theme({
   '.cm-line': { padding: '0 12px' },
   '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--accent)' },
   '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection': { backgroundColor: 'var(--editor-selection)' },
+  '.cm-panels': { color: 'var(--text)', backgroundColor: 'var(--surface)' },
+  '.cm-panels.cm-panels-top': { borderBottom: '1px solid var(--border)' },
+  '.cm-file-find': { display: 'flex', alignItems: 'center', gap: '3px', padding: '4px 7px' },
+  '.cm-file-find input': { flex: '1', minWidth: '0', height: '26px', padding: '0 6px', color: 'var(--text)',
+    background: 'var(--editor-bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius-control)', font: 'inherit' },
+  '.cm-file-find button': { flexShrink: '0', width: '26px', height: '26px', color: 'var(--muted)',
+    background: 'transparent', border: '0', borderRadius: 'var(--radius-control)', font: 'inherit' },
+  '.cm-file-find button:hover': { color: 'var(--text)', background: 'var(--hover)' },
+  '.cm-searchMatch': { backgroundColor: 'var(--warning-soft)' },
+  '.cm-searchMatch.cm-searchMatch-selected': { backgroundColor: 'var(--accent-soft)', outline: '1px solid var(--accent)' },
   '&.cm-focused': { outline: 'none' },
 }, { dark });
 
-export function CodeEditor({ value, onChange, readOnly = false, language = 'text', location }: {
-  value: string; onChange(value: string): void; readOnly?: boolean; language?: string; location?: FileReference;
+function fileFindPanel(view: EditorView): Panel {
+  const doc = view.dom.ownerDocument;
+  const dom = doc.createElement('div');
+  dom.className = 'cm-file-find';
+  dom.setAttribute('role', 'search');
+  const field = doc.createElement('input');
+  field.type = 'search';
+  field.spellcheck = false;
+  field.setAttribute('main-field', 'true');
+  field.value = getSearchQuery(view.state).search;
+  field.oninput = () => view.dispatch({ effects: setSearchQuery.of(new SearchQuery({ search: field.value })) });
+  const actions = [
+    { label: 'Previous match', symbol: '↑', run: findPrevious },
+    { label: 'Next match', symbol: '↓', run: findNext },
+    { label: 'Close find', symbol: '×', run: closeSearchPanel },
+  ].map(({ label, symbol, run }) => {
+    const button = doc.createElement('button');
+    button.type = 'button';
+    button.textContent = symbol;
+    button.onclick = () => run(view);
+    return { label, button };
+  });
+  const localize = () => {
+    const label = view.state.phrase('Find in file');
+    dom.setAttribute('aria-label', label);
+    field.setAttribute('aria-label', label);
+    field.placeholder = label;
+    for (const action of actions) {
+      action.button.title = view.state.phrase(action.label);
+      action.button.setAttribute('aria-label', action.button.title);
+    }
+  };
+  localize();
+  dom.append(field, ...actions.map(action => action.button));
+  dom.onkeydown = event => {
+    if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
+    if (runScopeHandlers(view, event, 'search-panel')) event.preventDefault();
+    else if (event.key === 'Enter' && event.target === field) {
+      event.preventDefault();
+      (event.shiftKey ? findPrevious : findNext)(view);
+    }
+  };
+  return {
+    dom, top: true,
+    mount() { field.focus({ preventScroll: true }); field.select(); },
+    update(update) {
+      const query = getSearchQuery(update.state).search;
+      if (field.value !== query) field.value = query;
+      if (update.startState.facet(EditorState.phrases) !== update.state.facet(EditorState.phrases)) localize();
+    },
+  };
+}
+
+export interface CodeEditorHandle { find(): void }
+
+export function CodeEditor({ value, onChange, readOnly = false, wrapLines = false, language = 'text', location, ref }: {
+  value: string; onChange(value: string): void; readOnly?: boolean; wrapLines?: boolean; language?: string; location?: FileReference;
+  ref?: Ref<CodeEditorHandle>;
 }) {
   const { t } = useTranslation('workspace');
   const { theme } = useAppearance();
@@ -31,16 +99,27 @@ export function CodeEditor({ value, onChange, readOnly = false, language = 'text
   const permission = useRef(new Compartment());
   const appearance = useRef(new Compartment());
   const accessibility = useRef(new Compartment());
+  const wrapping = useRef(new Compartment());
+  const editorAccessibility = () => [
+    EditorView.contentAttributes.of({ 'aria-label': t('editor.label', { language }), spellcheck: 'false' }),
+    EditorState.phrases.of({
+      'Find in file': t('editor.find'), 'Previous match': t('editor.findPrevious'),
+      'Next match': t('editor.findNext'), 'Close find': t('editor.closeFind'),
+      'current match': t('editor.currentMatch'), 'on line': t('editor.onLine'),
+    }),
+  ];
   const changed = useRef(onChange); changed.current = onChange;
   const initial = useRef(value);
+  useImperativeHandle(ref, () => ({ find() { if (editor.current) openSearchPanel(editor.current); } }), []);
   useEffect(() => {
     if (!host.current) return;
     const separator = initial.current.includes('\r\n') ? '\r\n' : initial.current.includes('\r') ? '\r' : '\n';
     const view = new EditorView({ parent: host.current, state: EditorState.create({
       doc: initial.current,
-      extensions: [lineNumbers(), highlightActiveLine(), drawSelection(), history(), keymap.of([...defaultKeymap, ...historyKeymap]), appearance.current.of(editorTheme(theme === 'dark')),
+      extensions: [lineNumbers(), highlightActiveLine(), drawSelection(), history(), search({ createPanel: fileFindPanel }),
+        keymap.of([...findKeymap, ...defaultKeymap, ...historyKeymap]), appearance.current.of(editorTheme(theme === 'dark')),
         EditorState.lineSeparator.of(separator), permission.current.of([EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)]),
-        accessibility.current.of(EditorView.contentAttributes.of({ 'aria-label': t('editor.label', { language }), spellcheck: 'false' })),
+        accessibility.current.of(editorAccessibility()), wrapping.current.of(wrapLines ? EditorView.lineWrapping : []),
         EditorView.updateListener.of(update => {
           if (update.docChanged && !update.transactions.some(transaction => transaction.annotation(remoteUpdate))) {
             changed.current(update.state.doc.sliceString(0, undefined, separator));
@@ -57,10 +136,11 @@ export function CodeEditor({ value, onChange, readOnly = false, language = 'text
     editor.current?.dispatch({ effects: appearance.current.reconfigure(editorTheme(theme === 'dark')) });
   }, [theme]);
   useEffect(() => {
-    editor.current?.dispatch({ effects: accessibility.current.reconfigure(
-      EditorView.contentAttributes.of({ 'aria-label': t('editor.label', { language }), spellcheck: 'false' }),
-    ) });
+    editor.current?.dispatch({ effects: accessibility.current.reconfigure(editorAccessibility()) });
   }, [language, t]);
+  useEffect(() => {
+    editor.current?.dispatch({ effects: wrapping.current.reconfigure(wrapLines ? EditorView.lineWrapping : []) });
+  }, [wrapLines]);
   useEffect(() => {
     const view = editor.current;
     if (!view || view.state.doc.eq(view.state.toText(value))) return;

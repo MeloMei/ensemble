@@ -2,11 +2,11 @@ import { useTranslation } from 'react-i18next';
 import { formatDate, renderDisplayText } from '../shared/i18n';
 import type { DisplayText } from '../shared/display-text';
 import { useContext, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { FileCode2, Files, GitBranch, GitCompareArrows, GitPullRequest, LoaderCircle, Maximize2, MessageSquare, Minimize2, PanelRight, RefreshCw, Save, X } from 'lucide-react';
+import { FileCode2, Files, GitBranch, GitCompareArrows, GitPullRequest, LoaderCircle, Maximize2, MessageSquare, Minimize2, PanelRight, RefreshCw, Save, Search, Timer, WrapText, X } from 'lucide-react';
 import { z } from 'zod';
 import type { FileContent, FileDiff, FileEntry, GitCommitPreview, GitMutation, GitState, PullRequestReview, Session, Workspace } from '../shared/types';
 import { BranchComparison } from './BranchComparison';
-import { CodeEditor } from './CodeEditor';
+import { CodeEditor, type CodeEditorHandle } from './CodeEditor';
 import { DiffReview } from './DiffReview';
 import { WorkspaceFileTree } from './WorkspaceFileTree';
 import { FileDraftStore } from './file-drafts';
@@ -18,7 +18,18 @@ import './FileReviewPanel.css';
 const notesSchema = z.array(reviewNoteSchema).max(200);
 type FileNotice = string | DisplayText;
 const emptyEntries: FileEntry[] = [];
-const fileDrafts = new FileDraftStore(summary => window.workbench.setUnsavedFiles(summary));
+const writeFile = (workspaceId: string, input: Parameters<Window['workbench']['writeFile']>[1]) => window.workbench.writeFile(workspaceId, input);
+const fileDrafts = new FileDraftStore(summary => window.workbench.setUnsavedFiles(summary), { delay: 1000, write: writeFile });
+const editorPreferencesKey = 'ensemble.file-editor';
+type EditorPreferences = { wrapLines: boolean; autoSave: boolean };
+
+function readEditorPreferences(): EditorPreferences {
+  try {
+    const saved = JSON.parse(localStorage.getItem(editorPreferencesKey) ?? 'null') as Partial<EditorPreferences> | null;
+    return { wrapLines: saved?.wrapLines === true, autoSave: saved?.autoSave === true };
+  } catch { return { wrapLines: false, autoSave: false }; }
+}
+
 function persistedNotes(workspaceId: string): ReviewNote[] {
   try { return notesSchema.parse(JSON.parse(localStorage.getItem(`workbench:review:${workspaceId}`) ?? '[]')); }
   catch { return []; }
@@ -58,6 +69,8 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
   const [selected, setSelected] = useState<{ path: string; mode: 'content' | 'diff' } | null>(null);
   const [loadedPath, setLoadedPath] = useState<string | null>(null);
   const [location, setLocation] = useState<FileReference>();
+  const [editorPreferences, setEditorPreferences] = useState(readEditorPreferences);
+  const editor = useRef<CodeEditorHandle>(null);
   useSyncExternalStore(fileDrafts.subscribe, fileDrafts.getSnapshot);
   const buffer = loadedPath === null ? undefined : fileDrafts.get(workspace.id, loadedPath);
   const file = buffer?.original ?? null;
@@ -80,7 +93,19 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
   const responsiveDiff = view === 'changes' && selected?.mode === 'diff' && !expanded;
   const selectedChangeIndex = responsiveDiff ? git?.changes.findIndex(change => change.path === selected.path) ?? -1 : -1;
   const dirty = !!file && draft !== file.content;
+  const saveError = dirty && typeof buffer?.autoSaveBlock === 'object' ? buffer.autoSaveBlock.error : undefined;
+  const notice: FileNotice = error || (saveError && editorPreferences.autoSave
+    ? { key: 'workspace:editor.autoSavePaused', values: { error: saveError } } : saveError ?? '');
   const currentNotes = notes.workspaceId === workspace.id ? notes.items : [];
+
+  useLayoutEffect(() => { fileDrafts.setAutoSave(editorPreferences.autoSave); }, [editorPreferences.autoSave]);
+
+  const toggleEditorPreference = (preference: keyof EditorPreferences) => {
+    const next = { ...editorPreferences, [preference]: !editorPreferences[preference] };
+    setEditorPreferences(next);
+    try { localStorage.setItem(editorPreferencesKey, JSON.stringify(next)); }
+    catch { /* The current editor still retains the preference. */ }
+  };
 
   useLayoutEffect(() => {
     const layout = reviewLayout.current;
@@ -131,6 +156,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
     if (dirty && !force) throw new Error(t('files.saveBeforeOpen'));
     const token = ++fileGeneration.current;
     if (mode === 'content') {
+      if (force) fileDrafts.suspendAutoSaveForDiscard(workspace.id, filePath);
       const cached = fileDrafts.get(workspace.id, filePath);
       let contents: FileContent;
       try {
@@ -190,12 +216,22 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
   }, [workspace.id]);
   useEffect(() => { run('refresh', () => refresh()); }, [workspace.id, refreshKey]);
   useEffect(() => {
+    let active = true;
+    const unsubscribe = fileDrafts.subscribeAutoSaved(id => {
+      if (id !== workspace.id) return;
+      void refresh().catch(failure => {
+        if (active) setError(failure instanceof Error ? failure.message : String(failure));
+      });
+    });
+    return () => { active = false; unsubscribe(); };
+  }, [workspaceKey]);
+  useEffect(() => {
     if (notes.workspaceId !== workspace.id) return;
     try { localStorage.setItem(`workbench:review:${workspace.id}`, JSON.stringify(notes.items)); }
     catch { setError({ key: 'workspace:files.notesSaveFailed' }); }
   }, [notes, workspace.id]);
   const save = () => file && run('save', async () => {
-    await fileDrafts.save(workspace.id, file.path, input => window.workbench.writeFile(workspace.id, input));
+    await fileDrafts.save(workspace.id, file.path, input => writeFile(workspace.id, input));
     await refresh();
   });
   const mutate = (action: GitMutation['action'], filePath: string, revision?: string) => run(action, async () => {
@@ -258,7 +294,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
       {view === 'changes' && <BranchComparison workspaceId={workspace.id} />}
       {git?.available && <button className="review-text-button" disabled={!!busy || dirty} onClick={() => run('preview', async () => setPreview(await window.workbench.gitCommitPreview(workspace.id)))}>{t('files.commitPreview')}</button>}
     </div>}
-    {error && <div className="pane-note error-text" role="alert">{typeof error === 'string' ? error : renderDisplayText('', error)}</div>}
+    {notice && <div className="pane-note error-text" role="alert">{typeof notice === 'string' ? notice : renderDisplayText('', notice)}</div>}
     {busy && <div className="review-busy" role="status"><LoaderCircle className="spin" size={12} />{t('files.processing')}</div>}
     <WorkspaceFileTree key={workspaceKey} workspaceId={workspace.id}
       workspaceKey={workspaceKey} entries={tree?.entries ?? emptyEntries} revision={tree?.revision ?? 0}
@@ -301,11 +337,21 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
         <button className={selected.mode === 'diff' ? 'active' : ''} disabled={!!busy || dirty} onClick={() => run('open', () => load(selected.path, 'diff'))}>Diff</button>
         {file && selected.mode === 'content' && <button className="review-save" disabled={!dirty || !!busy} onClick={save}><Save size={12} />{t('common.save')}</button>}
         <button disabled={!!busy} onClick={() => run('reload', () => load(selected.path, selected.mode, true))}>{dirty ? t('files.reloadDiscard') : t('files.reload')}</button>
+        {file && selected.mode === 'content' && <>
+          <IconButton label={t('editor.find')} onClick={() => editor.current?.find()}><Search size={13} /></IconButton>
+          <IconButton label={t('editor.wrapLines')} aria-pressed={editorPreferences.wrapLines} onClick={() => toggleEditorPreference('wrapLines')}><WrapText size={13} /></IconButton>
+          <IconButton label={t('editor.autoSave')} aria-pressed={editorPreferences.autoSave} onClick={() => toggleEditorPreference('autoSave')}><Timer size={13} /></IconButton>
+        </>}
       </div>
-      {file && <div className="review-editor" hidden={selected.mode !== 'content'} onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === 's') { event.preventDefault(); if (dirty && !busy) save(); } }}>
-        <CodeEditor key={`${workspace.id}:${file.path}`} value={draft} onChange={text => {
+      {file && <div className="review-editor" hidden={selected.mode !== 'content'} onKeyDown={event => {
+        if (event.defaultPrevented || event.nativeEvent.isComposing || event.keyCode === 229 || event.altKey || event.shiftKey
+          || !(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 's') return;
+        event.preventDefault();
+        if (dirty && !busy && !event.repeat) save();
+      }}>
+        <CodeEditor ref={editor} key={`${workspace.id}:${file.path}`} value={draft} onChange={text => {
           fileDrafts.edit(workspace.id, file.path, text);
-        }} language={file.language} readOnly={!!busy} location={location} />
+        }} language={file.language} readOnly={operationBusy} wrapLines={editorPreferences.wrapLines} location={location} />
       </div>}
       {diff && <>
         <DiffReview key={JSON.stringify([selected.path, diff.revision])} diff={diff} location={location} busy={busy} draft={noteDrafts.get(selected.path)}

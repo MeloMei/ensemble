@@ -51,7 +51,7 @@
 
 - `@agentclientprotocol/sdk@1.9.0`：Apache-2.0。
 - `@modelcontextprotocol/sdk@1.32.1`：MIT；Copyright (c) 2024 Anthropic, PBC。
-- CodeMirror 相关包：MIT；许可注明 Copyright (C) 2018-2021 by Marijn Haverbeke and others。
+- CodeMirror 相关包（含 `@codemirror/search@6.7.2`）：MIT；许可注明 Copyright (C) 2018-2021 by Marijn Haverbeke and others。
 - `@xyflow/react@12.12.0`：MIT；Copyright (c) 2019-2025 webkid GmbH。见 [licenses/React-Flow-MIT.txt](licenses/React-Flow-MIT.txt)。
 - `elkjs@0.12.0`：EPL-2.0，未修改使用。见 [licenses/ELK-EPL-2.0.md](licenses/ELK-EPL-2.0.md)，对应源码位于 [kieler/elkjs 0.12.0](https://github.com/kieler/elkjs/tree/v0.12.0)。
 - `framer-motion@11.18.2`：MIT。
