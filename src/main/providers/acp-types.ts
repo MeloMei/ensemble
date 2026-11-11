@@ -33,7 +33,6 @@ export interface AcpRuntimeDescriptor {
   launch(session: Session, mcpServers?: McpServerConfig[], context?: TurnContext): Promise<AcpLaunchSpec>;
   selectModel(choices: AcpConfigChoice[], modelId: string): AcpConfigChoice;
   reasoningPreference?: string[];
-  efforts?: string[];
   permissionTiers?: readonly SessionPermission[];
   sessionModes?: Partial<Record<SessionPermission, string>>;
   permissionDecision?(tool: ToolCallUpdate, session: Session, servers: McpServerConfig[]): 'allow' | 'deny' | 'ask';

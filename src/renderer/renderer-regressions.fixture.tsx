@@ -3264,11 +3264,13 @@ const cases: Record<string, () => Promise<void>> = {
     let sends = 0;
     let draftChanges = 0;
     const configuredProvider: ProviderInfo = { ...provider, capabilities: { ...provider.capabilities, permissionTiers: SESSION_PERMISSION_TIERS }, models: [
-      { id: 'model-a', name: 'Model A', free: false },
+      { id: 'model-a', name: 'Model A', free: false, efforts: ['low', 'high'] },
       { id: 'model-b', name: 'Alternate', free: false, efforts: ['low'] },
       { id: 'model-c', name: 'Fast model', free: true, efforts: [] },
     ] };
     const configuredSession: Session = { ...session, modelId: 'model-a' };
+    let savedSession = configuredSession;
+    const modelEfforts = new Map<string | undefined, string>([['model-a', 'low']]);
     const draft = { text: 'Keep this unfinished task', attachments: [{ id: 'attachment', name: 'note.txt', kind: 'text' as const, ownedPath: '/note.txt', mimeType: 'text/plain', size: 4, sha256: 'a'.repeat(64) }] };
     let settingsVisible = false;
     let receiveSession: React.Dispatch<React.SetStateAction<Session>>;
@@ -3320,17 +3322,25 @@ const cases: Record<string, () => Promise<void>> = {
         if (patch.skillAssignment) return { skillIds: ['skill'], updatedAt: '2026-11-04T01:00:00Z' };
         if (holdWrite) await holdWrite.promise;
         if (failWrite) throw new Error('fixture rejected the session settings');
-        const deliver = () => receiveSession(current => ({
-          ...current,
-          modelId: patch.modelId === undefined ? current.modelId : patch.modelId ?? undefined,
+        const modelId = patch.modelId === undefined ? savedSession.modelId : patch.modelId ?? undefined;
+        if (patch.settings?.effort === null) modelEfforts.delete(modelId);
+        else if (patch.settings?.effort !== undefined) modelEfforts.set(modelId, patch.settings.effort);
+        const effort = modelEfforts.get(modelId);
+        const updatedAt = new Date(Date.parse(savedSession.updatedAt) + 1).toISOString();
+        const saved = {
+          ...savedSession,
+          modelId, updatedAt,
           settings: {
-            ...current.settings,
-            permission: patch.settings?.permission ?? current.settings?.permission,
-            effort: patch.settings?.effort === undefined ? current.settings?.effort : patch.settings.effort ?? undefined,
+            ...savedSession.settings,
+            permission: patch.settings?.permission ?? savedSession.settings?.permission,
+            effort,
           },
-        }));
+        };
+        savedSession = saved;
+        const deliver = () => receiveSession(saved);
         if (delaySnapshot) deliverSnapshot = deliver;
         else deliver();
+        return { modelId, effort, updatedAt };
       },
     } as unknown as Window['workbench'];
     await show();
@@ -3428,7 +3438,9 @@ const cases: Record<string, () => Promise<void>> = {
     assert(persistentSlider.getAttribute('aria-valuetext') === translate('workspace:chat.effort.low'), 'ArrowRight did not select the next effort');
     await expand(); await choose(translate('workspace:chat.cliDefault')); await settle();
     assertStable('CLI default selection');
-    assert(persistentSlider.getAttribute('aria-valuetext') === translate('workspace:chat.effort.low'), 'The CLI default lost a compatible effort');
+    assert(persistentSlider.getAttribute('aria-valuetext') === translate('workspace:chat.runtimeDefault'), 'The first visit to the CLI default copied another model’s effort');
+    await expand(); await choose('Model A'); await settle();
+    assert(persistentSlider.getAttribute('aria-valuetext') === translate('workspace:chat.effort.high'), 'The model change ignored the authoritative saved effort');
     await act(async () => { persistentSlider.focus(); });
     await key('Home', 36); await settle();
     assert(persistentSlider.value === '0', 'Home did not restore the runtime default effort');
@@ -3436,9 +3448,10 @@ const cases: Record<string, () => Promise<void>> = {
     assert(picker() === persistentPanel && !slider() && !trigger().querySelector('.composer-model-effort'), 'A model without reasoning support displayed the effort control');
     await expand(); await choose('Fast model'); await settle();
     assert(JSON.stringify(writes) === JSON.stringify([
-      { settings: { permission: 'full-access' } }, { settings: { permission: 'read-only' } }, { settings: { effort: 'high' } },
-      { modelId: 'model-b', settings: { effort: null } }, { settings: { effort: 'low' } },
-      { modelId: null }, { settings: { effort: null } }, { modelId: 'model-c' },
+      { settings: { permission: 'full-access' } }, { settings: { permission: 'read-only' } }, { settings: { effort: 'high' }, expectedProviderId: 'codex' },
+      { modelId: 'model-b', expectedProviderId: 'codex' }, { settings: { effort: 'low' }, expectedProviderId: 'codex' },
+      { modelId: null, expectedProviderId: 'codex' }, { modelId: 'model-a', expectedProviderId: 'codex' },
+      { settings: { effort: null }, expectedProviderId: 'codex' }, { modelId: 'model-c', expectedProviderId: 'codex' },
     ]), `A stale or duplicate setting was sent: ${JSON.stringify(writes)}`);
     await expand();
     holdWrite = deferred<void>();

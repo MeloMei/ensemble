@@ -103,7 +103,7 @@ test('physical execution revalidates directory and Git identity before provider 
   });
 });
 
-test('settings patches retain permission across rapid edits and explicitly reset effort', async () => {
+test('session settings preserve legacy effort and remember each model independently', async () => {
   const { engine, cwd } = await fixture(async () => {});
   engine.setProviders([{ info: { id: 'test', name: 'Test', source: 'builtin', available: true, detail: '',
     capabilities: { resume: true, approvals: true, effort: true, permissions: true },
@@ -116,7 +116,9 @@ test('settings patches retain permission across rapid edits and explicitly reset
     ] }, async run() {} }], [], []);
   try {
     const id = await engine.createSession({ title: 'settings', providerId: 'test', cwd });
-    engine.updateSession(id, { settings: { permission: 'review', effort: 'low' } });
+    engine.store.atomic(state => { state.sessions.find(session => session.id === id)!.settings = { effort: 'low' }; });
+    engine.updateSession(id, { settings: { permission: 'review' } });
+    assert.equal(engine.getSession(id).settings?.effort, 'low');
     engine.updateSession(id, { settings: { permission: 'read-only' } });
     engine.updateSession(id, { settings: { effort: 'high' } });
     engine.updateSession(id, { settings: { skillIds: ['selected-skill'] } });
@@ -136,9 +138,10 @@ test('settings patches retain permission across rapid edits and explicitly reset
     }), /不能同时/);
     assert.deepEqual(engine.getSession(id), beforeConflictingUpdate);
     engine.updateSession(id, { skillAssignment: { skillId: 'second-skill', enabled: false } });
-    engine.updateSession(id, { modelId: 'balanced' });
+    assert.deepEqual(engine.updateSession(id, { modelId: 'balanced' }),
+      { modelId: 'balanced', effort: undefined, updatedAt: engine.getSession(id).updatedAt });
     assert.equal(engine.getSession(id).modelId, 'balanced');
-    assert.deepEqual(engine.getSession(id).settings, { permission: 'read-only', effort: 'high', skillIds: ['selected-skill'] });
+    assert.deepEqual(engine.getSession(id).settings, { permission: 'read-only', skillIds: ['selected-skill'] });
     const beforeInvalidUpdate = structuredClone(engine.getSession(id));
     assert.throws(() => engine.updateSession(id, {
       modelId: 'limited', settings: { effort: 'high', permission: 'review', skillIds: ['replacement-skill'] },
@@ -150,16 +153,22 @@ test('settings patches retain permission across rapid edits and explicitly reset
     engine.updateSession(id, { settings: { effort: 'low' } });
     engine.updateSession(id, { modelId: null });
     assert.equal(engine.getSession(id).modelId, 'fast');
-    assert.deepEqual(engine.getSession(id).settings, { permission: 'read-only', effort: 'low', skillIds: ['selected-skill'] });
+    assert.deepEqual(engine.getSession(id).settings, { permission: 'read-only', effort: 'high', skillIds: ['selected-skill'] });
     engine.updateSession(id, { modelId: 'without-reasoning' });
     assert.deepEqual(engine.getSession(id).settings, { permission: 'read-only', skillIds: ['selected-skill'] });
     engine.updateSession(id, { modelId: 'fast', settings: { effort: 'high' } });
     engine.updateSession(id, { modelId: 'runtime-managed' });
-    assert.deepEqual(engine.getSession(id).settings, { permission: 'read-only', effort: 'high', skillIds: ['selected-skill'] });
+    assert.deepEqual(engine.getSession(id).settings, { permission: 'read-only', skillIds: ['selected-skill'] });
+    assert.throws(() => engine.updateSession(id, { settings: { effort: 'high' } }), /思考档/);
+    assert.throws(() => engine.updateSession(id, { modelId: 'fast', expectedProviderId: 'other-runtime' }), /其他窗口切换/);
+    assert.equal(engine.updateSession(id, { modelId: 'fast' }).effort, 'high');
     engine.updateSession(id, { settings: { effort: null } });
     assert.deepEqual(engine.getSession(id).settings, { permission: 'read-only', skillIds: ['selected-skill'] });
     engine.updateSession(id, { settings: { permission: null, skillIds: null } });
     assert.deepEqual(engine.getSession(id).settings, {});
+    engine.updateSession(id, { modelId: 'limited' });
+    assert.equal(engine.getSession(id).settings?.effort, 'low');
+    assert.equal(engine.updateSession(id, { modelId: 'fast' }).effort, undefined);
   } finally { await engine.shutdown(); await rm(cwd, { recursive: true, force: true }); }
 });
 
