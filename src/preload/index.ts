@@ -164,6 +164,7 @@ const api: WorkbenchAPI = {
   gitState: workspaceId => ipcRenderer.invoke('workbench:git-state', workspaceId),
   gitBranchRefs: workspaceId => ipcRenderer.invoke('workbench:git-branch-refs', workspaceId),
   gitBranchComparison: (workspaceId, targetRef) => ipcRenderer.invoke('workbench:git-branch-comparison', workspaceId, targetRef),
+  changeGitBranch: (workspaceId, change) => ipcRenderer.invoke('workbench:change-git-branch', workspaceId, change),
   gitHistory: (id, query, allBranches, limit) => ipcRenderer.invoke('workbench:git-history', id, query, allBranches, limit),
   gitCommitFiles: (id, sha) => ipcRenderer.invoke('workbench:git-commit-files', id, sha),
   gitCommitDiff: (id, sha, path) => ipcRenderer.invoke('workbench:git-commit-diff', id, sha, path),
