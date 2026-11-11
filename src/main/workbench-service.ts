@@ -282,6 +282,10 @@ export async function createWorkbenchService(options: {
       engine.removeQueuedPrompt(idSchema.parse(id), idSchema.parse(itemId), queueRevisionSchema.parse(revision), commandIdSchema.parse(commandId), queueEditIdSchema.optional().parse(editId)));
     handle('workbench:move-queued-prompt', (_event, id, itemId, targetId, expectedOrder, commandId) =>
       engine.moveQueuedPrompt(idSchema.parse(id), idSchema.parse(itemId), idSchema.parse(targetId), idSchema.array().parse(expectedOrder), commandIdSchema.parse(commandId)));
+    handle('workbench:interrupt-for-queued-prompt', (_event, id, itemId, order, attemptId, commandId) =>
+      engine.interruptForQueuedPrompt(idSchema.parse(id), idSchema.parse(itemId), idSchema.array().parse(order), idSchema.parse(attemptId), idSchema.parse(commandId)));
+    handle('workbench:steer-queued-prompt', (_event, id, itemId, revision, attemptId, commandId) =>
+      engine.steerQueuedPrompt(idSchema.parse(id), idSchema.parse(itemId), queueRevisionSchema.parse(revision), idSchema.parse(attemptId), idSchema.parse(commandId)));
     handle('workbench:set-session-queue-paused', (_event, id, paused) => engine.setSessionQueuePaused(idSchema.parse(id), z.boolean().parse(paused)));
     handle('workbench:reconcile-session-delivery', (_event, id) => engine.reconcileSessionDelivery(idSchema.parse(id)));
     handle('workbench:provider-health', (_event, cwd) => engine.liveSnapshot().providers.map(provider => health.describe(provider, cwdSchema.optional().parse(cwd))));
@@ -403,6 +407,9 @@ export async function createWorkbenchService(options: {
     handle('workbench:resize-terminal', (_event, id: unknown, columns: unknown, rows: unknown) => terminalManager.resize(idSchema.parse(id), z.number().int().min(2).max(1000).parse(columns), z.number().int().min(1).max(1000).parse(rows)));
     handle('workbench:stop-terminal', (_event, id: unknown) => terminalManager.stop(idSchema.parse(id)));
     handle('workbench:list-terminal-services', (_event, id: unknown) => terminalManager.listServices(idSchema.parse(id)));
+    handle('workbench:create-browser', (_event, workspaceId: unknown) => {
+      engine.addTab(idSchema.parse(workspaceId), { id: randomUUID(), kind: 'browser' });
+    });
     handle('workbench:create-preview', (_event, workspaceId: unknown, input: unknown) => {
       const id = idSchema.parse(workspaceId);
       const url = localPreviewUrl(z.string().max(4096).parse(input));

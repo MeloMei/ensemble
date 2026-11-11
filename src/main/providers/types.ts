@@ -33,7 +33,10 @@ export interface ProviderAdapter {
   info: ProviderInfo;
   tracksDelivery?: boolean;
   run(context: TurnContext): Promise<void>;
+  steer?(sessionId: string, text: string): Promise<{ nativeThreadId: string; nativeTurnId: string }>;
   rewind?(session: Session, nativeTurnId: string): Promise<void>;
   reconcileDelivery?(session: Session, deliveries: MessageDelivery[]): Promise<DeliveryReconciliation[]>;
   dispose?(): Promise<void>;
 }
+
+export class ProviderSteerRejected extends Error {}

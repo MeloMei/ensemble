@@ -68,6 +68,10 @@ createInterface({ input: process.stdin }).on('line', line => {
     response(message.id, { thread: { id: threadId } }); return;
   }
   if (message.method === 'turn/interrupt') { response(message.id, {}); complete('interrupted'); return; }
+  if (message.method === 'turn/steer') {
+    if (message.params.expectedTurnId !== turnId || message.params.threadId !== threadId) process.exit(13);
+    response(message.id, { turnId }); stream(); return;
+  }
   if (message.method === 'turn/start') {
     if (!Array.isArray(message.params.input[0].text_elements)) process.exit(10);
     turnId = 'turn-' + (++turnNumber);
@@ -86,7 +90,7 @@ createInterface({ input: process.stdin }).on('line', line => {
       process.stdout.write('', () => process.exit(7)); return;
     }
     if (mode === 'failed') { complete('failed'); return; }
-    if (mode === 'abort') { event('item/started', { turnId, item: { type: 'commandExecution', id: 'cmd', command: 'fixture-ready' } }); return; }
+    if (mode === 'abort' || mode === 'steer') { event('item/started', { turnId, item: { type: 'commandExecution', id: 'cmd', command: 'fixture-ready' } }); return; }
     if (mode === 'question') {
       send({ id: 'question', method: 'item/tool/requestUserInput', params: { threadId, turnId, questions: [] } }); return;
     }
@@ -129,6 +133,41 @@ createInterface({ input: process.stdin }).on('line', line => {
 
 process.stdin.on('end', () => { if (mode === 'close-delayed') setTimeout(() => process.exit(0), 50); else process.exit(0); });
 `;
+
+test('Codex steers the identified active native turn without starting a new one', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'ensemble-codex-steer-'));
+  const binary = join(directory, 'codex.mjs'), trace = join(directory, 'trace.jsonl');
+  await writeFile(binary, `#!${process.execPath}\n${fixture}`, { mode: 0o755 });
+  const previous = { CODEX_BINARY: process.env.CODEX_BINARY, CODEX_ADAPTER_FIXTURE_MODE: process.env.CODEX_ADAPTER_FIXTURE_MODE,
+    CODEX_ADAPTER_FIXTURE_TRACE: process.env.CODEX_ADAPTER_FIXTURE_TRACE };
+  Object.assign(process.env, { CODEX_BINARY: binary, CODEX_ADAPTER_FIXTURE_MODE: 'steer', CODEX_ADAPTER_FIXTURE_TRACE: trace });
+  const session: Session = { id: 'steer', title: 'Steer', providerId: 'codex', cwd: directory, status: 'running', messages: [], approvals: [], createdAt: '', updatedAt: '' };
+  const signal = new AbortController();
+  let provider: Awaited<ReturnType<typeof createCodexProvider>> | undefined;
+  try {
+    provider = await createCodexProvider();
+    let started!: () => void;
+    const ready = new Promise<void>(resolve => { started = resolve; });
+    const running = provider.run({ session, prompt: 'Original', signal: signal.signal,
+      emit: event => { if (event.type === 'native-turn') started(); }, approve: async () => { throw new Error('unexpected approval'); } });
+    try {
+      await Promise.race([ready, running]);
+      assert.deepEqual(await provider.steer!(session.id, 'Keep working on the review'), { nativeThreadId: 'new-owned-thread', nativeTurnId: 'turn-1' });
+      await running;
+    } finally { signal.abort(); await running.catch(() => {}); }
+    const records = (await readFile(trace, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(records.filter(record => record.method === 'turn/start').length, 1);
+    const steer = records.find(record => record.method === 'turn/steer');
+    assert.equal(steer.params.expectedTurnId, 'turn-1');
+    assert.equal(steer.params.input[0].text, 'Keep working on the review');
+  } finally {
+    await provider?.dispose?.();
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test('Codex delivery reconciles a lost confirmation by client ID without resending or merging equal text', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'ensemble-codex-delivery-'));

@@ -5,6 +5,7 @@ import { DraftWriter } from '../shared/draft-writer';
 import { TerminalInputWriter } from '../shared/terminal-input-writer';
 import type { LanguageState } from '../shared/i18n';
 import type { BackendConnectionState, TerminalOutputEvent } from '../shared/backend';
+import type { BrowserState } from '../shared/embedded-browser';
 import type { AppUpdateState } from '../shared/application-updates';
 
 const drafts = new DraftWriter((id, input) => ipcRenderer.invoke('workbench:save-session-draft', id, input));
@@ -90,6 +91,8 @@ const api: WorkbenchAPI = {
   finishQueuedPromptEdit: (id, itemId, editId, input) => ipcRenderer.invoke('workbench:finish-queued-prompt-edit', id, itemId, editId, input),
   removeQueuedPrompt: (id, itemId, revision, commandId, editId) => ipcRenderer.invoke('workbench:remove-queued-prompt', id, itemId, revision, commandId, editId),
   moveQueuedPrompt: (id, itemId, targetId, expectedOrder, commandId) => ipcRenderer.invoke('workbench:move-queued-prompt', id, itemId, targetId, expectedOrder, commandId),
+  interruptForQueuedPrompt: (id, itemId, order, attemptId, commandId) => ipcRenderer.invoke('workbench:interrupt-for-queued-prompt', id, itemId, order, attemptId, commandId),
+  steerQueuedPrompt: (id, itemId, revision, attemptId, commandId) => ipcRenderer.invoke('workbench:steer-queued-prompt', id, itemId, revision, attemptId, commandId),
   setSessionQueuePaused: (id, paused) => ipcRenderer.invoke('workbench:set-session-queue-paused', id, paused),
   reconcileSessionDelivery: id => ipcRenderer.invoke('workbench:reconcile-session-delivery', id),
   providerHealth: cwd => ipcRenderer.invoke('workbench:provider-health', cwd),
@@ -160,6 +163,19 @@ const api: WorkbenchAPI = {
   resizeTerminal: (id, columns, rows) => ipcRenderer.invoke('workbench:resize-terminal', id, columns, rows),
   stopTerminal: id => ipcRenderer.invoke('workbench:stop-terminal', id),
   listTerminalServices: id => ipcRenderer.invoke('workbench:list-terminal-services', id),
+  createBrowser: workspaceId => ipcRenderer.invoke('workbench:create-browser', workspaceId),
+  browserLayout: (id, bounds) => ipcRenderer.invoke('workbench:browser-layout', id, bounds),
+  browserCommand: (id, command) => ipcRenderer.invoke('workbench:browser-command', id, command),
+  onBrowserState: listener => {
+    const onState = (_event: Electron.IpcRendererEvent, id: string, state: BrowserState) => listener(id, state);
+    ipcRenderer.on('workbench:browser-state', onState);
+    return () => ipcRenderer.removeListener('workbench:browser-state', onState);
+  },
+  onBrowserFindShortcut: listener => {
+    const onShortcut = (_event: Electron.IpcRendererEvent, id: string) => listener(id);
+    ipcRenderer.on('workbench:browser-find-shortcut', onShortcut);
+    return () => ipcRenderer.removeListener('workbench:browser-find-shortcut', onShortcut);
+  },
   createPreview: (workspaceId, url) => ipcRenderer.invoke('workbench:create-preview', workspaceId, url),
   capturePreviewElement: (tabId, point) => ipcRenderer.invoke('workbench:capture-preview-element', tabId, point),
   displayPreviewAnnotations: (tabId, annotations, revealId) => ipcRenderer.invoke('workbench:display-preview-annotations', tabId, annotations, revealId),

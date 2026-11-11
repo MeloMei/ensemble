@@ -18,6 +18,7 @@ import { ATTACHMENT_LIMITS } from '../shared/prompt-attachments';
 import { capturePreviewElement, displayPreviewAnnotations, previewPointSchema } from './preview-annotations';
 import { previewEvidenceSourceSchema } from './draft-evidence-schema';
 import { captureWindow, WINDOW_CAPTURE_SHORTCUT } from './window-capture';
+import { EmbeddedBrowsers, browserBoundsSchema, browserCommandSchema } from './embedded-browser';
 import { Dictation, dictationHelperPath } from './dictation';
 import { dictationLanguages } from '../shared/dictation';
 import { RemoteDevices } from './remote-devices';
@@ -28,6 +29,7 @@ const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) app.quit();
 const root = dirname(fileURLToPath(import.meta.url));
 let window: BrowserWindow | null = null;
+let browsers: EmbeddedBrowsers | undefined;
 let backend: BackendClient;
 let updates: ApplicationUpdates;
 let requestUpdateClose: (() => Promise<AppUpdateState>) | undefined;
@@ -59,9 +61,14 @@ let watchedSessions: string[] = [];
 const terminalWatches = new Map<string, { controller: AbortController; client: BackendClient }>();
 const connection = new BackendConnectionTracker(state => window?.webContents.send('workbench:connection-changed', state));
 const cwdSchema = z.string().min(1).max(4096);
+const browserIdSchema = z.string().min(1).max(200);
 let windowCapture: AbortController | undefined;
 const dictation = new Dictation(app.isPackaged ? dictationHelperPath(process.execPath) : undefined);
 const dictationId = z.string().uuid();
+
+function withoutBrowserViews<T>(action: () => Promise<T>): Promise<T> {
+  return browsers ? browsers.withoutViews(action) : action();
+}
 
 async function captureSelectedWindow(): Promise<PromptAttachment | undefined> {
   if (process.platform !== 'darwin' || windowCapture) return;
@@ -133,11 +140,11 @@ function finishCloseRequest(request: CloseRequest, error: string | null, files?:
   if (error === null && !files?.count) { decide(true); return; }
   const fileWarning = files?.count ? translate('native:close.fileList', { count: files.count, names: files.names.join('\n') })
     + (files.count > files.names.length ? `\n${translate('native:close.moreFiles', { count: files.count - files.names.length })}` : '') : '';
-  void dialog.showMessageBox(request.window, {
+  void withoutBrowserViews(() => dialog.showMessageBox(request.window, {
     type: 'warning', title: translate('native:close.title', { product: PRODUCT_NAME }), message: translate(error !== null ? 'native:close.unsaved' : 'native:close.fileEdits'),
     detail: translate('native:close.detail', { error: [error, fileWarning].filter(Boolean).join('\n\n') }),
     buttons: [translate('native:close.keepWindow'), translate('native:close.quitAnyway')], defaultId: 0, cancelId: 0, noLink: true,
-  }).then(result => decide(result.response === 1, result.response === 1), () => decide(false));
+  })).then(result => decide(result.response === 1, result.response === 1), () => decide(false));
 }
 
 function registerIPC(commands: string[]): void {
@@ -164,7 +171,15 @@ function registerIPC(commands: string[]): void {
       throw error;
     }
   });
-  handle('workbench:snapshot', () => latestSnapshot ?? backend.snapshot());
+  handle('workbench:snapshot', async () => {
+    if (latestSnapshot) return latestSnapshot;
+    const snapshot = await backend.snapshot();
+    if (latestSnapshot) return latestSnapshot;
+    browsers?.updateTabs(snapshot.workspaces);
+    return snapshot;
+  });
+  handle('workbench:browser-layout', (id, bounds) => browsers?.layout(browserIdSchema.parse(id), browserBoundsSchema.parse(bounds)));
+  handle('workbench:browser-command', (id, command) => browsers?.command(browserIdSchema.parse(id), browserCommandSchema.parse(command)) ?? false);
   handle('workbench:get-connection', () => connection.current);
   handle('workbench:list-remote-devices', () => remoteDevices.list());
   handle('workbench:save-remote-device', input => remoteDevices.save(input));
@@ -189,15 +204,15 @@ function registerIPC(commands: string[]): void {
   handle('workbench:get-language', () => synchronizeLanguage());
   handle('workbench:set-language', input => synchronizeLanguage(z.enum(['system', 'zh-CN', 'en']).parse(input)));
   handle('workbench:choose-directory', async () => {
-    const result = await dialog.showOpenDialog(window!, { title: translate('native:dialog.chooseDirectory'), buttonLabel: translate('native:dialog.chooseDirectoryButton'), properties: ['openDirectory', 'createDirectory'] });
+    const result = await withoutBrowserViews(() => dialog.showOpenDialog(window!, { title: translate('native:dialog.chooseDirectory'), buttonLabel: translate('native:dialog.chooseDirectoryButton'), properties: ['openDirectory', 'createDirectory'] }));
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
   handle('workbench:choose-acp-executable', async () => {
-    const result = await dialog.showOpenDialog(window!, { title: translate('shell:provider.acpChooseExecutable'), properties: ['openFile'] });
+    const result = await withoutBrowserViews(() => dialog.showOpenDialog(window!, { title: translate('shell:provider.acpChooseExecutable'), properties: ['openFile'] }));
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
   handle('workbench:choose-attachments', async () => {
-    const result = await dialog.showOpenDialog(window!, { title: translate('native:dialog.chooseAttachments'), buttonLabel: translate('native:dialog.chooseAttachmentsButton'), properties: ['openFile', 'multiSelections'] });
+    const result = await withoutBrowserViews(() => dialog.showOpenDialog(window!, { title: translate('native:dialog.chooseAttachments'), buttonLabel: translate('native:dialog.chooseAttachmentsButton'), properties: ['openFile', 'multiSelections'] }));
     return result.canceled ? [] : backend.call('workbench:import-attachments', result.filePaths);
   });
   handle('workbench:import-pasted-image', (name, bytes) => {
@@ -313,6 +328,7 @@ function restoreTerminalWatches(): void {
 function releaseViewSubscriptions(): void {
   watchedSessions = [];
   latestSnapshot = undefined;
+  browsers?.reset();
   for (const watched of terminalWatches.values()) watched.controller.abort();
   terminalWatches.clear();
   void backend.watchSessions([]).catch(error => process.stderr.write(`会话退订失败：${String(error)}\n`));
@@ -325,6 +341,8 @@ async function createWindow(): Promise<void> {
     webPreferences: { preload: join(root, '../preload/index.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true, backgroundThrottling: false },
   });
   const currentWindow = window;
+  browsers = new EmbeddedBrowsers(currentWindow);
+  if (latestSnapshot) browsers.updateTabs(latestSnapshot.workspaces);
   let rendererFailure: string | undefined;
   rendererReady = false;
   rendererConfirmed = false;
@@ -393,7 +411,7 @@ async function createWindow(): Promise<void> {
       if (closeRequest.timer) clearTimeout(closeRequest.timer);
       closeRequest = undefined;
     }
-    if (window === currentWindow) window = null;
+    if (window === currentWindow) { window = null; browsers = undefined; }
     requestUpdateClose = undefined;
     releaseViewSubscriptions();
   });
@@ -441,6 +459,7 @@ if (gotLock) void app.whenReady().then(async () => {
         await client.subscribe((snapshot, frame) => {
           if (subscription.signal.aborted || client !== backend || !connection.received(generation, frame)) return;
           latestSnapshot = snapshot;
+          browsers?.updateTabs(snapshot.workspaces);
           acknowledgeUpdateReady();
           notifications.observe(snapshot); window?.webContents.send('workbench:changed', snapshot);
         }, subscription.signal);

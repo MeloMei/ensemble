@@ -205,6 +205,8 @@ export function withProviderDiagnostics(adapter: ProviderAdapter, journal: Diagn
   const sessionContext = (session: Session): Context => ({ providerId: adapter.info.id, sessionId: session.id });
   return { get info() { return adapter.info; }, get tracksDelivery() { return adapter.tracksDelivery; },
     run: context => journal.run({ ...sessionContext(context.session), attemptId: context.session.attempts?.at(-1)?.id }, () => adapter.run(context)),
+    ...(adapter.steer ? { steer: (sessionId: string, text: string) =>
+      journal.run({ providerId: adapter.info.id, sessionId }, () => adapter.steer!(sessionId, text)) } : {}),
     ...(adapter.rewind ? { rewind: (session: Session, nativeTurnId: string) => journal.run(sessionContext(session), () => adapter.rewind!(session, nativeTurnId)) } : {}),
     ...(adapter.dispose ? { dispose: adapter.dispose.bind(adapter) } : {}),
     ...(adapter.reconcileDelivery ? { reconcileDelivery: (session: Session, deliveries: Parameters<NonNullable<ProviderAdapter['reconcileDelivery']>>[1]) =>

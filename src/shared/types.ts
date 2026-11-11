@@ -9,6 +9,7 @@ import type { AppUpdateState } from './application-updates';
 import type { SessionPermission } from './session-permissions';
 import type { RasterImageMime } from './raster-image';
 import type { WorkspaceFileMutation } from './workspace-file-mutations';
+import type { BrowserBounds, BrowserCommand, BrowserState } from './embedded-browser';
 export type { ProviderCapabilities } from './provider-capabilities';
 
 export type SessionStatus = 'idle' | 'queued' | 'running' | 'waiting_approval' | 'waiting_children' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
@@ -81,7 +82,8 @@ export interface NativeRuntimeAccount {
 export type WorkspaceTab =
   | { id: string; kind: 'agent'; sessionId: string }
   | { id: string; kind: 'terminal'; terminalId: string }
-  | { id: string; kind: 'preview'; url: string };
+  | { id: string; kind: 'preview'; url: string }
+  | { id: string; kind: 'browser' };
 
 export type WorkspaceSplitPlacement = 'before' | 'after';
 export interface WorkspaceSplitInput {
@@ -296,8 +298,10 @@ export interface SessionQueueItem {
   agentSource?: AgentMessageSource;
   revision?: number;
   edit?: { id: string; draft?: PromptInput; draftRevision?: number; lease?: { ownerId: string; expiresAt: number } };
+  steeringUnconfirmed?: true;
 }
 export type QueuedPromptMoveResult = 'moved' | 'queue-changed' | 'blocked';
+export type QueuedPromptSteerResult = 'sent' | 'rejected' | 'unconfirmed';
 export interface SessionCommandReceipt { commandId: string; kind: string; result: unknown; createdAt: string }
 export interface DiagnosticEntry {
   seq: number; at: string; layer: 'provider' | 'engine' | 'command' | 'transport'; kind: string;
@@ -388,6 +392,8 @@ export interface WorkbenchAPI {
   finishQueuedPromptEdit(id: string, itemId: string, editId: string, input?: PromptInput): Promise<void>;
   removeQueuedPrompt(id: string, itemId: string, revision: number, commandId?: string, editId?: string): Promise<void>;
   moveQueuedPrompt(id: string, itemId: string, targetId: string, expectedOrder: string[], commandId?: string): Promise<QueuedPromptMoveResult>;
+  interruptForQueuedPrompt(id: string, itemId: string, expectedOrder: string[], attemptId: string, commandId: string): Promise<QueuedPromptMoveResult>;
+  steerQueuedPrompt(id: string, itemId: string, revision: number, attemptId: string, commandId: string): Promise<QueuedPromptSteerResult>;
   setSessionQueuePaused(id: string, paused: boolean): Promise<void>;
   reconcileSessionDelivery(id: string): Promise<void>;
   providerHealth(cwd?: string): Promise<ProviderInfo[]>;
@@ -440,6 +446,11 @@ export interface WorkbenchAPI {
   writeTerminal(terminalId: string, data: string): Promise<void>;
   resizeTerminal(terminalId: string, columns: number, rows: number): Promise<void>;
   stopTerminal(terminalId: string): Promise<void>;
+  createBrowser(workspaceId: string): Promise<void>;
+  browserLayout(tabId: string, bounds: BrowserBounds | null): Promise<BrowserState | undefined>;
+  browserCommand(tabId: string, command: BrowserCommand): Promise<boolean>;
+  onBrowserState(listener: (tabId: string, state: BrowserState) => void): () => void;
+  onBrowserFindShortcut(listener: (tabId: string) => void): () => void;
   createPreview(workspaceId: string, url: string): Promise<void>;
   capturePreviewElement(tabId: string, point: { x: number; y: number }): Promise<{ url: string; selector: string; excerpt: string } | null>;
   displayPreviewAnnotations(tabId: string, annotations: PreviewEvidenceSource[], revealId?: string): Promise<'shown' | 'wrong-page' | 'unavailable' | 'missing-element'>;
