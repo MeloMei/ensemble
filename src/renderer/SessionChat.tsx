@@ -24,7 +24,7 @@ import {
   Paperclip, Pause, Play, Plus, Search, ShieldCheck, TerminalSquare, Users, X, ArrowRightLeft,
 } from 'lucide-react';
 import type {
-  AgentMessageSource, Approval, DraftEvidence, DraftEvidenceSource, Message, ProcessEvent, PromptAttachment, PromptInput, PromptSkill, ProviderInfo, Session, SessionQueueItem, SessionSkillAssignmentReceipt, SkillInfo, UsageRecord,
+  AgentMessageSource, Approval, DraftEvidence, DraftEvidenceSource, Message, ProcessEvent, PromptAttachment, PromptInput, PromptSkill, ProviderInfo, Session, SessionModelSelection, SessionQueueItem, SessionSkillAssignmentReceipt, SkillInfo, UsageRecord,
 } from '../shared/types';
 import { BusyIcon, IconButton, Modal, ModelField, ProviderSelect, Status, defaultModelId, modelName, pathName, validModelSelection, type Perform } from './ui';
 import { SPRING_SNAPPY } from './vendor/open-claude-ui/ClaudeMotionPresets';
@@ -488,10 +488,9 @@ function ComposerSettings({ session, provider, disabled, saving, perform }: {
   const permissionDescriptions = { review: t(customAcp ? 'shell:provider.acpPermissionNote' : 'chat.reviewPermission'), 'read-only': undefined, 'full-access': t('chat.fullAccessPermissionDescription') };
   const permissionLabel = permission ? permissionLabels[permission] : t('chat.runtimeDefault');
   const change = async (patch: Parameters<typeof window.workbench.updateSession>[1]) => {
-    let accepted = false;
+    let accepted: SessionModelSelection | undefined;
     await perform(`session-settings-${session.id}`, async () => {
-      await window.workbench.updateSession(session.id, patch);
-      accepted = true;
+      accepted = await window.workbench.updateSession(session.id, patch);
     });
     return accepted;
   };

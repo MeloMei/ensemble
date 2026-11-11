@@ -53,6 +53,7 @@ export interface ProviderInfo {
   declaredCapabilities?: ProviderCapabilities;
   models?: ProviderModel[];
   defaultModelId?: string;
+  nativeDefaultModelId?: string;
   efforts?: string[];
   acpRegistry?: AcpRegistryInstallation;
 }
@@ -229,6 +230,10 @@ export interface SessionRuntimeContinuity {
   seenMessageId?: string;
 }
 
+export interface RuntimeModelConfiguration { modelId: string; efforts: string[]; effort?: string }
+export interface SessionModelEffort { providerId: string; modelId?: string; effort: string }
+export interface SessionModelSelection { modelId?: string; effort?: string; updatedAt: string }
+
 export type SendPromptRejectionReason = 'workspace-unavailable' | 'runtime-changed';
 
 export interface Session {
@@ -239,6 +244,8 @@ export interface Session {
   cwd: string;
   status: SessionStatus;
   settings?: SessionSettings;
+  modelEfforts?: SessionModelEffort[];
+  runtimeModel?: RuntimeModelConfiguration;
   archived?: boolean;
   parentSessionId?: string;
   forkedFrom?: { sessionId: string; messageId?: string };
@@ -457,7 +464,7 @@ export interface WorkbenchAPI {
   switchSessionRuntime(sessionId: string, targetProviderId: string, expectedProviderId: string): Promise<void>;
   addSessionEvidence(sessionId: string, evidence: DraftEvidence): Promise<PromptInput>;
   updateSession(sessionId: string, input: SessionUpdate & { skillAssignment: SessionSkillAssignment }): Promise<SessionSkillAssignmentReceipt>;
-  updateSession(sessionId: string, input: SessionUpdate): Promise<void>;
+  updateSession(sessionId: string, input: SessionUpdate): Promise<SessionModelSelection>;
   forkSession(sessionId: string, beforeMessageId?: string, beside?: boolean): Promise<string>;
   continueSession(sessionId: string, target: SessionContinuationTarget): Promise<string>;
   askSideQuestion(sessionId: string, input: SideQuestionInput, commandId?: string): Promise<SideQuestionReceipt>;
@@ -522,6 +529,7 @@ export interface SessionSettings { effort?: string; permission?: SessionPermissi
 export type SessionSettingsPatch = { [K in keyof SessionSettings]?: SessionSettings[K] | null };
 export interface SessionUpdate {
   title?: string; archived?: boolean; settings?: SessionSettingsPatch; modelId?: string | null;
+  expectedProviderId?: string;
   messageTarget?: { sessionId: string; enabled: boolean };
 }
 export interface SessionSkillAssignment { skillId: string; enabled: boolean }

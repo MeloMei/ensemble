@@ -14,9 +14,17 @@ import { normalizeRuntimeCommands } from './runtime-commands';
 import { answerFormElicitation } from './form-elicitation';
 import { PRODUCT_ID, PRODUCT_NAME, PRODUCT_VERSION } from '../../shared/app-identity';
 import { SESSION_PERMISSION_TIERS } from '../../shared/session-permissions';
-import type { ApprovalInput, ProviderInfo, ProviderModel, RuntimeCommand } from '../../shared/types';
+import type { ApprovalInput, ProviderInfo, ProviderModel, RuntimeCommand, RuntimeModelConfiguration } from '../../shared/types';
 
 type Options = acp.SessionConfigOption[];
+type SelectOption = Extract<acp.SessionConfigOption, { type: 'select' }>;
+const thoughtLevel: acp.SessionConfigOptionCategory = 'thought_level';
+
+function selectOption(options: Options, category: acp.SessionConfigOptionCategory, legacyId = category): SelectOption | undefined {
+  const selectors = options.filter(option => option.type === 'select');
+  return selectors.find(option => option.category === category) ?? selectors.find(option => option.id === category)
+    ?? selectors.find(option => option.id === legacyId);
+}
 type SessionConfiguration = {
   configOptions?: Options | null;
   models?: { currentModelId: string; availableModels: { modelId: string; name: string }[] } | null;
@@ -182,7 +190,7 @@ class AcpSession {
   closed = false;
 
   constructor(private readonly descriptor: AcpRuntimeDescriptor, private readonly original: TurnContext['session'],
-    private readonly onModels?: (models: ProviderModel[]) => void) {}
+    private readonly onModels: (models: ProviderModel[], active?: RuntimeModelConfiguration) => void) {}
 
   private async request<Method extends acp.AgentRequestMethod>(method: Method, params: acp.AgentRequestParamsByMethod[Method]) {
     return bounded(this.connection.agent.request(method, params), 30_000, `${this.descriptor.name} 请求超时：${method}`);
@@ -247,35 +255,34 @@ class AcpSession {
 
   private async configure(configuration: SessionConfiguration, requestedModelId?: string): Promise<void> {
     const options = configuration.configOptions ?? [];
-    const model = options.find(option => option.id === 'model' || option.category === 'model');
-    const choices = model?.type === 'select' ? configChoices(model.options)
+    const model = selectOption(options, 'model');
+    const choices = model ? configChoices(model.options)
       : configuration.models?.availableModels?.map(item => ({ value: item.modelId, name: item.name })) ?? [];
-    const currentModel = model?.type === 'select' ? model.currentValue : configuration.models?.currentModelId;
+    const currentModel = model?.currentValue ?? configuration.models?.currentModelId;
     const useDefault = this.descriptor.useAgentModelDefault && !requestedModelId;
     if (!useDefault && (!choices.length || !currentModel)) throw new Error(`${this.descriptor.name} 没有返回可验证的模型选项。`);
     const selected = useDefault ? choices.find(choice => choice.value === currentModel) : this.descriptor.selectModel(choices, requestedModelId ?? currentModel!);
     let configured = options;
-    if (!useDefault && selected && model?.type === 'select') {
+    let configurationMatchesModel = true;
+    if (!useDefault && selected && model) {
       const response = await this.request(acp.methods.agent.session.setConfigOption, { sessionId: this.nativeId!, configId: model.id, value: selected.value });
       const actual = response.configOptions.find(option => option.id === model.id);
       if (actual?.type !== 'select' || actual.currentValue !== selected.value) throw new Error(`${this.descriptor.name} 未确认所选模型，任务未发送。`);
       configured = response.configOptions;
     } else if (!useDefault && selected) {
       await bounded(this.connection.agent.request('session/set_model', { sessionId: this.nativeId!, modelId: selected.value }), 30_000, `${this.descriptor.name} 模型设置超时。`);
+      configurationMatchesModel = selected.value === currentModel;
     }
-    const redact = this.descriptor.redact;
-    if (choices.length) this.onModels?.(choices.filter(choice => !redact || redact(choice.value) === choice.value)
-      .map(choice => ({ id: choice.value, name: redact?.(choice.name) ?? choice.name, free: false })));
     const requestedEffort = this.current?.session.settings?.effort;
-    const reasoning = configured.find(option => option.id === 'reasoning_effort');
-    if (requestedEffort && reasoning?.type !== 'select') throw new Error(`${this.descriptor.name} 没有声明思考档选项，任务未发送。`);
-    if (reasoning?.type === 'select' && (requestedEffort || this.descriptor.reasoningPreference?.length)) {
-      const choices = configChoices(reasoning.options);
-      const preference = requestedEffort ?? this.descriptor.reasoningPreference?.find(value => choices.some(choice => choice.value === value));
-      if (preference && !choices.some(choice => choice.value === preference)) throw new Error(`${this.descriptor.name} 未提供所选思考档，任务未发送。`);
+    const reasoning = configurationMatchesModel ? selectOption(configured, thoughtLevel, 'reasoning_effort') : undefined;
+    const reasoningChoices = reasoning ? configChoices(reasoning.options) : [];
+    const preference = requestedEffort ?? this.descriptor.reasoningPreference?.find(value => reasoningChoices.some(choice => choice.value === value));
+    if (requestedEffort && !reasoning) throw new Error(`${this.descriptor.name} 没有声明思考档选项，任务未发送。`);
+    if (reasoning && (requestedEffort || this.descriptor.reasoningPreference?.length)) {
       if (!preference) throw new Error(`${this.descriptor.name} 未提供省额推理选项，任务未发送。`);
+      if (!reasoningChoices.some(choice => choice.value === preference)) throw new Error(`${this.descriptor.name} 未提供所选思考档，任务未发送。`);
       const result = await this.request(acp.methods.agent.session.setConfigOption, { sessionId: this.nativeId!, configId: reasoning.id, value: preference });
-      if (!result.configOptions.some(option => option.id === reasoning.id && option.type === 'select' && option.currentValue === preference)) throw new Error('运行时没有确认推理设置，任务未发送。');
+      configured = result.configOptions;
     }
     if (this.descriptor.sessionModes) {
       const permission = this.original.settings?.permission ?? 'review';
@@ -286,11 +293,31 @@ class AcpSession {
         if (!configChoices(mode.options).some(choice => choice.value === value)) throw new Error(`${this.descriptor.name} 未提供所选权限模式。`);
         const result = await this.request(acp.methods.agent.session.setConfigOption, { sessionId: this.nativeId!, configId: mode.id, value });
         if (!result.configOptions.some(option => option.id === mode.id && option.type === 'select' && option.currentValue === value)) throw new Error('运行时没有确认权限设置，任务未发送。');
+        configured = result.configOptions;
+        configurationMatchesModel = true;
       } else {
         if (!configuration.modes?.availableModes.some(mode => mode.id === value)) throw new Error(`${this.descriptor.name} 未提供所选权限模式。`);
         await this.request(acp.methods.agent.session.setMode, { sessionId: this.nativeId!, modeId: value });
       }
     }
+    const nativeModelId = selected?.value ?? currentModel;
+    const finalModel = selectOption(configured, 'model');
+    if ((model || finalModel) && finalModel?.currentValue !== nativeModelId) throw new Error('运行时没有确认最终模型，任务未发送。');
+    const finalReasoning = configurationMatchesModel ? selectOption(configured, thoughtLevel, 'reasoning_effort') : undefined;
+    if (preference && (finalReasoning?.id !== reasoning?.id || finalReasoning?.currentValue !== preference)) {
+      throw new Error('运行时没有确认推理设置，任务未发送。');
+    }
+    const redact = this.descriptor.redact;
+    const visible = (value: string) => !redact || redact(value) === value;
+    const models = (finalModel ? configChoices(finalModel.options) : choices).filter(choice => visible(choice.value))
+      .map(choice => ({ id: choice.value, name: redact?.(choice.name) ?? choice.name, free: false }));
+    const modelId = requestedModelId ?? nativeModelId;
+    const efforts = finalReasoning ? [...new Set(configChoices(finalReasoning.options).map(choice => choice.value)
+      .filter(value => value.length > 0 && value.length <= 100 && visible(value)))] : [];
+    const effort = finalReasoning && efforts.includes(finalReasoning.currentValue) ? finalReasoning.currentValue : undefined;
+    const active = configurationMatchesModel && nativeModelId && modelId && visible(nativeModelId) && visible(modelId) ? { modelId, efforts, effort } : undefined;
+    this.onModels(models, active);
+    if (active) this.current?.emit({ type: 'runtime-model', model: active });
     if (selected) this.current?.emit({ type: 'activity', text: `ACP 模型：${selected.name}；${this.descriptor.name} ${this.descriptor.version}` });
   }
 
@@ -523,34 +550,48 @@ export interface AcpProvider extends ProviderAdapter { refreshInfo(): Promise<vo
 
 export async function createAcpProvider(id: string, name: string, discover: () => Promise<AcpRuntimeDescriptor>, source: ProviderInfo['source'] = 'builtin'): Promise<AcpProvider> {
   let descriptor: AcpRuntimeDescriptor | undefined;
+  let nativeModels: ProviderModel[] | undefined;
   let disposed = false;
+  const observed = new Map<string, string[]>();
   const sessions = new Set<AcpSession>();
+  const catalog = (runtime: AcpRuntimeDescriptor) => (runtime.models ?? nativeModels)?.map(model =>
+    ({ ...model, efforts: observed.get(model.id) }));
+  const hasEffort = () => [...observed.values()].some(efforts => efforts.length > 0);
   const provider: AcpProvider = {
     get tracksDelivery() { return descriptor?.tracksDelivery; },
     info: { id, name, available: false, source, detail: '尚未检测', detailI18n: { key: 'runtime:detection.notChecked' }, capabilities: { resume: source === 'builtin', approvals: true } },
     async refreshInfo() {
       try {
-        descriptor = await discover();
-        if (descriptor.id !== id) throw new Error('ACP provider 身份不符');
+        const detected = await discover();
+        if (detected.id !== id) throw new Error('ACP provider 身份不符');
+        if (detected.version !== descriptor?.version || detected.detail !== descriptor.detail) {
+          nativeModels = undefined;
+          observed.clear();
+        }
+        descriptor = detected;
         const tiers = permissionTiers(descriptor);
         const advertised = descriptor.agentCapabilities;
-        provider.info = { ...provider.info, available: true, detail: descriptor.detail, detailI18n: descriptor.detailI18n, models: descriptor.models, defaultModelId: descriptor.defaultModelId,
-          health: discoveryHealth({ binary: true, protocol: advertised ? true : undefined, catalog: descriptor.models?.length ? true : undefined, source: advertised ? 'acp-initialize' : 'acp-runtime-discovery' }),
-          efforts: descriptor.efforts,
+        const models = catalog(descriptor);
+        provider.info = { ...provider.info, available: true, detail: descriptor.detail, detailI18n: descriptor.detailI18n, models, defaultModelId: descriptor.defaultModelId,
+          health: discoveryHealth({ binary: true, protocol: advertised || nativeModels ? true : undefined, catalog: models?.length ? true : undefined, source: nativeModels ? 'acp-native-session' : advertised ? 'acp-initialize' : 'acp-runtime-discovery' }),
           capabilities: { resume: !advertised || Boolean(advertised.loadSession || advertised.sessionCapabilities?.resume), approvals: true,
-            images: !advertised || Boolean(advertised.promptCapabilities?.image), textAttachments: true, structured: true, usage: descriptor.reportsUsage !== false, questions: Boolean(descriptor.clientRequests), rewind: false, effort: Boolean(descriptor.efforts?.length), permissions: tiers.length > 0, permissionTiers: tiers.length ? tiers : undefined } };
+            images: !advertised || Boolean(advertised.promptCapabilities?.image), textAttachments: true, structured: true, usage: descriptor.reportsUsage !== false, questions: Boolean(descriptor.clientRequests), rewind: false, effort: hasEffort(), permissions: tiers.length > 0, permissionTiers: tiers.length ? tiers : undefined } };
       } catch (error) { descriptor = undefined; provider.info = { ...provider.info, available: false, detail: asError(error).message, detailI18n: { key: 'runtime:detection.failed', values: { provider: name, reason: asError(error).message } }, models: undefined, defaultModelId: undefined,
         health: discoveryHealth({ binary: undefined, source: 'acp-discovery-error' }) }; }
     },
     async run(context) {
       if (disposed || !descriptor) throw new Error(provider.info.detail);
-      const session = new AcpSession(descriptor, context.session, models => {
-        if (descriptor?.models !== undefined) return;
-        provider.info = { ...provider.info, models,
-          health: discoveryHealth({ binary: true, protocol: true, catalog: true, source: 'acp-native-session' }) };
+      const runtime = descriptor;
+      const session = new AcpSession(runtime, context.session, (reported, active) => {
+        if (!descriptor || descriptor.version !== runtime.version || descriptor.detail !== runtime.detail) return;
+        if (reported.length) nativeModels = reported;
+        if (active) observed.set(active.modelId, active.efforts);
+        const models = catalog(descriptor);
+        provider.info = { ...provider.info, models, capabilities: { ...provider.info.capabilities, effort: hasEffort() },
+          health: discoveryHealth({ binary: true, protocol: true, catalog: Boolean(models?.length), source: 'acp-native-session' }) };
       });
       sessions.add(session);
-      const redact = descriptor.redact;
+      const redact = runtime.redact;
       try { await session.run(redact ? protectAcpContext(context, redact) : context); }
       catch (error) { if (redact) throw new Error(redact(asError(error).message)); throw error; }
       finally { sessions.delete(session); }

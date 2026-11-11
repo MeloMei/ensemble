@@ -3,7 +3,8 @@ import * as Popover from '@radix-ui/react-popover';
 import { Check, ChevronDown, ChevronRight, Search } from 'lucide-react';
 import { useContext, useEffect, useId, useRef, useState, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { ProviderInfo, Session, SessionUpdate } from '../shared/types';
+import type { ProviderInfo, Session, SessionModelSelection, SessionUpdate } from '../shared/types';
+import { modelEffortChoices } from '../shared/model-efforts';
 import { AgentIcon } from './AgentIcon';
 import { OverlayContext } from './overlays';
 import { defaultModelId, modelName } from './ui';
@@ -17,29 +18,19 @@ interface ComposerModelPickerProps {
   disabled: boolean;
   saving: boolean;
   hint: string;
-  onChange: (patch: SessionUpdate) => Promise<boolean>;
+  onChange: (patch: SessionUpdate) => Promise<SessionModelSelection | undefined>;
 }
 
-interface Selection {
-  modelId?: string;
-  effort?: string;
-}
+type Selection = Pick<SessionModelSelection, 'modelId' | 'effort'>;
 
 interface SelectionChange {
-  previous: Selection;
   next: Selection;
   phase: 'writing' | 'accepted' | 'settled';
+  acknowledgedAt?: string;
 }
 
 function sameSelection(left: Selection, right: Selection) {
   return left.modelId === right.modelId && left.effort === right.effort;
-}
-
-function supportedEfforts(provider: ProviderInfo | undefined, modelId: string | undefined): readonly string[] {
-  if (!provider?.capabilities.effort) return [];
-  const model = provider.models?.find(item => item.id === modelId);
-  if (modelId && provider.models && !model) return [];
-  return model?.efforts ?? provider.efforts ?? [];
 }
 
 export function ComposerModelPicker({ session, provider, disabled, saving, hint, onChange }: ComposerModelPickerProps) {
@@ -56,10 +47,10 @@ export function ComposerModelPicker({ session, provider, disabled, saving, hint,
   const [change, setChange] = useState<SelectionChange | null>(null);
 
   const authority = { modelId: session.modelId, effort: session.settings?.effort };
-  const snapshotChanged = change !== null && !sameSelection(authority, change.previous);
   const matchesChange = change !== null && sameSelection(authority, change.next);
+  const snapshotAccepted = matchesChange || (change?.acknowledgedAt !== undefined && session.updatedAt >= change.acknowledgedAt);
   // The write response and the session snapshot arrive on separate channels.
-  const projecting = change !== null && (change.phase === 'writing' || (change.phase === 'accepted' && !snapshotChanged));
+  const projecting = change !== null && (change.phase === 'writing' || (change.phase === 'accepted' && !snapshotAccepted));
   const selection = projecting ? change.next : authority;
   const providerName = provider?.name ?? session.providerId;
   const runtimeDefaultId = defaultModelId(provider);
@@ -68,9 +59,12 @@ export function ComposerModelPicker({ session, provider, disabled, saving, hint,
   const unavailable = models.some(model => model.id === selection.modelId) ? undefined : selection.modelId;
   const modelLabel = selection.modelId ? modelName(provider, selection.modelId) : t('chat.modelDefault', { provider: providerName });
   const defaultLabel = runtimeDefaultId ? t('chat.defaultModelName', { model: modelName(provider, runtimeDefaultId) }) : t('chat.cliDefault');
-  const efforts = supportedEfforts(provider, selection.modelId);
+  const observed = selection.modelId === authority.modelId ? session.runtimeModel : undefined;
+  const efforts = modelEffortChoices(provider, selection.modelId, observed);
   const effortIndex = selection.effort ? efforts.indexOf(selection.effort) + 1 : 0;
-  const effortStops = [t('chat.runtimeDefault'), ...efforts.map(effort => t(`chat.effort.${effort}`, { defaultValue: effort }))];
+  const labelEffort = (effort: string) => t(`chat.effort.${effort}`, { defaultValue: effort });
+  const reportedDefault = !selection.effort && observed?.effort ? labelEffort(observed.effort) : undefined;
+  const effortStops = [reportedDefault ? t('chat.effortReportedDefault', { effort: reportedDefault }) : t('chat.runtimeDefault'), ...efforts.map(labelEffort)];
   const effortLabel = effortIndex ? effortStops[effortIndex] : t('chat.effortDefaultShort');
   const locked = saving || projecting;
   const blocked = disabled || (!hasModels && !efforts.length);
@@ -98,12 +92,12 @@ export function ComposerModelPicker({ session, provider, disabled, saving, hint,
   }, [expanded]);
 
   useEffect(() => {
-    if (change?.phase === 'accepted' && snapshotChanged) {
+    if (change?.phase === 'accepted' && snapshotAccepted) {
       setChange(matchesChange ? { ...change, phase: 'settled' } : null);
     } else if (change?.phase === 'settled' && !matchesChange) {
       setChange(null);
     }
-  }, [change, matchesChange, snapshotChanged]);
+  }, [change, matchesChange, snapshotAccepted]);
 
   function collapse() {
     setExpanded(false);
@@ -114,11 +108,10 @@ export function ComposerModelPicker({ session, provider, disabled, saving, hint,
   function update(next: Selection, patch: SessionUpdate) {
     if (blocked || locked || changing.current) return;
     changing.current = true;
-    const request: SelectionChange = { previous: authority, next, phase: 'writing' };
-    setChange(request);
-    void onChange(patch).catch(() => false).then(accepted => {
+    setChange({ next, phase: 'writing' });
+    void onChange({ ...patch, expectedProviderId: session.providerId }).catch(() => undefined).then(accepted => {
       changing.current = false;
-      setChange(accepted ? { ...request, phase: 'accepted' } : null);
+      setChange(accepted ? { next: accepted, acknowledgedAt: accepted.updatedAt, phase: 'accepted' } : null);
     });
   }
 
@@ -127,12 +120,7 @@ export function ComposerModelPicker({ session, provider, disabled, saving, hint,
     collapse();
     const nextModelId = value ?? runtimeDefaultId;
     if (nextModelId === selection.modelId) return;
-    const effort = selection.effort && supportedEfforts(provider, nextModelId).includes(selection.effort)
-      ? selection.effort : undefined;
-    update({ modelId: nextModelId, effort }, {
-      modelId: value ?? null,
-      ...(effort === selection.effort ? {} : { settings: { effort: null } }),
-    });
+    update({ modelId: nextModelId }, { modelId: value ?? null });
   }
 
   return <Popover.Root open={open && !blocked} onOpenChange={setPickerOpen}>

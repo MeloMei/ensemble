@@ -9,6 +9,8 @@ import type { ApprovalInput, Session } from '../../shared/types';
 import { createAcpProvider } from './acp';
 import type { AcpRuntimeDescriptor } from './acp-types';
 import type { ProviderEvent, TurnContext } from './types';
+import { WorkbenchEngine } from '../engine';
+import { StateStore } from '../store';
 
 const peerSource = String.raw`
 import { createInterface } from 'node:readline';
@@ -25,12 +27,16 @@ let permissionAnswered = false;
 let cancelled = false;
 let model = 'runtime-review';
 let reasoning = 'high';
+let thought = 'low';
 let sessionMode = 'build';
 const configOptions = () => [
   { id: 'model', name: 'Model', type: 'select', category: 'model', currentValue: model,
     options: [{ value: 'runtime-free', name: 'Free' }, { value: 'runtime-review', name: 'Review' }] },
   { id: 'reasoning_effort', name: 'Reasoning', type: 'select', currentValue: reasoning,
     options: [{ value: 'high', name: 'High' }, { value: 'low', name: 'Low' }] },
+  ...(mode === 'thought-level' ? [{ id: 'vendor-depth', name: 'Thought level', type: 'select', category: 'thought_level',
+    currentValue: thought, options: [{ group: 'budget', name: 'Budget', options: [{ value: 'low', name: 'Low' },
+      { value: model === 'runtime-free' ? 'deliberate' : 'extended', name: 'Deep' }] }] }] : []),
   { id: 'mode', name: 'Mode', type: 'select', category: 'mode', currentValue: sessionMode,
     options: [{ value: 'build', name: 'Build' }, { value: 'plan', name: 'Plan' }] },
 ];
@@ -111,6 +117,7 @@ createInterface({ input: process.stdin }).on('line', line => {
   if (frame.method === 'session/set_config_option') {
     if (frame.params.configId === 'model' && mode !== 'unconfirmed') model = frame.params.value;
     if (frame.params.configId === 'reasoning_effort') reasoning = frame.params.value;
+    if (frame.params.configId === 'vendor-depth') thought = frame.params.value;
     if (frame.params.configId === 'mode' && mode !== 'unconfirmed-mode') sessionMode = frame.params.value;
     respond(frame.id, { configOptions: configOptions() }); return;
   }
@@ -373,6 +380,34 @@ test('ACP confirms model and reasoning before prompt, resumes the native session
     assert.equal(getEventListeners(f.context.signal, 'abort').length, 0);
     assert(!alive(frames.find(frame => frame.kind === 'spawn')!.pid!));
   } finally { await f.cleanup(); }
+});
+
+test('ACP reports the confirmed thought_level only for the configured model', { timeout: 8000 }, async () => {
+  const f = await fixture('thought-level');
+  const store = new StateStore(join(f.context.session.cwd, 'state.json'));
+  const engine = new WorkbenchEngine(store, '', () => {});
+  engine.setProviders([f.provider], [], []);
+  try {
+    const id = await engine.createSession({ title: 'Native thought level', providerId: f.provider.info.id,
+      cwd: f.context.session.cwd, modelId: 'catalog/free' });
+    assert.throws(() => engine.updateSession(id, { settings: { effort: 'deliberate' } }), /思考档/);
+    engine.sendMessage(id, 'Inspect the available effort levels');
+    await engine.waitSession(id);
+    assert.equal(engine.getSession(id).status, 'completed');
+    const snapshot = engine.snapshot();
+    assert.deepEqual(snapshot.sessions[0].runtimeModel, { modelId: 'catalog/free', efforts: ['low', 'deliberate'], effort: 'low' });
+    assert.deepEqual(snapshot.providers[0].models?.map(model => [model.id, model.efforts]), [
+      ['catalog/free', ['low', 'deliberate']], ['catalog/review', undefined],
+    ]);
+    assert.throws(() => engine.updateSession(id, { modelId: 'catalog/review', settings: { effort: 'deliberate' } }), /思考档/);
+    engine.updateSession(id, { settings: { effort: 'deliberate' } });
+    engine.sendMessage(id, 'Use the explicit effort');
+    await engine.waitSession(id);
+    assert.equal(engine.snapshot().sessions[0].runtimeModel?.effort, 'deliberate');
+    const config = (await f.trace()).filter(frame => frame.method === 'session/set_config_option');
+    assert.deepEqual(config.filter(frame => frame.params?.configId !== 'model').map(frame => [frame.params?.configId, frame.params?.value]),
+      [['vendor-depth', 'low'], ['vendor-depth', 'deliberate']]);
+  } finally { await engine.shutdown(); await f.cleanup(); }
 });
 
 test('ACP carries actual attachments and MCP environment, confirms mode, and preserves structured native updates', { timeout: 8000 }, async () => {

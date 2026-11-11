@@ -197,6 +197,7 @@ export async function createCodexProvider(findManagedBinary?: () => Promise<stri
         efforts: model.supportedReasoningEfforts?.map(effort => effort.reasoningEffort).filter(Boolean) }));
       provider.info = { ...provider.info, available: Boolean(binary && version), detail, detailI18n, models: models.length ? models : undefined,
         health: discoveryHealth({ binary: Boolean(binary), protocol: protocolReady, catalog: catalogReady, source: 'codex-app-server' }),
+        nativeDefaultModelId: catalog.find(model => model.isDefault)?.id,
         efforts: models.find(model => catalog.find(native => native.id === model.id)?.isDefault)?.efforts };
     },
     async resetAccountConnections() {

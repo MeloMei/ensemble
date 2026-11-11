@@ -117,10 +117,9 @@ export async function createDeepSeekHarnessDescriptor(options: {
     id: 'deepseek-harness', name: 'DeepSeek Harness', version,
     detail: `${version} · ${command} · Flash · 每次模型请求最多 ${maxTokens} 输出 tokens`,
     detailI18n: { key: 'runtime:detection.deepSeek', values: { version, command, maxTokens } },
-    models: [{ id: FLASH_MODEL_ID, name: 'DeepSeek Flash', free: false, efforts: ['off', 'low', 'high', 'max'] }],
+    models: [{ id: FLASH_MODEL_ID, name: 'DeepSeek Flash', free: false }],
     defaultModelId: FLASH_MODEL_ID,
     reasoningPreference: ['off', 'low'],
-    efforts: ['off', 'low', 'high', 'max'],
     permissionTiers: SESSION_PERMISSION_TIERS,
     permissionDecision: (_tool, session) => session.settings?.permission === 'read-only' ? 'deny' : 'ask',
     selectModel(choices, modelId) {
