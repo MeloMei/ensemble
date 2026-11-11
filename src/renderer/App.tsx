@@ -45,7 +45,9 @@ import { supportsWindowCapture, WindowCapturePreview } from './WindowCapture';
 import { sessionCollaborationId } from '../shared/collaboration';
 import { TerminalPane } from './TerminalPane';
 import { WorkflowEditor, WorkflowView } from './WorkflowViews';
-import { BusyIcon, DirectoryField, EmptyState, ErrorToast, IconButton, Modal, Status, statusLabel, pathName, relativeTime, type Perform } from './ui';
+import { BusyIcon, DirectoryField, EmptyState, IconButton, Modal, Status, statusLabel, pathName, relativeTime, type Perform } from './ui';
+import { NotificationQueue } from './ui-kit/NotificationQueue';
+import { useOperationFeedback } from './ui-kit/useOperationFeedback';
 
 type Page = 'workspace' | 'attention' | 'history' | 'workflows' | 'collaboration';
 type Dialog = 'workspace' | 'agent' | 'preview' | 'codex' | 'settings' | null;
@@ -152,9 +154,8 @@ export function App() {
   const [fileRequest, setFileRequest] = useState<WorkspaceFileRequest>();
   const [terminalAction, setTerminalAction] = useState<TerminalAction>();
   const [hiddenTerminals, setHiddenTerminals] = useState(new Set<string>());
-  const [pending, setPending] = useState<Set<string>>(new Set());
-  const [toast, setToast] = useState('');
-  const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const feedback = useOperationFeedback();
+  const { pending, perform, report } = feedback;
 
   const updateDraft = useCallback((id: string, value: PromptInput, expected?: PromptInput) => {
     if (!expected && !draftReady.current.has(id)) return false;
@@ -181,15 +182,6 @@ export function App() {
     return () => { active = false; unsubscribe(); };
   }, []);
 
-  const perform = useCallback<Perform>(async (key, action) => {
-    setPending(current => new Set(current).add(key));
-    try { await action(); }
-    catch (error) {
-      setToast(error instanceof Error ? error.message : String(error));
-      clearTimeout(toastTimer.current);
-      toastTimer.current = setTimeout(() => setToast(''), 7000);
-    } finally { setPending(current => { const next = new Set(current); next.delete(key); return next; }); }
-  }, []);
   const projectManagement = useProjectManagement(perform);
 
   useEffect(() => {
@@ -203,7 +195,6 @@ export function App() {
       .catch(error => { if (active && !updated) setLoadError(error instanceof Error ? error.message : String(error)); });
     return () => { active = false; unsubscribe(); };
   }, []);
-  useEffect(() => () => clearTimeout(toastTimer.current), []);
 
   const workspaces = snapshot?.workspaces.filter(item => !item.archived) ?? [];
   const sessions = snapshot?.sessions ?? [];
@@ -248,10 +239,8 @@ export function App() {
   useEffect(() => {
     if (!connected || !snapshot || applicationReady.current) return;
     applicationReady.current = true;
-    void window.workbench.confirmApplicationUpdateReady().catch(error => {
-      setToast(error instanceof Error ? error.message : String(error));
-    });
-  }, [connected, snapshot]);
+    void window.workbench.confirmApplicationUpdateReady().catch(error => report(error));
+  }, [connected, snapshot, report]);
   useEffect(() => {
     if (connected && snapshot) void recoverSessionCommands();
   }, [connected, snapshot]);
@@ -259,9 +248,9 @@ export function App() {
     : readingSession ? [readingSession.id] : []);
   useEffect(() => {
     void window.workbench.watchSessions(JSON.parse(watchedIds) as string[]).catch(error => {
-      if (connected) setToast(error instanceof Error ? error.message : String(error));
+      if (connected) report(error);
     });
-  }, [watchedIds, connected]);
+  }, [watchedIds, connected, report]);
   useEffect(() => () => { void window.workbench.watchSessions([]).catch(() => {}); }, []);
   const matchesSearch = (item: Workspace) => `${item.name} ${item.cwd}`.toLocaleLowerCase().includes(query.toLocaleLowerCase());
   const visibleWorkspaces = workspaces.filter(matchesSearch);
@@ -781,7 +770,7 @@ export function App() {
         })}>{t(terminalAction.kind === 'close' ? 'app.stopAndCloseTerminal' : 'app.stopTerminal')}</button>
       </div>
     </Modal>}
-    {toast && <ErrorToast message={toast} onDismiss={() => setToast('')} />}
+    <NotificationQueue feedback={feedback} fallbackFocus={() => mainElement.current?.querySelector('.workspace-heading h1')} />
   </div></WorkspaceFileNavigation.Provider>;
 }
 

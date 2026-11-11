@@ -7,7 +7,7 @@ import { I18nextProvider } from 'react-i18next';
 import { MotionConfig, MotionConfigContext } from 'framer-motion';
 import { EditorView } from '@codemirror/view';
 import { i18n, translate } from '../shared/i18n';
-import type { DiagnosticEntry, FileContent, FileImage, McpSettingsView, Message, PromptInput, ProviderInfo, Session, Snapshot, UnsavedFileSummary, Workflow, WorkflowInput, Workspace, WorkspaceManagement } from '../shared/types';
+import type { DiagnosticEntry, FileContent, FileEntry, FileImage, McpSettingsView, Message, PromptInput, ProviderInfo, Session, Snapshot, UnsavedFileSummary, Workflow, WorkflowInput, Workspace, WorkspaceManagement } from '../shared/types';
 import type { BackendConnectionState, SessionHistoryWindow } from '../shared/backend';
 import { SESSION_PERMISSION_TIERS, type SessionPermission } from '../shared/session-permissions';
 import { SettingsDialog } from './SettingsDialog';
@@ -239,6 +239,116 @@ const cases: Record<string, () => Promise<void>> = {
       else localStorage.setItem(storageKey, saved);
       initializeAppearance();
     }
+  },
+  'OPERATION-FEEDBACK: errors queue, retries stay explicit and removing notices preserves focus': async () => {
+    const terminal = deferred<void>(), pin = deferred<void>(), retryRuntime = deferred<void>(), retryFiles = deferred<FileEntry[]>(), move = deferred<'queue-changed'>();
+    const queued: Session = { ...session, id: 'feedback-session', historyLoaded: true, queue: ['one', 'two'].map(id => ({
+      id, commandId: `feedback-${id}`, input: { text: id }, createdAt: session.createdAt, updatedAt: session.updatedAt,
+    })) };
+    const tab = { kind: 'agent' as const, id: 'feedback-tab', sessionId: queued.id };
+    let snapshot: Snapshot = { ...collaborationSnapshot([]), workspaces: [workspace], providers: [provider] };
+    let publish = (_value: Snapshot) => {};
+    let refreshes = 0, fileReads = 0, moves = 0;
+    let fileMode: 'ok' | 'fail' | 'retry' = 'ok';
+    window.workbench = {
+      ...applicationUpdateApi, snapshot: async () => snapshot,
+      subscribe: (listener: typeof publish) => { publish = listener; return () => {}; },
+      getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
+      onLanguageChanged: () => () => {}, watchSessions: async () => {}, gitState: async () => ({ available: false }), setUnsavedFiles: () => {},
+      listFiles: async () => {
+        fileReads++;
+        if (fileMode === 'fail') throw new Error('File refresh refused');
+        return fileMode === 'retry' ? retryFiles.promise : [];
+      },
+      updateWorkspace: async () => pin.promise, createTerminal: async () => terminal.promise,
+      refreshProviders: async () => {
+        refreshes++;
+        if (refreshes === 1) throw new Error('Runtime refresh refused');
+        if (refreshes === 2) await retryRuntime.promise;
+      },
+      moveQueuedPrompt: async () => { moves++; return move.promise; },
+      commandReceipt: async () => undefined,
+    } as unknown as Window['workbench'];
+    const notices = () => [...document.querySelectorAll<HTMLElement>('.notification-queue [data-notification-id]')];
+    const noticeText = (notice: Element) => notice.querySelector('[role=alert]')?.textContent;
+    const dismiss = (notice: Element) => notice.querySelector<HTMLButtonElement>('[data-notification-dismiss]')!;
+    const retry = (container: Element) => container.querySelector<HTMLButtonElement>('.operation-feedback-retry')!;
+    const filePanel = () => document.querySelector('.file-review-panel')!;
+    const activate = (control: HTMLElement) => act(async () => { control.focus(); control.click(); await tick(); });
+    const escape = (control: HTMLElement) => act(async () => {
+      control.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); await tick();
+    });
+
+    await render(<LanguageProvider initial={{ preference: 'en', language: 'en' }}><App /></LanguageProvider>);
+    await waitFor(() => Boolean(filePanel()) && !button('workspace:files.refresh').disabled, 'The initial file panel did not settle');
+    await activate(button('shell:app.openTerminal'));
+    await activate(button('shell:app.pin'));
+    const origin = document.querySelector<HTMLElement>('.workspace-heading h1')!;
+    origin.focus();
+    await act(async () => { terminal.reject(new Error('Terminal creation refused')); pin.reject(new Error('Workspace pin refused')); await tick(); });
+    assert(notices().map(noticeText).join(',') === 'Terminal creation refused,Workspace pin refused' && document.activeElement === origin,
+      'Concurrent application errors replaced each other or stole focus');
+    const first = notices()[0], second = notices()[1];
+    assert(!retry(first) && !retry(second) && document.getElementById(dismiss(first).getAttribute('aria-describedby') ?? '')?.textContent === noticeText(first),
+      'The dismiss control did not identify its error or an unsafe action was offered retry');
+    await activate(dismiss(first));
+    assert(notices().length === 1 && notices()[0] === second && document.activeElement === dismiss(second),
+      'Dismissing a notice removed a different notice or lost keyboard focus');
+    await escape(dismiss(second));
+    assert(!notices().length && document.activeElement === origin, 'Closing the last notice did not return focus');
+
+    await click('shell:preferences.open'); await click('shell:app.providers');
+    const refreshRuntime = button('shell:provider.refresh');
+    await activate(refreshRuntime);
+    assert(document.activeElement === refreshRuntime,
+      `Runtime refresh displaced focus before the notification was selected (${document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.textContent?.slice(0, 40)})`);
+    const runtimeNotice = notices()[0];
+    assert(notices().length === 1 && noticeText(runtimeNotice) === 'Runtime refresh refused'
+      && runtimeNotice.closest('dialog[open]') && retry(runtimeNotice), 'A runtime refresh failure did not offer one retry in its dialog');
+    const runtimeRetry = retry(runtimeNotice);
+    await activate(runtimeRetry);
+    assert(refreshes === 2 && runtimeRetry.getAttribute('aria-busy') === 'true' && document.activeElement === runtimeRetry,
+      'Retry did not expose progress and keep its focus');
+    await activate(runtimeRetry);
+    assert(refreshes === 2, 'Activating an in-progress retry replayed the request');
+    await act(async () => { retryRuntime.reject(new Error('Runtime refresh still unavailable')); await tick(); });
+    assert(notices().length === 1 && notices()[0] === runtimeNotice && noticeText(runtimeNotice) === 'Runtime refresh still unavailable'
+      && document.activeElement === runtimeRetry, 'A failed retry duplicated the notice or displaced focus');
+    await activate(runtimeRetry);
+    await waitFor(() => !notices().length && Number(refreshes) === 3 && document.activeElement === refreshRuntime,
+      () => `A successful retry did not clear only its notice and return focus (notices=${notices().length}, calls=${refreshes}, focus=${document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.textContent?.slice(0, 60)})`);
+    await click('shell:common.close');
+
+    fileMode = 'fail';
+    const refreshFiles = button('workspace:files.refresh');
+    await activate(refreshFiles);
+    const fileRetry = retry(filePanel());
+    assert(filePanel().querySelector('[role=alert]')?.textContent === 'File refresh refused' && !notices().length && fileRetry,
+      'File refresh failed without a single inline error and explicit retry');
+    const reads = fileReads;
+    fileMode = 'retry';
+    await activate(fileRetry);
+    assert(fileReads === reads + 1 && fileRetry.getAttribute('aria-busy') === 'true' && document.activeElement === fileRetry
+      && filePanel().querySelector('.operation-feedback[data-state=progress] [role=status]'), 'File retry did not preserve focus or show progress');
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      const spinner = filePanel().querySelector('.operation-feedback[data-state=progress] .spin');
+      assert(spinner && getComputedStyle(spinner).animationName === 'none', 'Progress ignored reduced motion');
+    }
+    await act(async () => { retryFiles.resolve([]); await tick(); });
+    assert(!filePanel().querySelector('[role=alert]') && document.activeElement === refreshFiles && !notices().length,
+      'A successful file retry left an error or lost focus');
+
+    fileMode = 'ok';
+    snapshot = { ...snapshot, sessions: [queued], workspaces: [{ ...workspace, tabs: [tab], activeTabId: tab.id }] };
+    await act(async () => { publish(snapshot); await tick(); });
+    const moveButton = document.querySelector<HTMLButtonElement>(`.prompt-queue button[aria-label="${translate('workspace:chat.queueMoveDown', { position: '1' })}"]`)!;
+    await activate(moveButton);
+    assert(moves === 1 && document.activeElement === moveButton
+      && document.querySelector('.prompt-queue .operation-feedback[data-state=progress]')?.textContent === translate('workspace:chat.queueUpdating'),
+      'Queue reordering lost focus or did not announce progress');
+    await act(async () => { move.resolve('queue-changed'); await tick(); });
+    assert(moves === 1 && notices().length === 1 && noticeText(notices()[0]) === translate('workspace:chat.queueOrderChanged')
+      && !retry(notices()[0]) && document.activeElement === moveButton, 'The stale reorder was replayed, offered retry, or lost its keyboard focus');
   },
   'APP-SHORTCUTS: recording, conflicts, restore and dispatch honor the current focus context': async () => {
     const tab = { kind: 'agent' as const, id: 'shortcut-tab', sessionId: session.id };
@@ -2906,7 +3016,8 @@ const cases: Record<string, () => Promise<void>> = {
     await click('a.txt'); await change(input('[data-test-editor]'), 'unsaved edit');
     readState = 'denied'; await click('workspace:files.reloadDiscard'); await settle();
     assert(summary.count === 1 && input('[data-test-editor]').value === 'unsaved edit', 'Permission failure discarded the draft');
-    assert(errors.some(error => error.includes('EACCES fixture')), 'Permission failure was hidden');
+    assert(document.querySelector('.file-review-panel [role=alert]')?.textContent === 'EACCES fixture' && !errors.length,
+      'Permission failure did not appear once in the file panel');
     readState = 'missing'; await click('workspace:files.reloadDiscard'); await settle();
     assert(Number(summary.count) === 0 && !document.querySelector('[data-test-editor]'), 'Confirmed missing file retained its dirty inspector');
     await click('b.txt'); assert(input('[data-test-editor]').value === 'original', 'Discard still blocked browsing another file');
@@ -5184,16 +5295,25 @@ const cases: Record<string, () => Promise<void>> = {
     await render(<ProvidersContent snapshot={snapshot} perform={perform} pending={new Set()} />);
     const status = () => document.querySelector('.provider-install-action [role=status]')?.textContent;
     await waitFor(() => Boolean(document.querySelector('.provider-install-action button')), 'The installer action did not load');
-    await click('shell:provider.installNow');
+    const install = button('shell:provider.installNow');
+    await act(async () => { install.focus(); install.click(); await tick(); });
     await waitFor(() => status() === translate('shell:provider.installPhase.installing'), 'The installation did not display progress');
+    assert(button('shell:provider.installCancel') === install && document.activeElement === install, 'Installation progress replaced the focused action');
     await click('shell:provider.installCancel');
     await waitFor(() => status() === translate('shell:provider.installPhase.cancelled'), 'Cancellation did not update the UI');
     done = deferred<void>();
     await click('shell:provider.installNow');
     await waitFor(() => status() === translate('shell:provider.installPhase.installing'), 'The cancelled installation could not retry');
+    await act(async () => { phase = 'failed'; done.resolve(); await tick(); });
+    await waitFor(() => document.querySelector('.provider-install-action [role=alert]')?.textContent === translate('shell:provider.installProblem.install'),
+      'The installer did not present its failure once in the runtime panel');
+    assert(errors.length === 0, 'A reported installation phase also raised a global error');
+    done = deferred<void>();
+    await click('shell:provider.installRetry');
+    await waitFor(() => status() === translate('shell:provider.installPhase.installing'), 'Retry did not start a fresh installation');
     await act(async () => { phase = 'complete'; done.resolve(); await tick(); });
     await waitFor(() => status() === translate('shell:provider.installPhase.complete'), 'Successful detection was not shown');
-    assert(requests.join(',') === 'install:codex,cancel:codex,install:codex', 'An operation ran for the wrong runtime or twice');
+    assert(requests.join(',') === 'install:codex,cancel:codex,install:codex,install:codex', 'An operation ran for the wrong runtime or twice');
   },
   'UI-12: health evidence stays scoped to the selected directory and entry detection is not sign-in': async () => {
     const first = deferred<ProviderInfo[]>(), second = deferred<ProviderInfo[]>();
