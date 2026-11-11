@@ -225,9 +225,9 @@ test('stopped queues persist edits, removals and captured execution settings unt
   const directory = await mkdtemp(join(tmpdir(), 'ensemble-followup-'));
   const store = new StateStore(join(directory, 'state.json'));
   const engine = new WorkbenchEngine(store, '', () => {});
-  const seen: { prompt: string; modelId?: string; permission?: string }[] = [];
+  const seen: { prompt: string; modelId?: string; permission?: string; effort?: string }[] = [];
   const runtime = adapter(async context => {
-    seen.push({ prompt: context.prompt, modelId: context.session.modelId, permission: context.session.settings?.permission });
+    seen.push({ prompt: context.prompt, modelId: context.session.modelId, permission: context.session.settings?.permission, effort: context.session.settings?.effort });
     if (context.prompt === 'A') await new Promise<void>(resolve => context.signal.addEventListener('abort', () => resolve(), { once: true }));
   });
   engine.setProviders([runtime], [], []);
@@ -254,6 +254,10 @@ test('stopped queues persist edits, removals and captured execution settings unt
     const restored = new StateStore(store.path); await restored.load();
     restarted = new WorkbenchEngine(restored, '', () => {}); restarted.setProviders([runtime], [], []); await restarted.prepareExecutionKeys();
     assert.equal(restarted.getSession(id).queuePaused, true); assert.equal(seen.length, 1);
+    assert.equal(restarted.getSession(id).settings?.effort, undefined);
+    assert.equal(restarted.updateSession(id, { modelId: 'm1' }).effort, 'low');
+    restarted.updateSession(id, { settings: { effort: null } });
+    restarted.updateSession(id, { modelId: 'm2' });
     restarted.setSessionQueuePaused(id, false); await restarted.waitSession(id);
     assert.equal(seen.length, 1);
     assert.throws(() => restarted!.beginQueuedPromptEdit(id, b.id, 1, 'another-edit', 'another-window'), /另一窗口正在编辑/);
@@ -264,8 +268,8 @@ test('stopped queues persist edits, removals and captured execution settings unt
     restarted.finishQueuedPromptEdit(id, b.id, 'b-recovered', { text: 'B edited' });
     await restarted.waitSession(id);
     assert.deepEqual(seen, [
-      { prompt: 'A', modelId: 'm1', permission: 'read-only' }, { prompt: 'B edited', modelId: 'm1', permission: 'read-only' },
-      { prompt: 'D', modelId: 'm1', permission: 'read-only' },
+      { prompt: 'A', modelId: 'm1', permission: 'read-only', effort: 'low' }, { prompt: 'B edited', modelId: 'm1', permission: 'read-only', effort: 'low' },
+      { prompt: 'D', modelId: 'm1', permission: 'read-only', effort: 'low' },
     ]);
     assert.equal(restarted.getSession(id).queue?.length, 0);
     assert.deepEqual(restarted.getSession(id).attempts?.slice(1).map(attempt => ({ modelId: attempt.modelId, permission: attempt.settings?.permission, commandId: attempt.commandId })),
@@ -332,6 +336,8 @@ test('runtime switching preserves the session and resumes each native thread wit
   }));
   providers[0].info.capabilities.permissionTiers = ['review', 'read-only', 'full-access'];
   providers[1].info.capabilities.permissionTiers = ['review', 'read-only', 'full-access'];
+  providers[0].info.models![1].efforts = ['low'];
+  providers[1].info.models![1].efforts = ['high'];
   providers[2].info.capabilities.resume = false;
   providers[2].info.capabilities.permissions = false;
   engine.setProviders(providers, [], []);
@@ -368,6 +374,7 @@ test('runtime switching preserves the session and resumes each native thread wit
     assert.equal(engine.commandReceipt('stale-send'), undefined);
     assert.deepEqual(engine.getSession(id), afterSwitch);
     assert.equal(seen.length, 2);
+    engine.updateSession(id, { modelId: 'm2', settings: { effort: 'high' } });
     engine.sendMessage(id, 'First request for B');
     await engine.waitSession(id);
     assert.equal(seen[2]?.providerId, 'runtime-b');
@@ -443,6 +450,7 @@ test('runtime switching preserves the session and resumes each native thread wit
     await assert.rejects(restarted.switchSessionRuntime(id, 'runtime-c', 'runtime-a'), /不能保留.*权限/);
     assert.deepEqual(restarted.getSession(id), beforePermissionChange);
     await restarted.switchSessionRuntime(id, 'runtime-b', 'runtime-a');
+    assert.equal(restarted.getSession(id).settings?.effort, 'high');
     assert.deepEqual(restarted.getSession(id).messages.at(-1)?.runtimeSwitch,
       { fromProviderId: 'runtime-a', toProviderId: 'runtime-b', permissionResetToReview: true });
     restarted.sendMessage(id, 'Use review in the next runtime');

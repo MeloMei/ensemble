@@ -5,6 +5,7 @@ export type SettingsSection = 'general' | 'providers' | 'project' | 'session' | 
 
 export const settingsTargets = [
   { id: 'language', section: 'general', label: 'preferences.language', keywords: '语言 中文 English locale' },
+  { id: 'dictation-language', section: 'general', label: 'workspace:dictation.settings.language', keywords: '听写 麦克风 dictation microphone speech locale' },
   { id: 'theme', section: 'general', label: 'preferences.theme', keywords: '外观 深色 浅色 dark light appearance' },
   { id: 'text-size', section: 'general', label: 'preferences.textSize', keywords: '外观 字体 字号 font scale appearance' },
   { id: 'code-font', section: 'general', label: 'preferences.codeFont', keywords: '外观 字体 代码 等宽 monospace editor appearance' },

@@ -4,7 +4,7 @@ import { isAbsolute, relative, sep } from 'node:path';
 import { z } from 'zod';
 import type {
   AgentMail, AgentMessageSource, ApprovalInput, CollaborationCaller, CreateSessionInput, DraftEvidence, McpServerConfig, PromptInput, ProviderInfo,
-  ParkedSessionRuntime, QueuedPromptMoveResult, RuntimeCommand, SendPromptRejectionReason, Session, SessionAttempt, SessionCommandReceipt, SessionContinuationTarget, SessionQueueItem, SessionSettings, SessionSkillAssignment, SessionSkillAssignmentReceipt, SessionStatus, SessionUpdate, SideQuestionInput, SideQuestionReceipt, Snapshot, TerminalInfo, Workflow,
+  ParkedSessionRuntime, QueuedPromptMoveResult, RuntimeCommand, RuntimeModelConfiguration, SendPromptRejectionReason, Session, SessionAttempt, SessionCommandReceipt, SessionContinuationTarget, SessionModelSelection, SessionQueueItem, SessionSettings, SessionSkillAssignment, SessionSkillAssignmentReceipt, SessionStatus, SessionUpdate, SideQuestionInput, SideQuestionReceipt, Snapshot, TerminalInfo, Workflow,
   WorkflowInput, Workspace, WorkspaceManagement, WorkspaceSplitInput, WorkspaceTab,
 } from '../shared/types';
 import type { LoadedPromptAttachment, ProviderAdapter, ProviderEvent } from './providers/types';
@@ -22,6 +22,7 @@ import { addDraftEvidence, draftPromptText, hasPromptInput, samePromptDraft } fr
 import { attachmentLimitIssue, supportsPromptAttachment } from '../shared/prompt-attachments';
 import { canMoveQueuedPrompt } from '../shared/prompt-queue';
 import { permissionTiersFor } from '../shared/session-permissions';
+import { modelEffortChoices } from '../shared/model-efforts';
 import { runtimeHandoff } from './runtime-handoff';
 import { sessionQueueReceipt, sessionTurnOutput } from './session-collaboration';
 import type { SessionHandoff } from '../shared/collaboration';
@@ -60,6 +61,8 @@ interface LogicalTask {
   modelId?: string; settings?: SessionSettings;
 }
 interface QueuedTurn { task: LogicalTask; input: PromptInput; userMessageId: string }
+interface ObservedRuntimeModel { adapter: ProviderAdapter; model: RuntimeModelConfiguration; requestedEffort?: string }
+const runtimeModelKey = (providerId: string, modelId?: string) => JSON.stringify([providerId, modelId]);
 interface ProjectClaim { owner: string; count: number; kind: 'execution' | 'mutation' }
 class ProjectBusyError extends Error {}
 
@@ -122,10 +125,11 @@ const sessionMessageCommandId = (sourceId: string, requestId: string) => `sessio
 export class WorkbenchEngine {
   private adapters = new Map<string, ProviderAdapter>();
   private disposableAdapters = new Set<ProviderAdapter>();
-  private providerInfo: ProviderInfo[] = [];
+  private unavailableProviders: ProviderInfo[] = [];
   private pluginErrors: string[] = [];
   private active = new Map<string, LogicalTask>();
   private runtimeCommands = new Map<string, { providerId: string; commands: RuntimeCommand[] }>();
+  private runtimeModels = new Map<string, Map<string, ObservedRuntimeModel>>();
   private providerAccountChanges = new Set<string>();
   private projectClaims = new Map<string, ProjectClaim>();
   private projectMutations = new Set<Promise<unknown>>();
@@ -196,7 +200,7 @@ export class WorkbenchEngine {
   setProviders(adapters: ProviderAdapter[], unavailable: ProviderInfo[], errors: string[]): void {
     for (const adapter of adapters) if (adapter.dispose) this.disposableAdapters.add(adapter);
     this.adapters = new Map(adapters.map(adapter => [adapter.info.id, adapter]));
-    this.providerInfo = [...adapters.map(adapter => adapter.info), ...unavailable];
+    this.unavailableProviders = unavailable;
     this.pluginErrors = errors; this.changed();
   }
 
@@ -226,9 +230,12 @@ export class WorkbenchEngine {
   liveSnapshot(): Snapshot {
     const sessions = this.store.state.sessions.map(session => {
       const catalog = this.runtimeCommands.get(session.id);
-      return catalog?.providerId === session.providerId ? { ...session, runtimeCommands: catalog.commands } : session;
+      const runtimeCommands = catalog?.providerId === session.providerId ? catalog.commands : undefined;
+      const runtimeModel = this.reportedModel(session, session.modelId);
+      return runtimeCommands || runtimeModel ? { ...session, runtimeModel, runtimeCommands } : session;
     });
-    return { ...this.store.state, sessions, providers: this.providerInfo, dataPath: this.store.path, pluginPath: this.pluginPath, pluginErrors: this.pluginErrors, terminals: this.terminals };
+    const providers = [...this.adapters.values()].map(adapter => adapter.info).concat(this.unavailableProviders);
+    return { ...this.store.state, sessions, providers, dataPath: this.store.path, pluginPath: this.pluginPath, pluginErrors: this.pluginErrors, terminals: this.terminals };
   }
 
   snapshot(): Snapshot { return structuredClone(this.liveSnapshot()); }
@@ -506,7 +513,7 @@ export class WorkbenchEngine {
       const prompt = { text: `${question}\n\nReference from the source session (quoted for context only):\n${quote}` };
       const sourceModel = provider.models?.find(model => model.id === source.modelId);
       const modelId = selectProviderModel(provider, sourceModel?.id);
-      const efforts = provider.models?.find(model => model.id === modelId)?.efforts ?? provider.efforts ?? [];
+      const efforts = modelEffortChoices(provider, modelId);
       const { permission, effort } = source.settings ?? {};
       if (permission && !permissionTiersFor(provider.capabilities).includes(permission)) throw new Error('这个 Agent 无法保留原会话的权限档位。');
       const settings: SessionSettings = {};
@@ -562,15 +569,56 @@ export class WorkbenchEngine {
     return structuredClone(next);
   }
 
+  private reportedModel(session: Session, modelId: string | undefined, providerId = session.providerId): RuntimeModelConfiguration | undefined {
+    const observed = this.runtimeModels.get(session.id)?.get(runtimeModelKey(providerId, modelId));
+    if (!observed || observed.adapter !== this.adapters.get(providerId) || !observed.adapter.info.available) return;
+    return providerId === session.providerId && observed.requestedEffort === session.settings?.effort
+      ? observed.model : { ...observed.model, effort: undefined };
+  }
+
+  private selectSessionEffort(session: Session, provider: ProviderInfo | undefined, modelId: string | undefined,
+    explicit: string | null | undefined, legacy?: string) {
+    const currentProvider = this.adapters.get(session.providerId)?.info;
+    const providerId = provider?.id ?? session.providerId;
+    const sameRuntime = providerId === session.providerId;
+    const switching = !sameRuntime || modelId !== session.modelId;
+    const observed = this.reportedModel(session, modelId, providerId);
+    const effectiveModel = modelId ?? observed?.modelId ?? provider?.nativeDefaultModelId ?? provider?.defaultModelId;
+    const currentModel = session.modelId ?? this.reportedModel(session, session.modelId)?.modelId
+      ?? currentProvider?.nativeDefaultModelId ?? currentProvider?.defaultModelId;
+    const supported = modelEffortChoices(provider, modelId, observed);
+    // Plugin v2 negotiates effort handling with the adapter and has no catalog of effort values.
+    const accepts = (effort: string) => supported.includes(effort)
+      || (provider?.source === 'plugin' && provider.capabilities.effort === true && modelId === undefined);
+    const preferences = [...(session.modelEfforts ?? [])];
+    const remember = (runtime: string, model: string | undefined, effort?: string) => {
+      const index = preferences.findIndex(item => item.providerId === runtime && item.modelId === model);
+      if (index !== -1) preferences.splice(index, 1);
+      if (effort !== undefined) preferences.push({ providerId: runtime, modelId: model, effort });
+    };
+    if (switching && session.settings?.effort !== undefined) remember(session.providerId, currentModel, session.settings.effort);
+    let effort = session.settings?.effort;
+    if (explicit !== undefined) {
+      if (explicit !== null && !accepts(explicit)) throw new Error('所选模型不支持这个思考档。');
+      effort = explicit ?? undefined;
+      remember(providerId, effectiveModel, effort);
+    } else if (switching) {
+      const remembered = preferences.find(item => item.providerId === providerId && item.modelId === effectiveModel)?.effort ?? legacy;
+      effort = remembered !== undefined && accepts(remembered) ? remembered : undefined;
+    }
+    return { effort, preferences: preferences.length ? preferences : undefined };
+  }
+
   updateSession(id: string, input: SessionUpdate & { skillAssignment: SessionSkillAssignment }): SessionSkillAssignmentReceipt;
-  updateSession(id: string, input: SessionUpdate): void;
-  updateSession(id: string, input: SessionUpdate & { skillAssignment?: SessionSkillAssignment }): SessionSkillAssignmentReceipt | void;
-  updateSession(id: string, input: SessionUpdate & { skillAssignment?: SessionSkillAssignment }): SessionSkillAssignmentReceipt | void {
+  updateSession(id: string, input: SessionUpdate): SessionModelSelection;
+  updateSession(id: string, input: SessionUpdate & { skillAssignment?: SessionSkillAssignment }): SessionSkillAssignmentReceipt | SessionModelSelection;
+  updateSession(id: string, input: SessionUpdate & { skillAssignment?: SessionSkillAssignment }): SessionSkillAssignmentReceipt | SessionModelSelection {
     const session = this.session(id);
+    if (input.expectedProviderId !== undefined && input.expectedProviderId !== session.providerId) throw new Error('运行时已在其他窗口切换，请重新选择。');
     if (input.messageTarget) {
       if (Object.keys(input).some(key => key !== 'messageTarget')) throw new Error('请单独修改会话联系权限。');
       this.updateMessageTarget(session, input.messageTarget);
-      return;
+      return { modelId: session.modelId, effort: session.settings?.effort, updatedAt: session.updatedAt };
     }
     if (this.active.has(id)) throw new Error('请等当前任务结束后修改会话。');
     if (input.skillAssignment && input.settings?.skillIds !== undefined) throw new Error('不能同时替换全部 Skills 和修改单项 Skill 分派。');
@@ -580,15 +628,13 @@ export class WorkbenchEngine {
       if (!provider) throw new Error('这个 Agent 目前不可用。');
       modelId = selectProviderModel(provider, input.modelId ?? undefined);
     }
-    const efforts = provider?.models?.find(model => model.id === modelId)?.efforts ?? provider?.efforts;
-    if (typeof input.settings?.effort === 'string') {
-      if (!provider?.capabilities.effort) throw new Error('这个运行时未提供思考档设置。');
-      if (efforts && !efforts.includes(input.settings.effort)) throw new Error('所选模型不支持这个思考档。');
-    }
+    const { effort, preferences } = this.selectSessionEffort(session, provider, modelId, input.settings?.effort);
     const permission = input.settings?.permission;
     if (permission && !permissionTiersFor(provider?.capabilities).includes(permission)) throw new Error('这个运行时不支持所选权限档位。');
     const settings = { ...session.settings };
-    for (const key of ['effort', 'permission', 'skillIds'] as const) {
+    if (effort === undefined) delete settings.effort;
+    else settings.effort = effort;
+    for (const key of ['permission', 'skillIds'] as const) {
       const value = input.settings?.[key];
       if (value === null) delete settings[key];
       else if (value !== undefined) Object.assign(settings, { [key]: structuredClone(value) });
@@ -601,28 +647,29 @@ export class WorkbenchEngine {
       settings.skillIds = skillIds;
     }
     const modelChanged = modelId !== session.modelId;
-    if (modelChanged && input.settings?.effort === undefined && settings.effort && efforts && !efforts.includes(settings.effort)) delete settings.effort;
-    if (permission !== undefined && settings.permission !== 'full-access') {
-      for (const item of session.queue ?? []) {
-        if (item.settings?.permission !== 'full-access') continue;
-        if (settings.permission) item.settings.permission = settings.permission;
-        else delete item.settings.permission;
-      }
-    }
     const updatedAt = new Date(Math.max(Date.now(), Date.parse(session.updatedAt) + 1)).toISOString();
-    if (input.archived === true && this.hasProjectDeferredPrompt(session)) {
-      this.holdSessionQueue(session, archivedQueueNotice);
-      this.waitingForProject.delete(id);
-    }
-    Object.assign(session, {
-      modelId,
-      ...(input.settings || input.skillAssignment || modelChanged ? { settings } : {}),
-      ...(input.title !== undefined ? { title: input.title.trim() || '新会话' } : {}),
-      ...(input.archived !== undefined ? { archived: input.archived } : {}),
-      updatedAt,
+    const archivedQueue = input.archived === true && this.hasProjectDeferredPrompt(session);
+    this.store.atomic(() => {
+      if (permission !== undefined && settings.permission !== 'full-access') {
+        for (const item of session.queue ?? []) {
+          if (item.settings?.permission !== 'full-access') continue;
+          if (settings.permission) item.settings.permission = settings.permission;
+          else delete item.settings.permission;
+        }
+      }
+      if (archivedQueue) this.holdSessionQueue(session, archivedQueueNotice);
+      Object.assign(session, {
+        modelId, modelEfforts: preferences,
+        ...(input.settings || input.skillAssignment || modelChanged ? { settings } : {}),
+        ...(input.title !== undefined ? { title: input.title.trim() || '新会话' } : {}),
+        ...(input.archived !== undefined ? { archived: input.archived } : {}),
+        updatedAt,
+      });
     });
-    this.changed();
+    if (archivedQueue) this.waitingForProject.delete(id);
+    this.publish(this.liveSnapshot());
     if (input.skillAssignment) return { skillIds: [...(session.settings?.skillIds ?? [])], updatedAt: session.updatedAt };
+    return { modelId: session.modelId, effort: session.settings?.effort, updatedAt: session.updatedAt };
   }
 
   private updateMessageTarget(source: Session, { sessionId, enabled }: NonNullable<SessionUpdate['messageTarget']>): void {
@@ -705,8 +752,8 @@ export class WorkbenchEngine {
     const modelId = selectProviderModel(target, target.models?.find(model => model.id === previous?.modelId)?.id);
     const settings = { ...session.settings };
     if (permissionReset) settings.permission = 'review';
-    const efforts = target.models?.find(model => model.id === modelId)?.efforts ?? target.efforts;
-    if (target.capabilities.effort && previous?.effort && (!efforts || efforts.includes(previous.effort))) settings.effort = previous.effort;
+    const { effort, preferences } = this.selectSessionEffort(session, target, modelId, undefined, previous?.modelId === modelId ? previous?.effort : undefined);
+    if (effort !== undefined) settings.effort = effort;
     else delete settings.effort;
     const externalId = target.capabilities.resume ? previous?.externalId : undefined;
     const outgoing: ParkedSessionRuntime = {
@@ -723,6 +770,7 @@ export class WorkbenchEngine {
       session.providerId = targetProviderId;
       session.externalId = externalId;
       session.modelId = modelId;
+      session.modelEfforts = preferences;
       session.settings = settings;
       session.usage = previous?.usage;
       session.updatedAt = new Date(Math.max(Date.now(), Date.parse(session.updatedAt) + 1)).toISOString();
@@ -799,6 +847,15 @@ export class WorkbenchEngine {
     if (this.active.get(session.id) !== task || !task.executing || task.turnKey !== turnKey || (task.controller.signal.aborted && event.type !== 'delivery')) return;
     if (event.type === 'runtime-commands') {
       this.runtimeCommands.set(session.id, { providerId: session.providerId, commands: event.commands });
+      this.publish(this.liveSnapshot());
+      return;
+    }
+    if (event.type === 'runtime-model') {
+      const adapter = this.adapters.get(session.providerId);
+      if (!adapter) return;
+      const models = this.runtimeModels.get(session.id) ?? new Map();
+      models.set(runtimeModelKey(session.providerId, task.modelId), { adapter, model: event.model, requestedEffort: task.settings?.effort });
+      this.runtimeModels.set(session.id, models);
       this.publish(this.liveSnapshot());
       return;
     }

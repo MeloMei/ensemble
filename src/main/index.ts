@@ -19,6 +19,8 @@ import { capturePreviewElement, displayPreviewAnnotations, previewPointSchema } 
 import { previewEvidenceSourceSchema } from './draft-evidence-schema';
 import { captureWindow, WINDOW_CAPTURE_SHORTCUT } from './window-capture';
 import { EmbeddedBrowsers, browserBoundsSchema, browserCommandSchema } from './embedded-browser';
+import { Dictation, dictationHelperPath } from './dictation';
+import { dictationLanguages } from '../shared/dictation';
 
 app.setName(PRODUCT_NAME);
 app.setPath('userData', process.env.WORKBENCH_DATA_DIR ?? join(app.getPath('appData'), DATA_DIRECTORY_NAME));
@@ -59,6 +61,8 @@ const connection = new BackendConnectionTracker(state => window?.webContents.sen
 const cwdSchema = z.string().min(1).max(4096);
 const browserIdSchema = z.string().min(1).max(200);
 let windowCapture: AbortController | undefined;
+const dictation = new Dictation(app.isPackaged ? dictationHelperPath(process.execPath) : undefined);
+const dictationId = z.string().uuid();
 
 function withoutBrowserViews<T>(action: () => Promise<T>): Promise<T> {
   return browsers ? browsers.withoutViews(action) : action();
@@ -237,6 +241,22 @@ function registerIPC(commands: string[]): void {
   });
   handle('workbench:notification-status', () => notifications.status());
   handle('workbench:notification-preferences', () => preferences.notificationPreferences);
+  handle('workbench:dictation-status', () => ({ language: preferences.dictationLanguage, unavailable: dictation.unavailable() }));
+  handle('workbench:set-dictation-language', language => preferences.setDictationLanguage(z.enum(dictationLanguages).parse(language)));
+  handle('workbench:start-dictation', (inputId, inputSessionId) => {
+    const id = dictationId.parse(inputId);
+    const sessionId = z.string().min(1).max(256).parse(inputSessionId);
+    if (closeRequest || !latestSnapshot?.sessions.some(session => session.id === sessionId && !session.archived)) return 'failed';
+    const target = window!;
+    const locale = preferences.dictationLanguage === 'system'
+      ? app.getPreferredSystemLanguages()[0] ?? app.getLocale()
+      : preferences.dictationLanguage;
+    return dictation.start(id, locale, event => {
+      if (window === target && !target.isDestroyed() && !target.webContents.isDestroyed()) target.webContents.send('workbench:dictation-event', event);
+    });
+  });
+  handle('workbench:stop-dictation', id => dictation.stop(dictationId.parse(id)));
+  handle('workbench:cancel-dictation', id => dictation.cancel(dictationId.parse(id)));
   handle('workbench:capture-window', () => captureSelectedWindow());
   handle('workbench:cancel-window-capture', () => { windowCapture?.abort(); });
   handle('workbench:window-capture-shortcut', () => process.platform === 'darwin' && globalShortcut.isRegistered(WINDOW_CAPTURE_SHORTCUT));
@@ -321,6 +341,7 @@ async function createWindow(): Promise<void> {
   rendererReady = false;
   rendererConfirmed = false;
   const prepareClose = (intent: CloseRequest['intent'], complete?: CloseRequest['complete']) => {
+    dictation.cancel();
     if (closeRequest) { complete?.(updates.snapshot); return; }
     const request: CloseRequest = { id: randomUUID(), window: currentWindow, phase: 'saving', intent, complete };
     closeRequest = request;
@@ -342,17 +363,22 @@ async function createWindow(): Promise<void> {
   allowWindowClose = false;
   discardPendingWork = false;
   currentWindow.on('close', event => {
+    dictation.cancel();
     if (allowWindowClose) return;
     event.preventDefault();
     if (updates.snapshot.phase !== 'installing') prepareClose('close');
   });
   currentWindow.webContents.on('render-process-gone', (_event, details) => {
+    dictation.cancel();
     releaseViewSubscriptions();
     rendererFailure = details.reason;
     if (closeRequest?.window === currentWindow) finishCloseRequest(closeRequest, translate('native:close.rendererStopped', { reason: rendererFailure }));
   });
   currentWindow.webContents.on('did-start-navigation', details => {
-    if (details.isMainFrame && !details.isSameDocument) releaseViewSubscriptions();
+    if (details.isMainFrame && !details.isSameDocument) {
+      dictation.cancel();
+      releaseViewSubscriptions();
+    }
   });
   currentWindow.webContents.on('will-prevent-unload', event => {
     if (allowWindowClose && discardPendingWork) event.preventDefault();
@@ -374,6 +400,7 @@ async function createWindow(): Promise<void> {
   window.webContents.on('will-frame-navigate', blockSameOriginFrame);
   window.webContents.on('will-redirect', blockSameOriginFrame);
   currentWindow.on('closed', () => {
+    dictation.cancel();
     if (closeRequest?.window === currentWindow) {
       if (closeRequest.timer) clearTimeout(closeRequest.timer);
       closeRequest = undefined;
@@ -452,7 +479,7 @@ if (gotLock) void app.whenReady().then(async () => {
 app.on('second-instance', () => { if (window?.isMinimized()) window.restore(); window?.focus(); });
 app.on('activate', () => { if (!quitting && backend && !window) void createWindow(); });
 app.on('window-all-closed', () => app.quit());
-app.on('before-quit', () => { windowCapture?.abort(); });
+app.on('before-quit', () => { windowCapture?.abort(); dictation.cancel(); });
 app.on('will-quit', event => {
   if (updates && !updatesDisposed) {
     event.preventDefault();

@@ -81,6 +81,7 @@ const savedSchema = record({
   sessions: z.array(record({
     id: z.string(), title: z.string(), providerId: z.string(), modelId: z.string().optional(), cwd: z.string(), status: sessionStatus,
     settings: sessionSettingsSchema.optional(),
+    modelEfforts: z.array(z.object({ providerId: z.string(), modelId: z.string().optional(), effort: z.string() }).strict()).optional(),
     archived: z.boolean().optional(), parentSessionId: z.string().optional(), parentAttemptId: z.string().optional(),
     forkedFrom: z.object({ sessionId: z.string(), messageId: z.string().optional() }).strict().optional(),
     draft: promptInputSchema.optional(),

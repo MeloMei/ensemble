@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { dictationLanguages, type DictationLanguage } from '../shared/dictation';
 import type { LanguagePreference } from '../shared/i18n';
 import type { NotificationPreferences } from '../shared/types';
 
@@ -13,6 +14,7 @@ export class DesktopPreferences {
   private updates = true;
   private notifications = { ...defaultNotificationPreferences };
   private windowCapture = false;
+  private dictation: DictationLanguage = 'system';
   private writes: Promise<void> = Promise.resolve();
 
   constructor(private readonly dataPath: string) {}
@@ -20,6 +22,7 @@ export class DesktopPreferences {
   get languagePreference(): LanguagePreference { return this.preference; }
   get autoCheckUpdates(): boolean { return this.updates; }
   get notificationPreferences(): NotificationPreferences { return { ...this.notifications }; }
+  get dictationLanguage(): DictationLanguage { return this.dictation; }
   get windowCaptureShortcut(): boolean { return this.windowCapture; }
 
   async load(): Promise<void> {
@@ -27,6 +30,7 @@ export class DesktopPreferences {
     this.preference = record.languagePreference === 'en' || record.languagePreference === 'zh-CN' ? record.languagePreference : 'system';
     this.updates = record.autoCheckUpdates !== false;
     this.windowCapture = record.windowCaptureShortcut === true;
+    this.dictation = dictationLanguages.find(language => language === record.dictationLanguage) ?? 'system';
     if (record.notifications && typeof record.notifications === 'object') {
       for (const key of Object.keys(this.notifications) as (keyof NotificationPreferences)[]) {
         const value = (record.notifications as Record<string, unknown>)[key];
@@ -41,6 +45,10 @@ export class DesktopPreferences {
 
   setAutoCheckUpdates(enabled: boolean): Promise<void> {
     return this.save({ autoCheckUpdates: enabled }, () => { this.updates = enabled; });
+  }
+
+  setDictationLanguage(language: DictationLanguage): Promise<void> {
+    return this.save({ dictationLanguage: language }, () => { this.dictation = language; });
   }
 
   setWindowCaptureShortcut(enabled: boolean): Promise<void> {

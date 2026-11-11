@@ -1,3 +1,4 @@
+import type { DictationError, DictationEvent, DictationLanguage, DictationStatus } from './dictation';
 import type { CollaborationEvent, CollaborationState, CollaborationIdentity, SessionCollaboration } from './collaboration';
 import type { LanguagePreference, LanguageState } from './i18n';
 import type { DisplayText } from './display-text';
@@ -54,6 +55,7 @@ export interface ProviderInfo {
   declaredCapabilities?: ProviderCapabilities;
   models?: ProviderModel[];
   defaultModelId?: string;
+  nativeDefaultModelId?: string;
   efforts?: string[];
   acpRegistry?: AcpRegistryInstallation;
 }
@@ -231,6 +233,10 @@ export interface SessionRuntimeContinuity {
   seenMessageId?: string;
 }
 
+export interface RuntimeModelConfiguration { modelId: string; efforts: string[]; effort?: string }
+export interface SessionModelEffort { providerId: string; modelId?: string; effort: string }
+export interface SessionModelSelection { modelId?: string; effort?: string; updatedAt: string }
+
 export type SendPromptRejectionReason = 'workspace-unavailable' | 'runtime-changed';
 
 export interface Session {
@@ -241,6 +247,8 @@ export interface Session {
   cwd: string;
   status: SessionStatus;
   settings?: SessionSettings;
+  modelEfforts?: SessionModelEffort[];
+  runtimeModel?: RuntimeModelConfiguration;
   archived?: boolean;
   parentSessionId?: string;
   forkedFrom?: { sessionId: string; messageId?: string };
@@ -464,7 +472,7 @@ export interface WorkbenchAPI {
   switchSessionRuntime(sessionId: string, targetProviderId: string, expectedProviderId: string): Promise<void>;
   addSessionEvidence(sessionId: string, evidence: DraftEvidence): Promise<PromptInput>;
   updateSession(sessionId: string, input: SessionUpdate & { skillAssignment: SessionSkillAssignment }): Promise<SessionSkillAssignmentReceipt>;
-  updateSession(sessionId: string, input: SessionUpdate): Promise<void>;
+  updateSession(sessionId: string, input: SessionUpdate): Promise<SessionModelSelection>;
   forkSession(sessionId: string, beforeMessageId?: string, beside?: boolean): Promise<string>;
   continueSession(sessionId: string, target: SessionContinuationTarget): Promise<string>;
   askSideQuestion(sessionId: string, input: SideQuestionInput, commandId?: string): Promise<SideQuestionReceipt>;
@@ -488,6 +496,12 @@ export interface WorkbenchAPI {
   notificationStatus(): Promise<NotificationStatus>;
   notificationPreferences(): Promise<NotificationPreferences>;
   setNotificationPreferences(patch: Partial<NotificationPreferences>): Promise<NotificationPreferences>;
+  dictationStatus(): Promise<DictationStatus>;
+  setDictationLanguage(language: DictationLanguage): Promise<void>;
+  startDictation(id: string, sessionId: string): Promise<DictationError | undefined>;
+  stopDictation(id: string): Promise<void>;
+  cancelDictation(id: string): Promise<void>;
+  onDictationEvent(listener: (event: DictationEvent) => void): () => void;
   captureWindow(): Promise<PromptAttachment | undefined>;
   cancelWindowCapture(): Promise<void>;
   windowCaptureShortcut(): Promise<boolean>;
@@ -529,6 +543,7 @@ export interface SessionSettings { effort?: string; permission?: SessionPermissi
 export type SessionSettingsPatch = { [K in keyof SessionSettings]?: SessionSettings[K] | null };
 export interface SessionUpdate {
   title?: string; archived?: boolean; settings?: SessionSettingsPatch; modelId?: string | null;
+  expectedProviderId?: string;
   messageTarget?: { sessionId: string; enabled: boolean };
 }
 export interface SessionSkillAssignment { skillId: string; enabled: boolean }

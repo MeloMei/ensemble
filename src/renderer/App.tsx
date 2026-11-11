@@ -461,7 +461,7 @@ export function App() {
     const tabSession = tab?.kind === 'agent' ? sessions.find(item => item.id === tab.sessionId) : undefined;
     const tabTerminal = tab?.kind === 'terminal' ? snapshot?.terminals.find(item => item.id === tab.terminalId) : undefined;
     if (tabSession && workspace) return <SessionChat key={tabSession.id} session={tabSession} sessions={sessions} openSession={openSession} connected={connected} provider={providers.find(item => item.id === tabSession.providerId)} providers={providers} perform={perform} pending={pending} draft={drafts[tabSession.id] ?? tabSession.draft ?? { text: '' }} draftError={draftErrors[tabSession.id]} onDraftChange={(value, expected) => updateDraft(tabSession.id, value, expected)}
-      workspaceId={workspace.id} onChooseEvidence={connected ? setEvidenceTarget : undefined} onOpenEvidence={openEvidence}
+      workspaceId={workspace.id} dictationActive={tab?.id === activeTab?.id} onChooseEvidence={connected ? setEvidenceTarget : undefined} onOpenEvidence={openEvidence}
       onOpenSkillSettings={() => openSettings('project', { id: 'project-skills', section: 'project' })}
       attentionOpen={tab?.id === activeTab?.id && attentionOpen?.sessionId === tabSession.id ? attentionOpen : undefined}
       onAttentionOpened={onAttentionOpened} messageOpen={messageOpen?.sessionId === tabSession.id ? messageOpen : undefined}

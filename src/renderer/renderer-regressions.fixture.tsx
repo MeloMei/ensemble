@@ -27,6 +27,7 @@ import { FirstTask } from './FirstTask';
 import { EvidenceTargetDialog } from './DraftEvidence';
 import { WorkspaceToolsPanel } from './WorkspaceTools';
 import { ApplicationUpdateNotice, ApplicationUpdateSettings, useApplicationUpdates } from './ApplicationUpdates';
+import type { DictationEvent, DictationLanguage, DictationUnavailable } from '../shared/dictation';
 import type { AppUpdateState } from '../shared/application-updates';
 import { TerminalPane } from './TerminalPane';
 import { Terminal } from '@xterm/xterm';
@@ -152,6 +153,101 @@ async function graphReady(count: number) {
 }
 
 const cases: Record<string, () => Promise<void>> = {
+  'DICTATION: explicit start, permission denial, draft insertion and session cancellation': async () => {
+    const alternate = { ...session, id: 'alternate-dictation' };
+    const attachment = { id: 'dictation-attachment', name: 'dictation.txt', kind: 'text' as const, ownedPath: '/dictation.txt',
+      mimeType: 'text/plain', size: 4, sha256: 'b'.repeat(64) };
+    const drafts = new Map<string, PromptInput>([[session.id, { text: 'First last', attachments: [attachment] }], [alternate.id, { text: 'Other draft' }]]);
+    const starts: { id: string; sessionId: string }[] = [];
+    const stops: string[] = [];
+    const cancelled: string[] = [];
+    let sent = 0;
+    let listener: ((event: DictationEvent) => void) | undefined;
+    let unavailable: DictationUnavailable | undefined = 'helperMissing';
+    let language: DictationLanguage = 'system';
+    window.workbench = {
+      dictationStatus: async () => ({ language, unavailable }),
+      startDictation: async (id: string, sessionId: string) => { starts.push({ id, sessionId }); },
+      stopDictation: async (id: string) => { stops.push(id); },
+      cancelDictation: async (id: string) => { cancelled.push(id); },
+      onDictationEvent: (receive: typeof listener) => { listener = receive; return () => { listener = undefined; }; },
+      setDictationLanguage: async (value: DictationLanguage) => { language = value; },
+      sendPrompt: async () => { sent++; },
+      onLanguageChanged: () => () => {},
+      ...applicationUpdateApi,
+    } as unknown as Window['workbench'];
+
+    function Composer({ item, enabled }: { item: Session; enabled: boolean }) {
+      const [draft, setDraft] = React.useState(drafts.get(item.id)!);
+      return chat({ session: item, dictationActive: enabled, draft, onDraftChange: (next, expected) => {
+        if (expected && expected !== drafts.get(item.id)) return false;
+        drafts.set(item.id, next);
+        setDraft(next);
+        return true;
+      } });
+    }
+    const show = (item = session, enabled = true) => render(<Composer key={item.id} item={item} enabled={enabled} />);
+    const start = () => button('workspace:dictation.start');
+    const sendEvent = async (event: DictationEvent) => act(async () => { listener?.(event); await tick(); });
+    await show();
+    assert(start().getAttribute('aria-disabled') === 'true'
+      && document.getElementById(start().getAttribute('aria-describedby') ?? '')?.textContent === translate('workspace:dictation.error.helperMissing'),
+      'An installation without the native helper did not explain why dictation is unavailable');
+    await click('workspace:dictation.start');
+    assert(starts.length === 0, 'The unavailable control tried to start a helper');
+
+    unavailable = undefined;
+    await render(<LanguageProvider initial={{ preference: 'system', language: 'zh-CN' }}><SettingsDialog
+      snapshot={null} sessions={[session]} perform={perform} pending={new Set()} updates={idleUpdates} initialSection="general"
+      openSession={() => {}} onClose={() => {}} /></LanguageProvider>);
+    const select = document.querySelector<HTMLButtonElement>('[data-setting-anchor="dictation-language"] .app-select');
+    assert(select && !select.disabled, 'Available dictation did not expose a language setting');
+    await chooseOption(select, 'zh-CN');
+    assert(language === ('zh-CN' as DictationLanguage), 'The selected language was not sent to desktop preferences');
+    await show();
+    assert(starts.length === 0, 'Rendering or setting a language requested dictation');
+    await click('workspace:dictation.start');
+    const denied = starts.at(-1);
+    assert(denied?.sessionId === session.id, 'The recording was not bound to the open conversation');
+    await sendEvent({ id: denied.id, type: 'error', reason: 'microphonePermission' });
+    assert(document.querySelector('.composer-area [role=alert]')?.textContent?.includes(translate('workspace:dictation.error.microphonePermission')),
+      'Microphone denial was not shown in the composer');
+    assert(drafts.get(session.id)?.text === 'First last', 'Permission denial changed the draft');
+
+    const composer = input('.composer textarea') as HTMLTextAreaElement;
+    composer.focus();
+    composer.setSelectionRange(0, 5);
+    await click('workspace:dictation.start');
+    const recording = starts.at(-1)!;
+    await sendEvent({ id: recording.id, type: 'recording' });
+    const stop = button('workspace:dictation.stop');
+    stop.focus();
+    await click('workspace:dictation.stop');
+    assert(stops.at(-1) === recording.id, 'Stopping did not request a final result from the active helper');
+    await sendEvent({ id: recording.id, type: 'final', text: 'spoken' });
+    assert(drafts.get(session.id)?.text === 'First spoken last' && drafts.get(session.id)?.attachments?.[0] === attachment,
+      'Insertion overwrote selected text or dropped the existing attachment');
+    assert(document.activeElement === composer && composer.selectionStart === 'First spoken'.length && composer.selectionEnd === composer.selectionStart,
+      'Insertion did not return focus and the caret to the composer');
+    assert(sent === 0, 'Dictation automatically sent the draft');
+
+    await click('workspace:dictation.start');
+    const abandoned = starts.at(-1)!;
+    await sendEvent({ id: abandoned.id, type: 'recording' });
+    await click('workspace:dictation.stop');
+    await show(session, false);
+    assert(cancelled.includes(abandoned.id), 'Deactivating a still-mounted pane did not cancel the recording');
+    await show(alternate);
+    await sendEvent({ id: abandoned.id, type: 'final', text: 'late transcript' });
+    assert(drafts.get(session.id)?.text === 'First spoken last' && drafts.get(alternate.id)?.text === 'Other draft',
+      'A late result edited the previous or newly opened conversation');
+
+    await click('workspace:dictation.start');
+    const dismissed = starts.at(-1)!;
+    button('workspace:dictation.cancel').focus();
+    await click('workspace:dictation.cancel');
+    assert(cancelled.includes(dismissed.id) && document.activeElement === start(), 'Cancel did not release the helper and restore focus');
+  },
   'APPEARANCE: text, code typography and motion update live and survive a renderer restart': async () => {
     const storageKey = 'ensemble.appearance';
     const saved = localStorage.getItem(storageKey);
@@ -3264,11 +3360,13 @@ const cases: Record<string, () => Promise<void>> = {
     let sends = 0;
     let draftChanges = 0;
     const configuredProvider: ProviderInfo = { ...provider, capabilities: { ...provider.capabilities, permissionTiers: SESSION_PERMISSION_TIERS }, models: [
-      { id: 'model-a', name: 'Model A', free: false },
+      { id: 'model-a', name: 'Model A', free: false, efforts: ['low', 'high'] },
       { id: 'model-b', name: 'Alternate', free: false, efforts: ['low'] },
       { id: 'model-c', name: 'Fast model', free: true, efforts: [] },
     ] };
     const configuredSession: Session = { ...session, modelId: 'model-a' };
+    let savedSession = configuredSession;
+    const modelEfforts = new Map<string | undefined, string>([['model-a', 'low']]);
     const draft = { text: 'Keep this unfinished task', attachments: [{ id: 'attachment', name: 'note.txt', kind: 'text' as const, ownedPath: '/note.txt', mimeType: 'text/plain', size: 4, sha256: 'a'.repeat(64) }] };
     let settingsVisible = false;
     let receiveSession: React.Dispatch<React.SetStateAction<Session>>;
@@ -3320,17 +3418,25 @@ const cases: Record<string, () => Promise<void>> = {
         if (patch.skillAssignment) return { skillIds: ['skill'], updatedAt: '2026-11-04T01:00:00Z' };
         if (holdWrite) await holdWrite.promise;
         if (failWrite) throw new Error('fixture rejected the session settings');
-        const deliver = () => receiveSession(current => ({
-          ...current,
-          modelId: patch.modelId === undefined ? current.modelId : patch.modelId ?? undefined,
+        const modelId = patch.modelId === undefined ? savedSession.modelId : patch.modelId ?? undefined;
+        if (patch.settings?.effort === null) modelEfforts.delete(modelId);
+        else if (patch.settings?.effort !== undefined) modelEfforts.set(modelId, patch.settings.effort);
+        const effort = modelEfforts.get(modelId);
+        const updatedAt = new Date(Date.parse(savedSession.updatedAt) + 1).toISOString();
+        const saved = {
+          ...savedSession,
+          modelId, updatedAt,
           settings: {
-            ...current.settings,
-            permission: patch.settings?.permission ?? current.settings?.permission,
-            effort: patch.settings?.effort === undefined ? current.settings?.effort : patch.settings.effort ?? undefined,
+            ...savedSession.settings,
+            permission: patch.settings?.permission ?? savedSession.settings?.permission,
+            effort,
           },
-        }));
+        };
+        savedSession = saved;
+        const deliver = () => receiveSession(saved);
         if (delaySnapshot) deliverSnapshot = deliver;
         else deliver();
+        return { modelId, effort, updatedAt };
       },
     } as unknown as Window['workbench'];
     await show();
@@ -3428,7 +3534,9 @@ const cases: Record<string, () => Promise<void>> = {
     assert(persistentSlider.getAttribute('aria-valuetext') === translate('workspace:chat.effort.low'), 'ArrowRight did not select the next effort');
     await expand(); await choose(translate('workspace:chat.cliDefault')); await settle();
     assertStable('CLI default selection');
-    assert(persistentSlider.getAttribute('aria-valuetext') === translate('workspace:chat.effort.low'), 'The CLI default lost a compatible effort');
+    assert(persistentSlider.getAttribute('aria-valuetext') === translate('workspace:chat.runtimeDefault'), 'The first visit to the CLI default copied another model’s effort');
+    await expand(); await choose('Model A'); await settle();
+    assert(persistentSlider.getAttribute('aria-valuetext') === translate('workspace:chat.effort.high'), 'The model change ignored the authoritative saved effort');
     await act(async () => { persistentSlider.focus(); });
     await key('Home', 36); await settle();
     assert(persistentSlider.value === '0', 'Home did not restore the runtime default effort');
@@ -3436,9 +3544,10 @@ const cases: Record<string, () => Promise<void>> = {
     assert(picker() === persistentPanel && !slider() && !trigger().querySelector('.composer-model-effort'), 'A model without reasoning support displayed the effort control');
     await expand(); await choose('Fast model'); await settle();
     assert(JSON.stringify(writes) === JSON.stringify([
-      { settings: { permission: 'full-access' } }, { settings: { permission: 'read-only' } }, { settings: { effort: 'high' } },
-      { modelId: 'model-b', settings: { effort: null } }, { settings: { effort: 'low' } },
-      { modelId: null }, { settings: { effort: null } }, { modelId: 'model-c' },
+      { settings: { permission: 'full-access' } }, { settings: { permission: 'read-only' } }, { settings: { effort: 'high' }, expectedProviderId: 'codex' },
+      { modelId: 'model-b', expectedProviderId: 'codex' }, { settings: { effort: 'low' }, expectedProviderId: 'codex' },
+      { modelId: null, expectedProviderId: 'codex' }, { modelId: 'model-a', expectedProviderId: 'codex' },
+      { settings: { effort: null }, expectedProviderId: 'codex' }, { modelId: 'model-c', expectedProviderId: 'codex' },
     ]), `A stale or duplicate setting was sent: ${JSON.stringify(writes)}`);
     await expand();
     holdWrite = deferred<void>();

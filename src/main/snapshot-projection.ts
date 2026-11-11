@@ -42,11 +42,12 @@ export class SnapshotProjection {
         if (trace?.title.trim()) break;
       }
       const traceTitle = trace?.title.trim().replace(/\s+/g, ' ');
-      const { messages: _messages, ...metadata } = session;
+      const { messages: _messages, modelEfforts: _modelEfforts, ...metadata } = session;
       const summary = { ...metadata, messageCount: session.messages.length,
         attempts: session.attempts?.slice(-32).map(attempt => ({ ...attempt, prompt: '' })),
         draft: watched ? session.draft : undefined,
         runtimeCommands: watched ? session.runtimeCommands : undefined,
+        runtimeModel: watched ? session.runtimeModel : undefined,
         queue: watched ? session.queue : session.queue?.map(item => ({ ...item, input: { text: '' } })),
         composerActivity: watched ? sessionComposerActivity(session.messages) : undefined,
         latestTrace: trace && traceTitle ? {
