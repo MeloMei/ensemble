@@ -4,7 +4,7 @@ import { isAbsolute, relative, sep } from 'node:path';
 import { z } from 'zod';
 import type {
   AgentMail, AgentMessageSource, ApprovalInput, CollaborationCaller, CreateSessionInput, DraftEvidence, McpServerConfig, PromptInput, ProviderInfo,
-  ParkedSessionRuntime, QueuedPromptMoveResult, QueuedPromptSteerResult, RuntimeCommand, RuntimeModelConfiguration, SendPromptRejectionReason,
+  ParkedSessionRuntime, ProviderModelCatalog, QueuedPromptMoveResult, QueuedPromptSteerResult, RuntimeCommand, RuntimeModelConfiguration, SendPromptRejectionReason,
   Session, SessionAttempt, SessionCommandReceipt, SessionContinuationTarget, SessionModelSelection, SessionQueueItem, SessionSettings,
   SessionSkillAssignment, SessionSkillAssignmentReceipt, SessionStatus, SessionUpdate, SideQuestionInput, SideQuestionReceipt, Snapshot, TerminalInfo, Workflow,
   WorkflowInput, Workspace, WorkspaceManagement, WorkspaceSplitInput, WorkspaceTab,
@@ -26,6 +26,7 @@ import { attachmentLimitIssue, supportsPromptAttachment } from '../shared/prompt
 import { canMoveQueuedPrompt, canSteerQueuedPrompt } from '../shared/prompt-queue';
 import { permissionTiersFor } from '../shared/session-permissions';
 import { modelEffortChoices } from '../shared/model-efforts';
+import { providerForDirectory } from '../shared/provider-models';
 import { runtimeHandoff } from './runtime-handoff';
 import { sessionQueueReceipt, sessionTurnOutput } from './session-collaboration';
 import type { SessionHandoff } from '../shared/collaboration';
@@ -135,6 +136,7 @@ export class WorkbenchEngine {
   private pendingSteers = new Map<string, { itemId: string; done: Promise<QueuedPromptSteerResult> }>();
   private runtimeCommands = new Map<string, { providerId: string; commands: RuntimeCommand[] }>();
   private runtimeModels = new Map<string, Map<string, ObservedRuntimeModel>>();
+  private runtimeModelCatalogs = new WeakMap<ProviderAdapter, Map<string, ProviderModelCatalog>>();
   private providerAccountChanges = new Set<string>();
   private projectClaims = new Map<string, ProjectClaim>();
   private projectMutations = new Set<Promise<unknown>>();
@@ -232,6 +234,16 @@ export class WorkbenchEngine {
     if (this.providerAccountChanges.has(providerId)) throw new Error('此运行时正在变更账号，请完成后再提交任务。');
   }
 
+  private providerInfo(adapter: ProviderAdapter): ProviderInfo {
+    const catalogs = this.runtimeModelCatalogs.get(adapter);
+    return catalogs?.size ? { ...adapter.info, modelCatalogs: [...catalogs.values()] } : adapter.info;
+  }
+
+  private providerInDirectory(id: string, cwd: string): ProviderInfo | undefined {
+    const adapter = this.adapters.get(id);
+    return adapter && providerForDirectory(this.providerInfo(adapter), cwd);
+  }
+
   liveSnapshot(): Snapshot {
     const sessions = this.store.state.sessions.map(session => {
       const catalog = this.runtimeCommands.get(session.id);
@@ -239,7 +251,7 @@ export class WorkbenchEngine {
       const runtimeModel = this.reportedModel(session, session.modelId);
       return runtimeCommands || runtimeModel ? { ...session, runtimeModel, runtimeCommands } : session;
     });
-    const providers = [...this.adapters.values()].map(adapter => adapter.info).concat(this.unavailableProviders);
+    const providers = [...this.adapters.values()].map(adapter => this.providerInfo(adapter)).concat(this.unavailableProviders);
     return { ...this.store.state, sessions, providers, dataPath: this.store.path, pluginPath: this.pluginPath, pluginErrors: this.pluginErrors, terminals: this.terminals };
   }
 
@@ -462,12 +474,14 @@ export class WorkbenchEngine {
     const { commandId, ...payload } = input;
     const previous = previousSessionCommand<string>(this.store, 'create-session', commandId, payload);
     if (previous) return previous.result;
-    const provider = this.adapters.get(input.providerId)?.info;
-    if (!provider?.available) throw new Error('这个 Agent 目前不可用。');
-    const modelId = selectProviderModel(provider, input.modelId);
+    const detected = this.adapters.get(input.providerId)?.info;
+    if (!detected?.available) throw new Error('这个 Agent 目前不可用。');
+    if (input.location?.choice.kind === 'managed') selectProviderModel(detected, input.modelId);
     const cwd = await validateWorkspace(resolveDirectory ? await resolveDirectory() : input.cwd);
     await this.prepareExecutionKey(cwd); this.assertOpen();
-    if (!this.adapters.get(input.providerId)?.info.available) throw new Error('这个 Agent 目前不可用。');
+    const provider = this.providerInDirectory(input.providerId, cwd);
+    if (!provider?.available) throw new Error('这个 Agent 目前不可用。');
+    const modelId = selectProviderModel(provider, input.modelId);
     this.assertProjectAdmission(cwd);
     if (input.location && this.store.state.workspaces.some(workspace => workspace.cwd === cwd && workspace.archived)) {
       throw new Error(archivedProjectNotice);
@@ -506,7 +520,7 @@ export class WorkbenchEngine {
       const workspace = this.store.state.workspaces.find(item => item.cwd === source.cwd && !item.archived);
       const sourceTab = workspace?.tabs.find(tab => tab.kind === 'agent' && tab.sessionId === sourceId);
       if (!workspace || !sourceTab || source.archived) throw new Error('请在工作区打开原会话后再追问。');
-      const provider = this.adapters.get(source.providerId)?.info;
+      const provider = this.providerInDirectory(source.providerId, source.cwd);
       if (!provider?.available) throw new Error('这个 Agent 目前不可用。');
       const reference = source.messages.find(message => message.id === input.reference.messageId);
       const excerpt = input.reference.kind === 'answer'
@@ -583,7 +597,7 @@ export class WorkbenchEngine {
 
   private selectSessionEffort(session: Session, provider: ProviderInfo | undefined, modelId: string | undefined,
     explicit: string | null | undefined, legacy?: string) {
-    const currentProvider = this.adapters.get(session.providerId)?.info;
+    const currentProvider = this.providerInDirectory(session.providerId, session.cwd);
     const providerId = provider?.id ?? session.providerId;
     const sameRuntime = providerId === session.providerId;
     const switching = !sameRuntime || modelId !== session.modelId;
@@ -627,7 +641,7 @@ export class WorkbenchEngine {
     }
     if (this.active.has(id)) throw new Error('请等当前任务结束后修改会话。');
     if (input.skillAssignment && input.settings?.skillIds !== undefined) throw new Error('不能同时替换全部 Skills 和修改单项 Skill 分派。');
-    const provider = this.adapters.get(session.providerId)?.info;
+    const provider = this.providerInDirectory(session.providerId, session.cwd);
     let modelId = session.modelId;
     if (input.modelId !== undefined) {
       if (!provider) throw new Error('这个 Agent 目前不可用。');
@@ -744,7 +758,7 @@ export class WorkbenchEngine {
       || collaboration.runs.some(run => run.status === 'running' && isBound(run.definitionSnapshot))) {
       throw new Error('这个会话已绑定到协作任务，不能在原会话切换运行时。');
     }
-    const target = this.adapters.get(targetProviderId)?.info;
+    const target = this.providerInDirectory(targetProviderId, session.cwd);
     if (!target?.available) throw new Error('目标运行时目前不可用。');
     const currentPermission = session.settings?.permission;
     const permissionReset = currentPermission === 'full-access';
@@ -848,7 +862,7 @@ export class WorkbenchEngine {
     } finally { release(); }
   }
 
-  private acceptEvent(session: Session, task: LogicalTask, job: QueuedTurn, turnKey: string, event: ProviderEvent): void {
+  private acceptEvent(session: Session, task: LogicalTask, job: QueuedTurn, turnKey: string, adapter: ProviderAdapter, event: ProviderEvent): void {
     if (this.active.get(session.id) !== task || !task.executing || task.turnKey !== turnKey || (task.controller.signal.aborted && event.type !== 'delivery')) return;
     if (event.type === 'runtime-commands') {
       this.runtimeCommands.set(session.id, { providerId: session.providerId, commands: event.commands });
@@ -856,11 +870,22 @@ export class WorkbenchEngine {
       return;
     }
     if (event.type === 'runtime-model') {
-      const adapter = this.adapters.get(session.providerId);
-      if (!adapter) return;
+      if (this.adapters.get(session.providerId) !== adapter) return;
       const models = this.runtimeModels.get(session.id) ?? new Map();
       models.set(runtimeModelKey(session.providerId, task.modelId), { adapter, model: event.model, requestedEffort: task.settings?.effort });
       this.runtimeModels.set(session.id, models);
+      this.publish(this.liveSnapshot());
+      return;
+    }
+    if (event.type === 'runtime-model-catalog') {
+      if (this.adapters.get(session.providerId) !== adapter) return;
+      const catalogs = this.runtimeModelCatalogs.get(adapter) ?? new Map<string, ProviderModelCatalog>();
+      const previous = catalogs.get(session.cwd)?.models ?? [];
+      if (JSON.stringify(previous) === JSON.stringify(event.models)) return;
+      catalogs.delete(session.cwd);
+      if (event.models.length) catalogs.set(session.cwd, { cwd: session.cwd, models: event.models });
+      if (catalogs.size > 24) catalogs.delete(catalogs.keys().next().value!);
+      this.runtimeModelCatalogs.set(adapter, catalogs);
       this.publish(this.liveSnapshot());
       return;
     }
@@ -1429,7 +1454,7 @@ export class WorkbenchEngine {
       await adapter.run({ session: { ...structuredClone(session), modelId: task.modelId, settings: structuredClone(task.settings) }, prompt,
         userMessageId: job.userMessageId, attachments: enrichment?.attachments, mcpServers: enrichment?.mcpServers,
         signal: task.controller.signal,
-        emit: event => this.acceptEvent(session, task, job, turnKey, event),
+        emit: event => this.acceptEvent(session, task, job, turnKey, adapter, event),
         approve: (input, signal) => this.approve(session, input, signal ? AbortSignal.any([task.controller.signal, signal]) : task.controller.signal) });
       if (session.approvals.length && !task.controller.signal.aborted) throw new Error('Agent 在审批结束前退出。');
     } catch (error) { failure = error; }

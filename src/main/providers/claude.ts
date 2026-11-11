@@ -36,6 +36,32 @@ function object(value: unknown): ObjectValue {
 function errorOf(value: unknown): Error { return value instanceof Error ? value : new Error(String(value)); }
 function cancelled(): Error { const error = new Error('任务已取消'); error.name = 'AbortError'; return error; }
 
+function extendedContextBase(id: string): string | undefined {
+  return /^(.*)\[1m\]$/i.exec(id)?.[1]
+    ?? /^(claude-(?:haiku|sonnet|opus|fable|mythos)-\d+(?:-\d+)+)-1m$/.exec(id)?.[1];
+}
+
+function nativeClaudeModels(value: unknown): ProviderModel[] | undefined {
+  if (!Array.isArray(value)) return;
+  const models = new Map<string, ProviderModel>();
+  for (const raw of value.slice(0, 128)) {
+    if (!raw || typeof raw !== 'object') continue;
+    const { value: id, displayName, supportsEffort, supportedEffortLevels } = raw as ObjectValue;
+    if (typeof id !== 'string' || id.length > 256 || !/^[a-z\d][a-z\d._:/@+-]*(?:\[1m\])?$/i.test(id) || models.has(id)) continue;
+    const name = typeof displayName === 'string' && displayName.trim() && displayName.length <= 200 && !/[\p{Cc}]/u.test(displayName)
+      ? displayName : id;
+    const efforts = supportsEffort !== false && Array.isArray(supportedEffortLevels)
+      ? EFFORTS.filter(effort => supportedEffortLevels.includes(effort)) : [];
+    models.set(id, { id, name, free: false, efforts });
+  }
+  for (const model of models.values()) {
+    const baseId = extendedContextBase(model.id);
+    if (baseId) model.contextWindow = { tokens: 1_000_000,
+      ...(baseId !== 'default' && models.has(baseId) && !extendedContextBase(baseId) ? { baseModelId: baseId } : {}) };
+  }
+  return [...models.values()];
+}
+
 export async function configuredClaudeModels(settingsPath = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'settings.json')): Promise<ProviderModel[]> {
   try {
     const settings = object(JSON.parse(await readFile(settingsPath, 'utf8')));
@@ -469,8 +495,10 @@ async function runClaude(binary: string, context: TurnContext): Promise<void> {
       });
       context.signal.addEventListener('abort', onAbort, { once: true });
       if (context.signal.aborted) { onAbort(); return; }
-      void requestControl({ subtype: 'initialize', hooks: null }).then(() => {
+      void requestControl({ subtype: 'initialize', hooks: null }).then(response => {
         if (settled || cancelling) return;
+        const models = nativeClaudeModels(response.models);
+        if (models) context.emit({ type: 'runtime-model-catalog', models });
         initialized = true;
         const content: ObjectValue[] = [{ type: 'text', text: context.prompt }];
         for (const attachment of context.attachments ?? []) content.push(attachment.kind === 'image'

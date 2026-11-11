@@ -3,8 +3,9 @@ import * as Popover from '@radix-ui/react-popover';
 import { Check, ChevronDown, ChevronRight, Search } from 'lucide-react';
 import { useContext, useEffect, useId, useRef, useState, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { ProviderInfo, Session, SessionModelSelection, SessionUpdate } from '../shared/types';
+import type { ProviderInfo, ProviderModel, Session, SessionModelSelection, SessionUpdate } from '../shared/types';
 import { modelEffortChoices } from '../shared/model-efforts';
+import { providerForDirectory } from '../shared/provider-models';
 import { AgentIcon } from './AgentIcon';
 import { OverlayContext } from './overlays';
 import { defaultModelId, modelName } from './ui';
@@ -33,7 +34,7 @@ function sameSelection(left: Selection, right: Selection) {
   return left.modelId === right.modelId && left.effort === right.effort;
 }
 
-export function ComposerModelPicker({ session, provider, disabled, saving, hint, onChange }: ComposerModelPickerProps) {
+export function ComposerModelPicker({ session, provider: detected, disabled, saving, hint, onChange }: ComposerModelPickerProps) {
   const { t } = useTranslation('workspace');
   const { top } = useContext(OverlayContext);
   const titleId = useId();
@@ -52,12 +53,31 @@ export function ComposerModelPicker({ session, provider, disabled, saving, hint,
   // The write response and the session snapshot arrive on separate channels.
   const projecting = change !== null && (change.phase === 'writing' || (change.phase === 'accepted' && !snapshotAccepted));
   const selection = projecting ? change.next : authority;
+  const provider = providerForDirectory(detected, session.cwd);
   const providerName = provider?.name ?? session.providerId;
   const runtimeDefaultId = defaultModelId(provider);
   const models = provider?.models ?? [];
+  const selectedModel = models.find(model => model.id === selection.modelId);
+  const unavailable = selectedModel ? undefined : selection.modelId;
   const hasModels = models.length > 0;
-  const unavailable = models.some(model => model.id === selection.modelId) ? undefined : selection.modelId;
-  const modelLabel = selection.modelId ? modelName(provider, selection.modelId) : t('chat.modelDefault', { provider: providerName });
+  const baseId = selectedModel?.contextWindow?.baseModelId ?? selection.modelId;
+  const variantsByBase = new Map<string, ProviderModel[]>();
+  for (const model of models) {
+    const base = model.contextWindow?.baseModelId;
+    if (base) {
+      const variants = variantsByBase.get(base) ?? [];
+      variants.push(model);
+      variantsByBase.set(base, variants);
+    }
+  }
+  const variants = baseId ? variantsByBase.get(baseId) ?? [] : [];
+  const extendedContext = t('chat.contextWindow1m');
+  const contextStops = [t('chat.contextWindowDefault'), ...variants.map(model => variants.length > 1
+    ? t('chat.contextWindowVariant', { context: extendedContext, model: model.id }) : extendedContext)];
+  const contextIndex = variants.findIndex(model => model.id === selection.modelId) + 1;
+  const modelLabel = baseId
+    ? (selectedModel?.contextWindow ? t('chat.modelWithContext', { model: modelName(provider, baseId), context: extendedContext }) : modelName(provider, baseId))
+    : t('chat.modelDefault', { provider: providerName });
   const defaultLabel = runtimeDefaultId ? t('chat.defaultModelName', { model: modelName(provider, runtimeDefaultId) }) : t('chat.cliDefault');
   const observed = selection.modelId === authority.modelId ? session.runtimeModel : undefined;
   const efforts = modelEffortChoices(provider, selection.modelId, observed);
@@ -73,7 +93,8 @@ export function ComposerModelPicker({ session, provider, disabled, saving, hint,
   const matches = (...fields: string[]) => fields.some(field => field.toLocaleLowerCase().includes(normalizedQuery));
   const showDefault = matches(defaultLabel);
   const showUnavailable = unavailable && matches(unavailable);
-  const filteredModels = models.filter(model => matches(model.name, model.id));
+  const filteredModels = models.filter(model => !model.contextWindow?.baseModelId
+    && matches(model.name, model.id, ...(variantsByBase.get(model.id) ?? []).flatMap(variant => [variant.name, variant.id])));
 
   function setPickerOpen(next: boolean) {
     setOpen(next);
@@ -149,6 +170,12 @@ export function ComposerModelPicker({ session, provider, disabled, saving, hint,
             const effort = efforts[index - 1];
             if (effort !== selection.effort) update({ ...selection, effort }, { settings: { effort: effort ?? null } });
           }} />}
+        {baseId && variants.length > 0 && <DiscreteSlider label={t('chat.contextWindow')} stops={contextStops} value={contextIndex}
+          disabled={locked || blocked} animate={animate}
+          onCommit={index => {
+            const modelId = index === 0 ? baseId : variants[index - 1]?.id;
+            if (modelId && modelId !== selection.modelId) update({ modelId }, { modelId });
+          }} />}
         {hasModels && <div className="composer-model-catalog">
           <button ref={disclosure} className="composer-model-disclosure" type="button" aria-expanded={expanded}
             aria-controls={listId} aria-disabled={locked || undefined}
@@ -164,10 +191,10 @@ export function ComposerModelPicker({ session, provider, disabled, saving, hint,
             <div className="composer-model-options" style={{ '--model-catalog-rows': models.length + 1 + Number(Boolean(unavailable)) } as CSSProperties}>
               {showDefault && <ModelOption label={defaultLabel} selected={!selection.modelId} disabled={locked} onClick={() => chooseModel(undefined)} />}
               {showUnavailable && <ModelOption label={unavailable} description={t('chat.modelUnavailable')} selected disabled />}
-              {filteredModels.map(model => <ModelOption key={model.id} label={model.name} selected={model.id === selection.modelId}
-                description={model.free ? t('chat.modelFree') : session.providerId === 'codex' ? undefined : t('chat.modelMetered')}
+              {filteredModels.map(model => <ModelOption key={model.id} label={model.name} selected={model.id === baseId}
+                description={model.contextWindow ? extendedContext : model.free ? t('chat.modelFree') : session.providerId === 'codex' ? undefined : t('chat.modelMetered')}
                 tooltip={!model.free && session.providerId === 'codex' ? t('chat.modelAccount') : undefined}
-                disabled={locked} onClick={() => chooseModel(model.id)} />)}
+                disabled={locked} onClick={() => model.id === baseId ? collapse() : chooseModel(model.id)} />)}
               {!showDefault && !showUnavailable && !filteredModels.length && <p className="composer-model-empty" role="status">{t('chat.noMatchingModels')}</p>}
             </div>
           </div></div>
