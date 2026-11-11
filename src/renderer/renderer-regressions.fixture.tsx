@@ -3445,7 +3445,7 @@ const cases: Record<string, () => Promise<void>> = {
     assert(panes()[0] === firstPane && panes()[1] === secondPane
       && paneTitles() === `${otherSession.title}|${primarySession.title}`
       && source.getAttribute('aria-current') === 'page', 'Focusing the split tab mirrored or remounted the panes');
-    const divider = document.querySelector('[role=separator].split-handle')!;
+    const divider = panes()[0].parentElement!.querySelector('[role=separator].split-handle')!;
     assert(divider.getAttribute('aria-valuenow') === '60', 'Focus changed the physical pane ratio');
     await act(async () => { divider.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowRight' })); await tick(); });
     assert(writes.at(-1)?.[1].tabId === primary.id && writes.at(-1)?.[1].ratio === 0.65, 'The divider shortcut stopped updating the same physical ratio');
