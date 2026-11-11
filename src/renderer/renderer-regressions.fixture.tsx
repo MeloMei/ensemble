@@ -30,6 +30,7 @@ import type { AppUpdateState } from '../shared/application-updates';
 import { TerminalPane } from './TerminalPane';
 import { Terminal } from '@xterm/xterm';
 import { AppearanceProvider, initializeAppearance } from './appearance';
+import { ShortcutProvider } from './app-shortcuts';
 import { CodeEditor } from './CodeEditor';
 import { CodeBlock } from './ui-kit/CodeBlock';
 import { RollingText } from './ui-kit/RollingText';
@@ -90,7 +91,7 @@ let operations: Promise<void>[] = [];
 const perform: Perform = (_key, action) => { const operation = action().then(() => {}, error => { errors.push(String(error)); }); operations.push(operation); return operation; };
 async function render(element: ReactElement, reducedMotion: 'always' | 'user' = 'always') {
   const content = reducedMotion === 'always' ? <MotionConfig reducedMotion="always">{element}</MotionConfig> : element;
-  await act(async () => { root.render(<I18nextProvider i18n={i18n}><AppearanceProvider><OverlayProvider><TooltipProvider>{content}</TooltipProvider></OverlayProvider></AppearanceProvider></I18nextProvider>); await tick(); });
+  await act(async () => { root.render(<I18nextProvider i18n={i18n}><AppearanceProvider><ShortcutProvider><OverlayProvider><TooltipProvider>{content}</TooltipProvider></OverlayProvider></ShortcutProvider></AppearanceProvider></I18nextProvider>); await tick(); });
 }
 async function click(key: string) { await act(async () => { button(key).click(); await tick(); }); }
 async function settle() { await act(async () => { await Promise.all(operations); await tick(); }); }
@@ -239,6 +240,142 @@ const cases: Record<string, () => Promise<void>> = {
       initializeAppearance();
     }
   },
+  'APP-SHORTCUTS: recording, conflicts, restore and dispatch honor the current focus context': async () => {
+    const tab = { kind: 'agent' as const, id: 'shortcut-tab', sessionId: session.id };
+    const home = { ...workspace, tabs: [tab], activeTabId: tab.id };
+    const other = { ...workspace, id: 'shortcut-other', name: 'Shortcut destination', cwd: '/shortcut-other' };
+    const snapshot = { ...collaborationSnapshot([]), workspaces: [home, other], sessions: [session], providers: [provider] };
+    const storageKey = 'ensemble.shortcuts';
+    const saved = localStorage.getItem(storageKey);
+    localStorage.removeItem(storageKey);
+    const isMac = navigator.platform.startsWith('Mac');
+    const modifier = isMac ? { metaKey: true } : { ctrlKey: true };
+    const primary = isMac ? 'Meta' : 'Control';
+    const shifted = (key: string) => isMac ? `Shift+Meta+${key}` : `Control+Shift+${key}`;
+    const settings = () => document.querySelector('dialog[open] .settings-layout');
+    const palette = () => document.querySelector('dialog[open] .command-palette');
+    const heading = () => document.querySelector<HTMLElement>('.workspace-heading h1')!;
+    const row = (action: string) => document.querySelector<HTMLElement>(`[data-setting-anchor="shortcut-${action}"]`)!;
+    const recorder = (action: string) => row(action).querySelector<HTMLButtonElement>('.shortcut-recorder')!;
+    const aria = (key: string) => button(key).getAttribute('aria-keyshortcuts');
+    const performClick = (element: HTMLElement) => act(async () => { element.focus(); element.click(); await tick(); });
+    const press = async (key: string, target: EventTarget, options: KeyboardEventInit = {}, modifiers = modifier) => {
+      const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...modifiers, ...options });
+      await act(async () => { target.dispatchEvent(event); await tick(); });
+      return event.defaultPrevented;
+    };
+    const start = async (action: string) => {
+      const control = recorder(action);
+      if (control.getAttribute('aria-pressed') !== 'true') await performClick(control);
+      assert(document.activeElement === control && control.getAttribute('aria-pressed') === 'true', 'Shortcut recording did not focus its control');
+      return control;
+    };
+    const record = async (action: string, key: string, options?: KeyboardEventInit) => press(key, await start(action), options);
+    const restore = (action: string) => performClick(row(action).querySelector<HTMLButtonElement>('.icon-button')!);
+    const closeDialog = () => performClick(document.querySelector<HTMLButtonElement>('dialog[open] .modal-heading button')!);
+    const launch = () => render(<LanguageProvider initial={{ preference: 'en', language: 'en' }}>
+      <App />
+      <div style={{ position: 'absolute', width: 200, height: 180 }}>
+        <CodeEditor value="editor shortcut" location={{ path: 'shortcut.ts', line: 1 }} onChange={() => {}} />
+        <div className="terminal-pane" tabIndex={0} data-shortcut-terminal />
+      </div>
+    </LanguageProvider>);
+    try {
+      window.workbench = {
+        ...applicationUpdateApi, snapshot: async () => snapshot, subscribe: () => () => {},
+        getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
+        onLanguageChanged: () => () => {}, watchSessions: async () => {}, listFiles: async () => [], gitState: async () => ({ available: false }),
+        setUnsavedFiles: () => {}, saveSessionDraft: async () => {},
+      } as unknown as Window['workbench'];
+      await launch();
+      assert(await press(',', heading()) && settings(), 'The platform settings shortcut did not open Settings');
+      const search = input('.settings-search input');
+      await change(search, isMac ? 'Cmd+K' : 'Ctrl+K');
+      await press('Enter', search, { ctrlKey: false, metaKey: false });
+      assert(row('commandPalette').classList.contains('setting-search-highlight'), 'Settings search could not find the current shortcut');
+      const control = await start('commandPalette');
+      assert(!await press('k', control, { isComposing: true, shiftKey: true }) && control.getAttribute('aria-pressed') === 'true',
+        'The recorder handled an IME composition event');
+      await press(',', control);
+      assert(row('commandPalette').querySelector('[role=alert]')?.textContent?.includes('Settings')
+        && aria('shell:commandPalette.trigger') === `${primary}+K`, 'A conflict did not name the occupied action or preserved an invalid mapping');
+      await press('j', control);
+      assert(row('commandPalette').querySelector('[role=alert]')?.textContent?.includes(translate('shell:app.openSessionTerminal')),
+        'A fixed application shortcut did not identify its action');
+      await press('f', control);
+      assert(aria('shell:commandPalette.trigger') === `${primary}+F` && document.activeElement === control,
+        'Settings search intercepted a combination while the recorder was active');
+      await record('commandPalette', 'k', { shiftKey: true });
+      const cancelled = await start('commandPalette');
+      await press('Escape', cancelled);
+      assert(settings() && cancelled.getAttribute('aria-pressed') === 'false' && aria('shell:commandPalette.trigger') === shifted('K'),
+        'Esc closed Settings or changed the saved shortcut');
+      await record('visitBack', 'ArrowLeft', { shiftKey: true });
+      await record('visitForward', 'ArrowRight', { shiftKey: true });
+      await record('settings', 'k');
+      await record('toggleSidebar', 'b', { shiftKey: true });
+      await record('toggleFiles', 'e', { shiftKey: true });
+      await closeDialog();
+
+      assert(aria('shell:commandPalette.trigger') === shifted('K') && aria('shell:preferences.open') === `${primary}+K`
+        && aria('shell:app.visitBack') === shifted('ArrowLeft')
+        && button('shell:commandPalette.trigger').querySelector('kbd')?.textContent === (isMac ? '⇧⌘K' : 'Ctrl+Shift+K'),
+        'Visible shortcut hints did not follow the registered keys');
+      for (const selector of ['.composer textarea', '[data-shortcut-terminal]']) {
+        const field = document.querySelector<HTMLElement>(selector)!;
+        field.focus();
+        assert(!await press('k', field, { shiftKey: true }) && !palette(), `App dispatch intercepted ${selector}`);
+      }
+      const editor = EditorView.findFromDOM(document.querySelector('.cm-editor')!)!;
+      editor.focus();
+      assert(await press('k', editor.contentDOM, { shiftKey: true }) && editor.state.doc.length === 0 && !palette(),
+        'The app shortcut replaced the editor’s local Delete Line command');
+      assert(!await press('k', heading(), { isComposing: true, shiftKey: true }) && !palette(), 'App dispatch intercepted IME input');
+      await performClick(document.querySelector<HTMLButtonElement>(`[data-workspace-id="${home.id}"]`)!.parentElement!.querySelector<HTMLButtonElement>('.row-actions-trigger')!);
+      const menu = document.querySelector<HTMLElement>('[role=menu]:popover-open')!;
+      assert(menu && !await press('k', menu, { shiftKey: true }) && !palette(), 'App dispatch intercepted an open project menu');
+      await press('Escape', menu);
+      assert(await press('k', heading(), { shiftKey: true }) && palette(), 'The remapped palette did not open');
+      assert(!await press('k', input('.command-palette input')) && !settings(), 'Another app shortcut interrupted the palette dialog');
+      await closeDialog();
+      await performClick(document.querySelector<HTMLButtonElement>(`[data-workspace-id="${other.id}"]`)!);
+      const back = button('shell:app.visitBack');
+      await act(async () => {
+        back.focus();
+        back.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerType: 'mouse' }));
+        await tick();
+      });
+      await waitFor(() => [...document.querySelectorAll('.ensemble-tooltip')].some(item => item.textContent?.includes('←')),
+        () => `The back button tooltip did not display the remapped key (disabled=${back.disabled}, focused=${document.activeElement === back})`);
+      assert(heading().textContent === other.name && await press('ArrowLeft', heading(), { shiftKey: true }) && heading().textContent === home.name,
+        'Remapped Back did not restore the previous project');
+      assert(await press('ArrowRight', heading(), { shiftKey: true }) && heading().textContent === other.name,
+        'Remapped Forward did not restore the next project');
+      assert(await press('b', heading(), { shiftKey: true }) && document.querySelector<HTMLElement>('.workspace-sidebar')?.hidden,
+        'The recorded sidebar action did not toggle the sidebar');
+      await press('b', heading(), { shiftKey: true });
+      const files = button('shell:app.hideFiles');
+      assert(await press('e', heading(), { shiftKey: true }) && files.getAttribute('aria-pressed') === 'false', 'The recorded file action did not toggle the file panel');
+
+      await act(async () => { root.render(null); await tick(); });
+      await launch();
+      assert(await press('k', heading()) && settings() && aria('shell:commandPalette.trigger') === shifted('K'), 'Custom shortcuts did not survive a renderer restart');
+      await click('shell:shortcuts.title');
+      await restore('visitBack');
+      assert(aria('shell:app.visitBack') === `${primary}+[` && aria('shell:app.visitForward') === shifted('ArrowRight'),
+        'Restoring one shortcut changed another shortcut or did not restore the platform default');
+      await restore('commandPalette');
+      assert(row('commandPalette').querySelector('[role=alert]')?.textContent?.includes('Settings')
+        && aria('shell:commandPalette.trigger') === shifted('K'), 'Restoring a conflicting default overwrote another action');
+      await click('shell:shortcuts.restoreAll');
+      assert(aria('shell:commandPalette.trigger') === `${primary}+K` && aria('shell:preferences.open') === `${primary}+,`
+        && aria('shell:app.visitForward') === `${primary}+]` && !aria('shell:app.hideSidebar'), 'Restore all did not atomically reset the registry');
+    } finally {
+      await act(async () => { root.render(null); await tick(); });
+      if (saved === null) localStorage.removeItem(storageKey);
+      else localStorage.setItem(storageKey, saved);
+    }
+  },
   'VISIT-HISTORY: cross-project traversal returns to the active split and conversation reading position': async () => {
     const source: Session = { ...session, id: 'visits-source', title: 'Original session',
       draft: { text: 'Preserved draft' }, messages: messageRange(0, 100) };
@@ -301,7 +438,7 @@ const cases: Record<string, () => Promise<void>> = {
     await act(async () => { document.querySelector<HTMLButtonElement>(`[data-workspace-id="${other.id}"]`)!.click(); await tick(); });
     await click('shell:app.history');
     const key = (value: string) => act(async () => {
-      window.dispatchEvent(new KeyboardEvent('keydown', { key: value, metaKey: true, cancelable: true }));
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: value, ...(navigator.platform.startsWith('Mac') ? { metaKey: true } : { ctrlKey: true }), cancelable: true }));
       await tick();
     });
     await key('[');
@@ -349,7 +486,7 @@ const cases: Record<string, () => Promise<void>> = {
     } as unknown as Window['workbench'];
     await render(<LanguageProvider initial={{ preference: 'en', language: 'en' }}><App /></LanguageProvider>);
     const shortcut = (isComposing = false) => act(async () => {
-      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', metaKey: true, isComposing, cancelable: true }));
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', ...(navigator.platform.startsWith('Mac') ? { metaKey: true } : { ctrlKey: true }), isComposing, cancelable: true }));
       await tick();
     });
     const modal = () => document.querySelector<HTMLDialogElement>('dialog[open]');

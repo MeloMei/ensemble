@@ -18,7 +18,7 @@
 .settings-project-empty { color: var(--muted); font-size: var(--font-size-12); }
 .settings-appearance { display: grid; }
 .appearance-options { margin-bottom: 10px; }
-.appearance-setting-row { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 8px 16px; padding: 9px 6px; border-bottom: 1px solid var(--border); font-size: var(--font-size-12); }
+.appearance-setting-row, .shortcut-setting-row { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 8px 16px; padding: 9px 6px; border-bottom: 1px solid var(--border); font-size: var(--font-size-12); }
 .appearance-setting-row .app-select { width: min(100%, 180px); }
 .appearance-setting-row small { display: block; margin-top: 4px; color: var(--muted); font-size: var(--font-size-11); line-height: 1.5; }
 .settings-panel .language-settings { margin-bottom: 24px; }
@@ -54,3 +54,8 @@
 .custom-acp-row { display: flex; align-items: center; gap: 8px; }
 .custom-acp-row input { flex: 1; min-width: 0; }
 .custom-acp-row button { flex: 0 0 auto; }
+.shortcut-settings-heading { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+.shortcut-setting-actions { display: flex; align-items: center; gap: 6px; }
+.shortcut-recorder { min-width: 108px; }
+.shortcut-recorder[aria-pressed=true] { border-color: var(--accent); }
+.shortcut-setting-error { flex: 1 0 100%; color: var(--danger); font-size: var(--font-size-11); }

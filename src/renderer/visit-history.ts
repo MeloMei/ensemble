@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 
 export type Visit =
   | { page: 'workspace'; workspaceId: string | null; tabId: string | null; sessionId?: string }
@@ -70,16 +70,5 @@ export function useVisitHistory(current: Visit | undefined, reachable: (visit: V
   };
   const canBack = enabled && !destination && Boolean(next(-1));
   const canForward = enabled && !destination && Boolean(next(1));
-  useEffect(() => {
-    const handleKey = (event: KeyboardEvent) => {
-      if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.isComposing
-        || document.querySelector('dialog[open]')) return;
-      if (event.key === '[' && canBack) { event.preventDefault(); move(-1); }
-      if (event.key === ']' && canForward) { event.preventDefault(); move(1); }
-    };
-    window.addEventListener('keydown', handleKey, true);
-    return () => window.removeEventListener('keydown', handleKey, true);
-  });
-
   return { canBack, canForward, back: () => move(-1), forward: () => move(1) };
 }

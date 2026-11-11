@@ -2,6 +2,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { AppearanceProvider, initializeAppearance } from './appearance';
+import { ShortcutProvider } from './app-shortcuts';
 import { OverlayProvider } from './overlays';
 import { TooltipProvider } from './Tooltip';
 import { LanguageProvider } from './language';
@@ -16,7 +17,7 @@ async function start() {
   await initializeI18n(language.language);
   document.documentElement.lang = language.language;
   createRoot(document.getElementById('root')!).render(
-    <React.StrictMode><LanguageProvider initial={language}><AppearanceProvider><OverlayProvider><TooltipProvider><App /></TooltipProvider></OverlayProvider></AppearanceProvider></LanguageProvider></React.StrictMode>,
+    <React.StrictMode><LanguageProvider initial={language}><AppearanceProvider><ShortcutProvider><OverlayProvider><TooltipProvider><App /></TooltipProvider></OverlayProvider></ShortcutProvider></AppearanceProvider></LanguageProvider></React.StrictMode>,
   );
 }
 void start().catch(error => {
