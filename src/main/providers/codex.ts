@@ -70,7 +70,7 @@ class CodexSessionConnection {
   }
 
   initialize(signal: AbortSignal): Promise<void> {
-    return this.initialization ??= initialize(this.rpc, signal);
+    return this.initialization ??= initializeCodex(this.rpc, signal);
   }
 
   async close(): Promise<void> {
@@ -106,7 +106,7 @@ function object(value: unknown): JsonObject {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : {};
 }
 
-async function initialize(rpc: JsonRpcProcess, signal?: AbortSignal): Promise<void> {
+export async function initializeCodex(rpc: JsonRpcProcess, signal?: AbortSignal): Promise<void> {
   await rpc.request('initialize', { clientInfo: CLIENT_INFO, capabilities: { experimentalApi: true } }, { signal });
   rpc.notify('initialized');
 }
@@ -140,7 +140,7 @@ export async function probeCodexConnection(binary?: string): Promise<CodexConnec
   if (!resolved) throw new Error('没有找到 Codex CLI，请安装 Codex 或设置 CODEX_BINARY');
   const rpc = new JsonRpcProcess({ command: resolved, args: ['app-server', '--listen', 'stdio://'] });
   try {
-    await initialize(rpc);
+    await initializeCodex(rpc);
     const account = await rpc.request<{ account: { type?: string } | null; requiresOpenaiAuth: boolean }>(
       'account/read', { refreshToken: false });
     const models = (await modelCatalog(rpc)).map(model => ({ id: model.id, isDefault: model.isDefault }));
@@ -156,6 +156,7 @@ export async function probeCodexConnection(binary?: string): Promise<CodexConnec
 
 export interface CodexProvider extends ProviderAdapter {
   refreshInfo(): Promise<void>;
+  resetAccountConnections(): Promise<void>;
 }
 
 export async function createCodexProvider(findManagedBinary?: () => Promise<string | undefined>): Promise<CodexProvider> {
@@ -188,7 +189,7 @@ export async function createCodexProvider(findManagedBinary?: () => Promise<stri
           detail = `${version} · ${binary}`;
           detailI18n = undefined;
           const rpc = new JsonRpcProcess({ command: binary, args: ['app-server', '--listen', 'stdio://'] });
-          try { protocolReady = false; await initialize(rpc); protocolReady = true; catalogReady = false; catalog = await modelCatalog(rpc); catalogReady = true; }
+          try { protocolReady = false; await initializeCodex(rpc); protocolReady = true; catalogReady = false; catalog = await modelCatalog(rpc); catalogReady = true; }
           finally { await rpc.close(); }
         } catch (error) { detail = `Codex CLI 无法运行：${asError(error).message}`; detailI18n = { key: 'runtime:detection.cannotRun', values: { provider: 'Codex CLI', reason: asError(error).message } }; }
       }
@@ -197,6 +198,11 @@ export async function createCodexProvider(findManagedBinary?: () => Promise<stri
       provider.info = { ...provider.info, available: Boolean(binary && version), detail, detailI18n, models: models.length ? models : undefined,
         health: discoveryHealth({ binary: Boolean(binary), protocol: protocolReady, catalog: catalogReady, source: 'codex-app-server' }),
         efforts: models.find(model => catalog.find(native => native.id === model.id)?.isDefault)?.efforts };
+    },
+    async resetAccountConnections() {
+      const idle = [...sessions].filter(([, connection]) => !connection.handlers);
+      for (const [id] of idle) sessions.delete(id);
+      await Promise.all(idle.map(([, connection]) => connection.close()));
     },
     async run(context) {
       let prepared = false;
@@ -233,7 +239,7 @@ export async function createCodexProvider(findManagedBinary?: () => Promise<stri
         status: 'unknown', reason: '缺少可用的 Codex 原生会话，无法核对。' }));
       const rpc = new JsonRpcProcess({ command: binary, args: ['app-server', '--listen', 'stdio://'], cwd: session.cwd });
       try {
-        await initialize(rpc);
+        await initializeCodex(rpc);
         return await reconcileCodexDelivery(rpc, session.externalId, deliveries);
       } catch (error) {
         return deliveries.map(delivery => ({ clientUserMessageId: delivery.clientUserMessageId, status: 'unknown',

@@ -4853,6 +4853,38 @@ const cases: Record<string, () => Promise<void>> = {
     await waitFor(() => Boolean(watched.length && watched.at(-1)?.length === 0), 'Closing retained history did not unsubscribe its session');
     assert(!document.querySelector('.chat-pane-readonly') && creations === 0 && openedTabs === 0 && sends === 0, 'Reading retained history created a workspace/tab or sent a prompt');
   },
+  'RUNTIME-ACCOUNT: native sign-in and sign-out surface their own status': async () => {
+    const codex = { ...provider, id: 'codex', available: true };
+    const requests: string[] = [];
+    let done = deferred<void>();
+    let native: import('../shared/types').NativeRuntimeAccount = { status: 'signed-out' };
+    window.workbench = {
+      providerHealth: async () => [codex], runtimeAccount: async () => native,
+      signInRuntime: async (id: string, method: string) => {
+        requests.push(`${id}:${method}`);
+        native = { status: 'signed-out', phase: 'waiting', challenge: { url: 'https://auth.openai.com/codex/device', code: 'ABCD-1234' } };
+        await done.promise;
+      },
+      cancelRuntimeSignIn: async () => { native = { status: 'signed-out', phase: 'cancelled' }; done.resolve(); },
+      signOutRuntime: async () => { requests.push('sign-out'); native = { status: 'signed-out' }; },
+    } as unknown as Window['workbench'];
+    const snapshot: Snapshot = { ...collaborationSnapshot([]), providers: [codex] };
+    await render(<ProvidersContent snapshot={snapshot} perform={perform} pending={new Set()} />);
+    await click('shell:provider.accountDevice');
+    await waitFor(() => document.querySelector<HTMLAnchorElement>('.provider-account-actions a')?.href === 'https://auth.openai.com/codex/device', 'Device verification link did not appear');
+    assert(document.querySelector('.provider-account-actions code')?.textContent === 'ABCD-1234', 'Device code was omitted');
+    await click('shell:common.cancel');
+    await waitFor(() => document.querySelector('.provider-account [role=status]')?.textContent === translate('shell:provider.accountCancelled'), 'Cancellation status was overwritten');
+    assert(!document.querySelector('.provider-account-actions code'), 'The cancelled device code remained visible');
+    done = deferred<void>();
+    await click('shell:provider.accountDevice');
+    await act(async () => { native = { status: 'signed-in', label: 'fixture@example.invalid' }; done.resolve(); await tick(); });
+    await waitFor(() => Boolean(document.querySelector('.provider-account')?.textContent?.includes('fixture@example.invalid')), 'Native account status did not update');
+    await click('shell:provider.accountSignOut');
+    assert(Boolean(document.querySelector('dialog[open]')) && !requests.includes('sign-out'), 'Opening confirmation signed out immediately');
+    await act(async () => { document.querySelector<HTMLButtonElement>('dialog[open] .modal-actions .danger')!.click(); await tick(); });
+    await waitFor(() => Boolean(document.querySelector('.provider-account')?.textContent?.includes(translate('shell:provider.accountStatus.signed-out'))), 'Sign-out did not update account status');
+  },
   'RUNTIME-INSTALL: missing runtime can install, cancel, retry and show detection': async () => {
     const missing = { ...provider, id: 'codex', available: false };
     const requests: string[] = [];

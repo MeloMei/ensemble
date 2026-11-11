@@ -74,6 +74,9 @@
 .provider-card.unavailable { background: transparent; }
 .provider-install-action { display: grid; justify-items: start; gap: 6px; margin-block: 10px; font-size: var(--font-size-12); color: var(--muted); }
 .provider-install-action p[role=status] { display: flex; align-items: center; gap: 5px; }
+.provider-account { display: grid; gap: 7px; margin-block: 10px; color: var(--muted); font-size: var(--font-size-12); }
+.provider-account-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.provider-account p[role=status], .provider-account-actions a { display: flex; align-items: center; gap: 5px; }
 .provider-card-heading { display: flex; align-items: center; gap: 10px; }
 .provider-icon { display: grid; flex-shrink: 0; place-items: center; width: 32px; height: 32px; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--selected); color: var(--muted); }
 .unavailable .provider-icon { background: transparent; color: var(--dim); }

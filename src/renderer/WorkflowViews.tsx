@@ -13,6 +13,7 @@ import { DirectoryField, IconButton, ModelField, ProviderSelect, Status, default
 import { motionMessageFadeUp } from './vendor/open-claude-ui/ClaudeMotionPresets';
 import { RuntimeHealth, useRuntimeHealth } from './RuntimeHealth';
 import { RuntimeInstallAction, useRuntimeInstalls } from './RuntimeInstall';
+import { RuntimeAccount } from './RuntimeAccount';
 import { ExecutionGraph, graphNode, edgeFor, type GraphSelection } from './ExecutionGraph';
 import { copyGraphView } from './graph-view-state';
 import { workflowDependencies, setWorkflowDependency, removeWorkflowDependency, removeWorkflowStep, type WorkflowDependency } from './workflow-graph';
@@ -319,6 +320,7 @@ export function ProvidersContent({ snapshot, perform, pending }: ProvidersProps)
       <RuntimeHealth provider={provider} loading={health.loading} />
       {install && <RuntimeInstallAction state={install} available={provider.available} busy={runtimeInstalls.busy}
         install={() => runtimeInstalls.install(provider.id)} cancel={() => runtimeInstalls.cancel(provider.id)} />}
+      {provider.available && (provider.id === 'codex' || provider.id === 'claude') && <RuntimeAccount id={provider.id} name={provider.name} perform={perform} />}
       <ProviderGuides provider={provider} />
       {provider.source === 'acp' && <button type="button" className="button subtle" disabled={pending.has(`remove-acp:${provider.id}`)}
         onClick={() => void perform(`remove-acp:${provider.id}`, () => window.workbench.removeCustomAcp(provider.id))}>{t('provider.acpRemove')}</button>}
