@@ -8,9 +8,10 @@ import type { PromptAttachment } from '../shared/types';
 import type { LoadedPromptAttachment } from './providers/types';
 import { sanitizeAttachmentName } from './vendor/orca/attachment-name';
 import { ATTACHMENT_LIMITS } from '../shared/prompt-attachments';
+import { rasterImageMimeFromPath } from '../shared/raster-image';
+import { detectRasterImageMime } from './raster-image';
 
 const TEXT_EXTENSIONS = new Set(['', '.txt', '.md', '.mdx', '.json', '.jsonl', '.yaml', '.yml', '.toml', '.xml', '.html', '.htm', '.css', '.scss', '.less', '.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.py', '.rs', '.go', '.java', '.kt', '.swift', '.c', '.h', '.cpp', '.hpp', '.sh', '.bash', '.zsh', '.sql', '.csv', '.log', '.ini', '.conf', '.env', '.gitignore', '.dockerignore']);
-const IMAGE_EXTENSIONS = new Map([['.png', 'image/png'], ['.jpg', 'image/jpeg'], ['.jpeg', 'image/jpeg'], ['.gif', 'image/gif'], ['.webp', 'image/webp']]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export const attachmentMetadataSchema = z.object({
@@ -20,14 +21,6 @@ export const attachmentMetadataSchema = z.object({
 }).strict();
 
 function hash(data: Buffer): string { return createHash('sha256').update(data).digest('hex'); }
-function imageMime(data: Buffer): string | undefined {
-  if (data.length >= 24 && data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) && data.subarray(12, 16).toString() === 'IHDR') return 'image/png';
-  if (data.length >= 3 && data[0] === 255 && data[1] === 216 && data[2] === 255) return 'image/jpeg';
-  if (data.length >= 10 && ['GIF87a', 'GIF89a'].includes(data.subarray(0, 6).toString())) return 'image/gif';
-  if (data.length >= 12 && data.subarray(0, 4).toString() === 'RIFF' && data.subarray(8, 12).toString() === 'WEBP') return 'image/webp';
-  return undefined;
-}
-
 async function readRegularFile(file: string, limit: number): Promise<Buffer> {
   const handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   try {
@@ -48,9 +41,10 @@ async function readRegularFile(file: string, limit: number): Promise<Buffer> {
 
 function classify(name: string, data: Buffer): Pick<LoadedPromptAttachment, 'kind' | 'mimeType' | 'text'> {
   const extension = path.extname(name).toLowerCase();
-  const mimeType = imageMime(data);
-  if (IMAGE_EXTENSIONS.has(extension) || mimeType) {
-    if (!mimeType || (IMAGE_EXTENSIONS.has(extension) && IMAGE_EXTENSIONS.get(extension) !== mimeType)) throw new Error('图片格式与内容不一致。');
+  const expected = rasterImageMimeFromPath(name);
+  const mimeType = detectRasterImageMime(data);
+  if (expected || mimeType) {
+    if (!mimeType || (expected && expected !== mimeType)) throw new Error('图片格式与内容不一致。');
     if (data.length > ATTACHMENT_LIMITS.imageBytes) throw new Error(`图片超过 ${ATTACHMENT_LIMITS.imageBytes / 1024 / 1024} MiB 限制。`);
     return { kind: 'image', mimeType };
   }

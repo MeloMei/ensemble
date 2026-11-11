@@ -7,7 +7,7 @@ import { I18nextProvider } from 'react-i18next';
 import { MotionConfig, MotionConfigContext } from 'framer-motion';
 import { EditorView } from '@codemirror/view';
 import { i18n, translate } from '../shared/i18n';
-import type { DiagnosticEntry, FileContent, McpSettingsView, Message, PromptInput, ProviderInfo, Session, Snapshot, UnsavedFileSummary, Workflow, WorkflowInput, Workspace, WorkspaceManagement } from '../shared/types';
+import type { DiagnosticEntry, FileContent, FileImage, McpSettingsView, Message, PromptInput, ProviderInfo, Session, Snapshot, UnsavedFileSummary, Workflow, WorkflowInput, Workspace, WorkspaceManagement } from '../shared/types';
 import type { BackendConnectionState, SessionHistoryWindow } from '../shared/backend';
 import { SESSION_PERMISSION_TIERS, type SessionPermission } from '../shared/session-permissions';
 import { SettingsDialog } from './SettingsDialog';
@@ -1019,6 +1019,106 @@ const cases: Record<string, () => Promise<void>> = {
     } finally {
       delayed.resolve(createFile(delayedPath, 'Cleanup'));
       setVisibility(false);
+      if (visibility) Object.defineProperty(document, 'visibilityState', visibility); else Reflect.deleteProperty(document, 'visibilityState');
+      if (focus) Object.defineProperty(document, 'hasFocus', focus); else Reflect.deleteProperty(document, 'hasFocus');
+      if (preferences === null) localStorage.removeItem(key); else localStorage.setItem(key, preferences);
+    }
+  },
+  'FILE-PREVIEWS: Markdown follows the draft and raster tabs stay read-only': async () => {
+    const key = 'ensemble.file-editor';
+    const preferences = localStorage.getItem(key);
+    localStorage.removeItem(key);
+    const visibility = Object.getOwnPropertyDescriptor(document, 'visibilityState');
+    const focus = Object.getOwnPropertyDescriptor(document, 'hasFocus');
+    let visible = false;
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visible ? 'visible' : 'hidden' });
+    Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => true });
+    const project = { ...workspace, id: 'file-previews' };
+    const note = 'note.md', picture = 'picture.PNG', binary = 'unknown.bin';
+    const markdown = [
+      '# Original heading', '**Draft body**',
+      '![Remote image description](https://example.invalid/asset.png)',
+      '<img src="https://example.invalid/raw.png" onerror="alert(1)">',
+      '<script>window.renderedMarkdownScript = true</script>',
+      '[Read more](https://example.invalid/guide) [Unsafe link](javascript:alert%281%29)',
+    ].join('\n\n');
+    let contents: FileContent = { path: note, content: markdown, language: 'markdown', size: markdown.length, revision: 'markdown-r0' };
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII=';
+    const reads: string[] = [];
+    const imageReads: string[] = [];
+    let summary: UnsavedFileSummary = { count: 0, names: [] };
+    window.workbench = {
+      listFiles: async () => [note, picture, binary].map(path => ({ path, name: path, kind: 'file', size: 0 })),
+      gitState: async () => ({ available: false }),
+      readFile: async (_id: string, path: string) => {
+        reads.push(path);
+        if (path === binary) throw new Error('Binary files cannot be opened as text');
+        return contents;
+      },
+      readFileImage: async (_id: string, path: string): Promise<FileImage> => {
+        imageReads.push(path);
+        return { path, base64: png, mimeType: 'image/png', size: 68, revision: `image-${imageReads.length}` };
+      },
+      setUnsavedFiles: (value: UnsavedFileSummary) => { summary = value; },
+    } as unknown as Window['workbench'];
+    const open = (path: string) => act(async () => {
+      document.querySelector<HTMLButtonElement>(`.tree-row[title="${path}"]`)?.click();
+      await tick();
+    });
+    const tab = (path: string) => document.querySelector<HTMLButtonElement>(`.file-editor-tabs [role=tab][title="${path}"]`);
+    const select = (path: string) => act(async () => { tab(path)?.click(); await tick(); });
+    const editor = () => {
+      const dom = document.querySelector<HTMLElement>('.review-editor .cm-editor');
+      assert(dom, 'The Markdown source editor was not present');
+      return EditorView.findFromDOM(dom)!;
+    };
+    const preview = () => document.querySelector('.file-markdown-preview');
+    const replaceHeading = (heading: string) => act(async () => {
+      const view = editor();
+      view.dispatch({ changes: { from: 2, to: view.state.doc.line(1).to, insert: heading }, selection: { anchor: 2, head: 7 } });
+      await tick();
+    });
+    try {
+      await render(<div data-test-actual-editor style={{ display: 'flex', width: 380, height: 540 }}><FileReviewPanel workspace={project} refreshKey="previews" perform={perform} /></div>);
+      await open(note);
+      await replaceHeading('First draft heading');
+      await click('workspace:files.preview');
+      assert(preview()?.querySelector('h1')?.textContent === 'First draft heading' && preview()?.querySelector('strong')?.textContent === 'Draft body',
+        'Markdown rendered the disk version or lost its formatting');
+      assert(!preview()?.querySelector('script, img, iframe, svg, [src], a[href]')
+        && preview()?.textContent?.includes('Remote image description')
+        && preview()?.querySelectorAll('.file-markdown-link').length === 1,
+      'Markdown allowed embedded resources, raw HTML or an unsafe link');
+      await click('workspace:files.source');
+      assert(editor().state.selection.main.from === 2 && editor().state.selection.main.to === 7, 'Returning to source lost the selection');
+      await replaceHeading('Updated draft heading');
+      await click('workspace:files.preview');
+      assert(preview()?.querySelector('h1')?.textContent === 'Updated draft heading' && summary.count === 1, 'Preview did not update with the draft');
+      contents = { ...contents, content: '# External update', revision: 'markdown-r1' };
+      await act(async () => { visible = true; document.dispatchEvent(new Event('visibilitychange')); await tick(); });
+      assert(document.querySelector('[data-file-disk-status="changed"]') && preview()?.querySelector('h1')?.textContent === 'Updated draft heading',
+        'Markdown preview stopped disk checking or replaced the draft');
+
+      await open(picture);
+      const img = () => document.querySelector<HTMLImageElement>('.file-image-preview img');
+      await waitFor(() => img()?.naturalWidth === 1, 'The raster preview did not decode in Electron');
+      assert(img()?.src.startsWith('data:image/png;base64,') && !document.querySelector('.review-save, .review-editor .cm-editor')
+        && !tab(picture)?.closest('[data-dirty=true]') && summary.count === 1 && !reads.includes(picture),
+      'An image opened as editable text or changed the draft summary');
+      await click('workspace:files.reload');
+      assert(imageReads.join() === `${picture},${picture}`, 'Reload did not use the image reader');
+      await select(note);
+      assert(preview()?.querySelector('h1')?.textContent === 'Updated draft heading', 'Switching tabs lost the Markdown preview or draft');
+      await click(`Close ${picture}`);
+      assert(!tab(picture) && !document.querySelector('dialog[open]'), 'A read-only image required a draft confirmation');
+      await open(binary);
+      assert(document.querySelector('.file-review-panel [role=alert]')?.textContent === 'Binary files cannot be opened as text'
+        && !tab(binary) && !!preview(), 'Unsupported binary content replaced the selected preview');
+      await click(`Close ${note}`);
+      await click('workspace:files.discardAndClose');
+    } finally {
+      visible = false;
+      document.dispatchEvent(new Event('visibilitychange'));
       if (visibility) Object.defineProperty(document, 'visibilityState', visibility); else Reflect.deleteProperty(document, 'visibilityState');
       if (focus) Object.defineProperty(document, 'hasFocus', focus); else Reflect.deleteProperty(document, 'hasFocus');
       if (preferences === null) localStorage.removeItem(key); else localStorage.setItem(key, preferences);

@@ -7,11 +7,14 @@ import { constants } from 'node:fs';
 import { lstat, open, opendir, realpath, rename, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { TextDecoder } from 'node:util';
-import type { FileContent, FileDiff, FileEntry, GitBranchComparison, GitCommitPreview, GitHistory, GitHistoryCommit, GitMutation, GitState,
+import type { FileContent, FileDiff, FileEntry, FileImage, GitBranchComparison, GitCommitPreview, GitHistory, GitHistoryCommit, GitMutation, GitState,
   WorkspaceFileMatch, WorkspaceTextMatch, WorkspaceTextSearch } from '../shared/types';
+import { rasterImageMimeFromPath } from '../shared/raster-image';
+import { detectRasterImageMime } from './raster-image';
 import { parsePorcelainV1Records, type PorcelainV1Record } from './vendor/orca/porcelain-v1-records';
 
 const FILE_LIMIT = 1024 * 1024;
+const IMAGE_FILE_LIMIT = 4 * 1024 * 1024;
 const ENTRY_LIMIT = 2000;
 const GIT_TIMEOUT_MS = 5000;
 const GIT_OUTPUT_LIMIT = 2 * 1024 * 1024;
@@ -68,22 +71,23 @@ function digest(...parts: (string | Buffer)[]): string {
   return hash.digest('hex');
 }
 
-async function fileBytes(file: string) {
+async function fileBytes(file: string, limit = FILE_LIMIT) {
   const before = await stat(file);
   if (!before.isFile()) throw new NonRegularFileError('Only regular files can be opened');
-  if (before.size > FILE_LIMIT) throw new Error('File exceeds the 1 MiB limit');
+  const sizeError = () => new Error(`File exceeds the ${limit / 1024 / 1024} MiB limit`);
+  if (before.size > limit) throw sizeError();
   const handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   try {
     const initial = await handle.stat({ bigint: true });
     if (!initial.isFile()) throw new NonRegularFileError('Only regular files can be opened');
-    const buffer = Buffer.alloc(FILE_LIMIT + 1);
+    const buffer = Buffer.alloc(limit + 1);
     let size = 0;
     while (size < buffer.length) {
       const read = await handle.read(buffer, size, buffer.length - size, null);
       if (!read.bytesRead) break;
       size += read.bytesRead;
     }
-    if (size > FILE_LIMIT) throw new Error('File exceeds the 1 MiB limit');
+    if (size > limit) throw sizeError();
     const final = await handle.stat({ bigint: true });
     if (initial.size !== final.size || initial.mtimeNs !== final.mtimeNs || initial.ctimeNs !== final.ctimeNs) {
       throw new Error('File changed while reading; reload it');
@@ -190,7 +194,7 @@ function numstat(output: string): Map<string, { additions: number; deletions: nu
 function language(file: string): string {
   const extension = path.extname(file).toLowerCase().slice(1);
   return ({ ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript', mjs: 'javascript',
-    json: 'json', md: 'markdown', py: 'python', sh: 'shell', zsh: 'shell', yml: 'yaml', yaml: 'yaml',
+    json: 'json', md: 'markdown', markdown: 'markdown', py: 'python', sh: 'shell', zsh: 'shell', yml: 'yaml', yaml: 'yaml',
     html: 'html', css: 'css', rs: 'rust', go: 'go', java: 'java', c: 'c', cpp: 'cpp', sql: 'sql' } as Record<string, string>)[extension] ?? 'text';
 }
 
@@ -398,6 +402,17 @@ export class WorkspaceFiles {
     const file = await scopedPath(root, relativePath);
     const contents = await textFile(file);
     return { path: normalizedRelative(relativePath), ...contents, language: language(relativePath) };
+  }
+
+  async readImage(cwd: string, relativePath: string): Promise<FileImage> {
+    const root = await workspaceRoot(cwd);
+    const file = await scopedPath(root, relativePath);
+    const relative = normalizedRelative(relativePath);
+    const mimeType = rasterImageMimeFromPath(relative);
+    if (!mimeType) throw new Error('Image preview supports PNG, JPEG, GIF, and WebP');
+    const { bytes, size, revision } = await fileBytes(file, IMAGE_FILE_LIMIT);
+    if (detectRasterImageMime(bytes) !== mimeType) throw new Error('Image format does not match the file extension');
+    return { path: relative, base64: bytes.toString('base64'), size, mimeType, revision };
   }
 
   async resolveFilePaths(cwd: string, relativePaths: string[]): Promise<string[]> {

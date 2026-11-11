@@ -4,10 +4,12 @@ import type { DisplayText } from '../shared/display-text';
 import { useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { FileCode2, Files, GitBranch, GitCompareArrows, GitPullRequest, LoaderCircle, Maximize2, MessageSquare, Minimize2, PanelRight, RefreshCw, Save, Search, Timer, WrapText, X } from 'lucide-react';
 import { z } from 'zod';
-import type { FileContent, FileDiff, FileEntry, GitCommitPreview, GitMutation, GitState, PullRequestReview, Session, Workspace } from '../shared/types';
+import type { FileContent, FileDiff, FileEntry, FileImage, GitCommitPreview, GitMutation, GitState, PullRequestReview, Session, Workspace } from '../shared/types';
+import { rasterImageMimeFromPath } from '../shared/raster-image';
 import { BranchComparison } from './BranchComparison';
 import { CodeEditor, type CodeEditorHandle, type CodeEditorPosition } from './CodeEditor';
 import { FileEditorTabs } from './FileEditorTabs';
+import { ImageFilePreview, MarkdownFilePreview } from './FilePreview';
 import { DiffReview } from './DiffReview';
 import { GitHistory } from './GitHistory';
 import { WorkspaceFileTree } from './WorkspaceFileTree';
@@ -25,7 +27,8 @@ const writeFile = (workspaceId: string, input: Parameters<Window['workbench']['w
 const fileDrafts = new FileDraftStore(summary => window.workbench.setUnsavedFiles(summary), { delay: 1000, write: writeFile });
 const editorPreferencesKey = 'ensemble.file-editor';
 type EditorPreferences = { wrapLines: boolean; autoSave: boolean };
-type EditorTab = { path: string; position: CodeEditorPosition };
+type EditorTab = { kind: 'text'; path: string; position: CodeEditorPosition; preview: boolean }
+  | { kind: 'image'; path: string; image: FileImage };
 type FileDraft = NonNullable<ReturnType<FileDraftStore['get']>>;
 const isDirty = (draft: FileDraft | undefined) => Boolean(draft && draft.text !== draft.original.content);
 
@@ -86,9 +89,13 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
   useSyncExternalStore(fileDrafts.subscribe, fileDrafts.getSnapshot);
   const activeTab = tabs.open.find(tab => tab.path === tabs.active);
   const selected = diff ? { path: diff.path, mode: 'diff' as const } : activeTab ? { path: activeTab.path, mode: 'content' as const } : null;
-  const buffer = selected?.mode === 'content' ? fileDrafts.get(workspace.id, selected.path) : undefined;
+  const contentTab = selected?.mode === 'content' ? activeTab : undefined;
+  const image = contentTab?.kind === 'image' ? contentTab.image : undefined;
+  const buffer = contentTab?.kind === 'text' ? fileDrafts.get(workspace.id, contentTab.path) : undefined;
   const file = buffer?.original ?? null;
   const draft = buffer?.text ?? '';
+  const markdown = file?.language === 'markdown';
+  const markdownPreview = markdown && contentTab?.kind === 'text' && contentTab.preview;
   const [error, setError] = useState<FileNotice>('');
   const [operationBusy, setBusy] = useState(false);
   const busy = operationBusy || (file !== null && fileDrafts.isSaving(workspace.id, file.path));
@@ -107,8 +114,9 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
   const responsiveDiff = view === 'changes' && selected?.mode === 'diff' && !expanded;
   const selectedChangeIndex = responsiveDiff ? git?.changes.findIndex(change => change.path === selected.path) ?? -1 : -1;
   const dirty = isDirty(buffer);
-  const tabItems = tabs.open.map(({ path }) => ({
-    path, dirty: isDirty(fileDrafts.get(workspace.id, path)), saving: fileDrafts.isSaving(workspace.id, path),
+  const tabItems = tabs.open.map(tab => ({
+    path: tab.path, dirty: tab.kind === 'text' && isDirty(fileDrafts.get(workspace.id, tab.path)),
+    saving: tab.kind === 'text' && fileDrafts.isSaving(workspace.id, tab.path),
   }));
   const hasUnsavedFiles = tabItems.some(tab => tab.dirty || tab.saving);
   const closingBusy = closingTab !== undefined && (operationBusy || fileDrafts.isSaving(workspace.id, closingTab.path));
@@ -187,15 +195,24 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
   const refreshPullRequest = async () => {
     setReview(await window.workbench.reviewPullRequest(workspace.id));
   };
-  const showFile = (path: string, reference?: FileReference) => {
-    setTabs(current => ({
-      open: current.open.some(tab => tab.path === path) ? current.open : [...current.open, { path, position: {} }],
-      active: path,
-    }));
+  const showFile = (path: string, reference?: FileReference, image?: FileImage) => {
+    setTabs(current => {
+      const existing = current.open.find(tab => tab.path === path);
+      const tab: EditorTab = image ? { kind: 'image', path, image } : existing ?? { kind: 'text', path, position: {}, preview: false };
+      const next = tab.kind === 'text' && tab.preview && reference?.line !== undefined ? { ...tab, preview: false } : tab;
+      const open = existing ? current.open.map(item => item === existing ? next : item) : [...current.open, next];
+      return { open, active: path };
+    });
     setDiff(null);
     setDiscard(null);
     setLocation(current => reference ?? (current?.path === path ? current : undefined));
     if (reference) setView('files');
+  };
+  const setMarkdownPreview = (preview: boolean) => {
+    setTabs(current => ({
+      ...current,
+      open: current.open.map(tab => tab.path === current.active && tab.kind === 'text' ? { ...tab, preview } : tab),
+    }));
   };
   const closeFile = (path: string, expected?: FileDraft) => {
     const current = fileDrafts.get(workspace.id, path);
@@ -220,11 +237,14 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
   const load = async (filePath: string, mode: 'content' | 'diff', force = false, reference?: FileReference) => {
     const token = ++fileGeneration.current;
     if (mode === 'content') {
-      if (force) fileDrafts.suspendAutoSaveForDiscard(workspace.id, filePath);
-      const cached = fileDrafts.get(workspace.id, filePath);
-      let contents: FileContent | null | undefined;
+      const imageMime = rasterImageMimeFromPath(filePath);
+      if (force && !imageMime) fileDrafts.suspendAutoSaveForDiscard(workspace.id, filePath);
+      const cached = imageMime ? undefined : fileDrafts.get(workspace.id, filePath);
+      let contents: FileContent | FileImage | null | undefined;
       let failure: unknown;
-      try { contents = await window.workbench.readFile(workspace.id, filePath); }
+      try {
+        contents = await (imageMime ? window.workbench.readFileImage(workspace.id, filePath) : window.workbench.readFile(workspace.id, filePath));
+      }
       catch (error) { failure = error; }
       if (token !== fileGeneration.current) return;
 
@@ -233,10 +253,15 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
         return;
       }
       if (contents) {
+        if ('mimeType' in contents) {
+          showFile(filePath, reference, contents);
+          return;
+        }
         const current = fileDrafts.open(workspace, contents, cached, force);
         if (force && current.original !== contents) throw new Error(t('files.changedDraft'));
         if (!force && cached && current.original === cached.original) fileDrafts.observeDisk(workspace.id, cached.original, contents);
       } else {
+        if (imageMime) throw contents === null ? new Error(t('files.missing')) : failure;
         const retained = fileDrafts.get(workspace.id, filePath);
         if (force || !retained || (retained.text === retained.original.content && !fileDrafts.isSaving(workspace.id, filePath))) {
           throw contents === null ? new Error(t('files.missing')) : failure;
@@ -449,33 +474,40 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
         <IconButton label={t('files.close')} onClick={closeDiff}><X size={13} /></IconButton>
       </div>}
       {tabs.open.length > 0 && <div className="inspector-title file-editor-tabs-header">
-        <FileEditorTabs tabs={tabItems} activePath={file?.path} focusPath={tabs.active} id={tabId} activeButton={activeTabButton}
+        <FileEditorTabs tabs={tabItems} activePath={contentTab?.path} focusPath={tabs.active} id={tabId} activeButton={activeTabButton}
           onActivate={openFile} onClose={requestCloseFile} />
         {!diff && <IconButton label={expanded ? t('files.restorePanel') : t('files.expandPanel')} onClick={() => setExpanded(value => !value)}>
           {expanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
         </IconButton>}
       </div>}
       <div className="inspector-tabs">
-        <button className={selected.mode === 'content' ? 'active' : ''} onClick={() => openFile(selected.path)}>{t('files.edit')}</button>
+        {!image && <button className={selected.mode === 'content' && !markdownPreview ? 'active' : ''}
+          onClick={() => markdown ? setMarkdownPreview(false) : openFile(selected.path)}>
+          {t(markdown ? 'files.source' : rasterImageMimeFromPath(selected.path) ? 'files.preview' : 'files.edit')}
+        </button>}
+        {markdown && <button className={markdownPreview ? 'active' : ''} onClick={() => setMarkdownPreview(true)}>{t('files.preview')}</button>}
         <button className={selected.mode === 'diff' ? 'active' : ''} disabled={!!busy} onClick={() => run('open', () => load(selected.path, 'diff'))}>Diff</button>
         {file && <button className="review-save" disabled={!dirty || !!busy} onClick={() => save(file.path)}><Save size={12} />{t('common.save')}</button>}
         <button disabled={!!busy} onClick={() => run('reload', () => load(selected.path, selected.mode, true))}>{dirty ? t('files.reloadDiscard') : t('files.reload')}</button>
-        {file && selected.mode === 'content' && <>
+        {file && !markdownPreview && <>
           <IconButton label={t('editor.find')} onClick={() => editor.current?.find()}><Search size={13} /></IconButton>
           <IconButton label={t('editor.wrapLines')} aria-pressed={editorPreferences.wrapLines} onClick={() => toggleEditorPreference('wrapLines')}><WrapText size={13} /></IconButton>
           <IconButton label={t('editor.autoSave')} aria-pressed={editorPreferences.autoSave} onClick={() => toggleEditorPreference('autoSave')}><Timer size={13} /></IconButton>
         </>}
       </div>
-      {file && activeTab && <div className="review-editor" id={`${tabId}-panel`} role="tabpanel"
-        aria-labelledby={`${tabId}-${tabs.open.indexOf(activeTab)}`} onKeyDown={event => {
+      {contentTab && <div className="review-editor" id={`${tabId}-panel`} role="tabpanel"
+        aria-labelledby={`${tabId}-${tabs.open.indexOf(contentTab)}`} onKeyDown={event => {
+        if (!file) return;
         if (event.defaultPrevented || event.nativeEvent.isComposing || event.keyCode === 229 || event.altKey || event.shiftKey
           || !(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 's') return;
         event.preventDefault();
         if (dirty && !busy && !event.repeat) save(file.path);
       }}>
-        <CodeEditor ref={editor} key={`${workspace.id}:${file.path}`} value={draft} onChange={text => {
-          fileDrafts.edit(workspace.id, file.path, text);
-        }} language={file.language} readOnly={operationBusy} wrapLines={editorPreferences.wrapLines} location={location} position={activeTab.position} />
+        {contentTab.kind === 'image' ? <ImageFilePreview key={JSON.stringify([contentTab.path, contentTab.image.revision])} image={contentTab.image} />
+          : markdownPreview ? <MarkdownFilePreview text={draft} />
+          : file && <CodeEditor ref={editor} key={`${workspace.id}:${file.path}`} value={draft} onChange={text => {
+            fileDrafts.edit(workspace.id, file.path, text);
+          }} language={file.language} readOnly={operationBusy} wrapLines={editorPreferences.wrapLines} location={location} position={contentTab.position} />}
       </div>}
       {diff && <>
         <DiffReview key={JSON.stringify([selected.path, diff.revision])} diff={diff} location={location} busy={busy} draft={noteDrafts.get(selected.path)}

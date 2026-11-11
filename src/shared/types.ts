@@ -5,6 +5,7 @@ import type { BackendConnectionState, SessionHistoryPage, TerminalOutputEvent } 
 import type { ProviderCapabilities } from './provider-capabilities';
 import type { AppUpdateState } from './application-updates';
 import type { SessionPermission } from './session-permissions';
+import type { RasterImageMime } from './raster-image';
 export type { ProviderCapabilities } from './provider-capabilities';
 
 export type SessionStatus = 'idle' | 'queued' | 'running' | 'waiting_approval' | 'waiting_children' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
@@ -136,6 +137,7 @@ export interface WorkspaceFileMatch { path: string; name: string }
 export interface WorkspaceTextMatch { path: string; line: number; column: number; preview: string }
 export interface WorkspaceTextSearch { matches: WorkspaceTextMatch[]; limited: boolean }
 export interface FileContent { path: string; content: string; size: number; language: string; revision: string }
+export interface FileImage { path: string; base64: string; size: number; mimeType: RasterImageMime; revision: string }
 export interface GitChange { path: string; status: string; staged: boolean; additions: number; deletions: number }
 export interface GitState { available: boolean; branch: string; changes: GitChange[]; error?: string }
 export interface GitBranchComparison {
@@ -402,6 +404,7 @@ export interface WorkbenchAPI {
   findWorkspaceFiles(workspaceId: string, query: string): Promise<WorkspaceFileMatch[]>;
   searchWorkspaceText(workspaceId: string, query: string): Promise<WorkspaceTextSearch>;
   readFile(workspaceId: string, relativePath: string): Promise<FileContent | null>;
+  readFileImage(workspaceId: string, relativePath: string): Promise<FileImage | null>;
   gitState(workspaceId: string): Promise<GitState>;
   gitBranchRefs(workspaceId: string): Promise<string[]>;
   gitBranchComparison(workspaceId: string, targetRef: string): Promise<GitBranchComparison>;

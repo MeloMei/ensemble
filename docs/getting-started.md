@@ -100,6 +100,8 @@ While the editor is visible in the active window, Ensemble checks the open file 
 
 Open several text files to work on them in separate tabs. Each tab keeps its draft, selection, and scroll position when you switch files. When you close a tab with unsaved changes, you can save, discard the draft, or cancel.
 
+Markdown files can switch between **Source** and **Preview**. The preview uses the current draft and shows image descriptions as text. Open PNG, JPEG, GIF, and WebP files up to 4 MiB in read-only tabs. Use **Reload** to read an updated image from disk.
+
 Drag the file panel’s left edge to resize it, or focus the divider and press the left or right arrow key. Ensemble remembers your preferred width. If the window gets too narrow, it temporarily hides the panel and restores it when there is room.
 
 In a diff, click a line number to leave a note. Drag along the original or modified line numbers, or focus one and press Shift + ↑/↓, to select a range within one hunk. Saved notes can be added to the current agent draft.
