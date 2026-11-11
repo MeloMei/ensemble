@@ -21,6 +21,23 @@ export interface CustomAcpInput {
   environment: { key: string; value: string }[];
 }
 
+export interface AcpRegistryInstallation {
+  id: string;
+  version: string;
+  kind: 'binary' | 'npx' | 'uvx';
+}
+
+export interface AcpRegistryEntry {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  source?: string;
+  platforms: string[];
+  distribution?: { kind: AcpRegistryInstallation['kind']; source: string; checksum?: boolean };
+  unavailable?: 'platform' | 'format' | 'npm' | 'uv';
+}
+
 export interface ProviderInfo {
   id: string;
   name: string;
@@ -35,6 +52,7 @@ export interface ProviderInfo {
   models?: ProviderModel[];
   defaultModelId?: string;
   efforts?: string[];
+  acpRegistry?: AcpRegistryInstallation;
 }
 
 export interface RuntimeInstall {
@@ -352,6 +370,8 @@ export interface WorkbenchAPI {
   addCustomAcp(requestId: string, input: CustomAcpInput): Promise<void>;
   cancelCustomAcp(requestId: string): Promise<void>;
   removeCustomAcp(providerId: string): Promise<void>;
+  refreshAcpRegistry(): Promise<AcpRegistryEntry[]>;
+  installAcpRegistry(id: string, version: string): Promise<void>;
   diagnostics(): Promise<DiagnosticEntry[]>;
   exportDiagnostics(): Promise<string>;
   setDiagnosticTracing(enabled: boolean): Promise<void>;

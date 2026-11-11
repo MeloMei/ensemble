@@ -23,6 +23,7 @@ import { TerminalManager } from './terminal-manager';
 import { MissingWorkspaceDirectoryError, WorkspaceFiles } from './workspace-files';
 import { RuntimeInstaller } from './runtime-install';
 import { RuntimeAccounts } from './runtime-account';
+import { AcpRegistry } from './acp-registry';
 import type { Snapshot } from '../shared/types';
 import { PROMPT_TEXT_LIMIT, SIDE_QUESTION_LIMIT, SIDE_QUESTION_REFERENCE_LIMIT } from '../shared/types';
 import type { TerminalOutputEvent } from '../shared/backend';
@@ -188,6 +189,12 @@ export async function createWorkbenchService(options: {
     let baseProviders: ProviderAdapter[] = options.providers ?? [];
     let pluginErrors: string[] = [];
     const publishProviders = () => engine.setProviders([...baseProviders, ...installedAcp.adapters()].map(instrument), [], pluginErrors);
+    const acpRegistry = new AcpRegistry(installedAcp, {
+      assertIdle: id => engine.assertProviderIdle(id),
+      publish: publishProviders,
+      dispose: adapter => engine.disposeRemovedProvider(instrument(adapter)),
+    });
+    cleanup.push(() => acpRegistry.close());
     const installer = new RuntimeInstaller(options.dataPath, async id => {
       await refreshProviders();
       return engine.liveSnapshot().providers.some(provider => provider.id === id && provider.available);
@@ -307,11 +314,15 @@ export async function createWorkbenchService(options: {
     handle('workbench:cancel-custom-acp', (_event, requestId) => installedAcp.cancel(z.string().uuid().parse(requestId)));
     handle('workbench:remove-custom-acp', async (_event, providerId) => {
       const id = idSchema.parse(providerId);
+      acpRegistry.assertNotInstalling(id);
       engine.assertProviderIdle(id);
       const removed = installedAcp.remove(id);
       publishProviders();
-      await engine.disposeRemovedProvider(instrument(removed));
+      await engine.disposeRemovedProvider(instrument(removed.adapter));
+      await removed.cleanup();
     });
+    handle('workbench:refresh-acp-registry', () => acpRegistry.refresh());
+    handle('workbench:install-acp-registry', (_event, id, version) => acpRegistry.install(idSchema.parse(id), idSchema.parse(version)));
     handle('workbench:runtime-account', (_event, id, refresh) => accounts.state(accountProvider.parse(id), z.boolean().optional().parse(refresh) ?? false));
     handle('workbench:sign-in-runtime', (_event, value, method) => {
       const id = accountProvider.parse(value);
@@ -527,7 +538,7 @@ export async function createWorkbenchService(options: {
       async shutdown(): Promise<void> {
         stopDiagnostics();
         await accounts.shutdown();
-        await installer.shutdown();
+        await Promise.all([installer.shutdown(), acpRegistry.close()]);
         const results = await Promise.allSettled([core.close(), terminalManager.shutdown(), engine.shutdown(), collaboration.close(), installedAcp.close()]);
         results.push(...await Promise.allSettled([store.close(), diagnostics.flush()]));
         const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
