@@ -7,8 +7,8 @@ import { sessionPermissionSchema } from '../shared/session-permissions';
 import { WorkbenchEngine } from './engine';
 import { projectSessionCollaborations } from './session-collaboration';
 import { StateStore } from './store';
-import { createCodexProvider } from './providers/codex';
-import { createClaudeProvider } from './providers/claude';
+import { createCodexProvider, resolveCodexBinary } from './providers/codex';
+import { createClaudeProvider, resolveClaudeBinary } from './providers/claude';
 import { createPiProvider } from './providers/pi';
 import { createAcpProvider, type AcpProvider } from './providers/acp';
 import { InstalledAcpRuntimes } from './providers/installed-acp';
@@ -22,6 +22,7 @@ import { loadPluginProviders } from './providers/plugins';
 import { TerminalManager } from './terminal-manager';
 import { MissingWorkspaceDirectoryError, WorkspaceFiles } from './workspace-files';
 import { RuntimeInstaller } from './runtime-install';
+import { RuntimeAccounts } from './runtime-account';
 import type { Snapshot } from '../shared/types';
 import { PROMPT_TEXT_LIMIT, SIDE_QUESTION_LIMIT, SIDE_QUESTION_REFERENCE_LIMIT } from '../shared/types';
 import type { TerminalOutputEvent } from '../shared/backend';
@@ -192,6 +193,14 @@ export async function createWorkbenchService(options: {
       return engine.liveSnapshot().providers.some(provider => provider.id === id && provider.available);
     });
     cleanup.push(() => installer.shutdown());
+    const accounts = new RuntimeAccounts(async id => id === 'codex' ? resolveCodexBinary(await installer.managedBinary(id)) : resolveClaudeBinary());
+    cleanup.push(() => accounts.shutdown());
+    const accountProvider = z.enum(['codex', 'claude']);
+    const changeAccount = (id: z.infer<typeof accountProvider>, action: () => Promise<void>) => engine.withProviderAccountChange(id, async () => {
+      await action();
+      if (id === 'codex') await codexProvider?.resetAccountConnections();
+      await refreshProviders();
+    });
     let providerRefresh: Promise<void> | undefined;
     function refreshProviders(): Promise<void> {
       if (providerRefresh) return providerRefresh;
@@ -302,6 +311,16 @@ export async function createWorkbenchService(options: {
       const removed = installedAcp.remove(id);
       publishProviders();
       await engine.disposeRemovedProvider(instrument(removed));
+    });
+    handle('workbench:runtime-account', (_event, id, refresh) => accounts.state(accountProvider.parse(id), z.boolean().optional().parse(refresh) ?? false));
+    handle('workbench:sign-in-runtime', (_event, value, method) => {
+      const id = accountProvider.parse(value);
+      return changeAccount(id, () => accounts.signIn(id, z.enum(['browser', 'device']).parse(method)));
+    });
+    handle('workbench:cancel-runtime-sign-in', (_event, id) => accounts.cancel(accountProvider.parse(id)));
+    handle('workbench:sign-out-runtime', (_event, value) => {
+      const id = accountProvider.parse(value);
+      return changeAccount(id, () => accounts.signOut(id));
     });
     handle('workbench:session-locations', (_event, id) => managedWorktrees!.sessionLocations(idSchema.parse(id)));
     handle('workbench:create-session', (_event, input: unknown) => {
@@ -499,6 +518,7 @@ export async function createWorkbenchService(options: {
       terminalSnapshot: (id: string) => terminalManager.get(id),
       async shutdown(): Promise<void> {
         stopDiagnostics();
+        await accounts.shutdown();
         await installer.shutdown();
         const results = await Promise.allSettled([core.close(), terminalManager.shutdown(), engine.shutdown(), collaboration.close(), installedAcp.close()]);
         results.push(...await Promise.allSettled([store.close(), diagnostics.flush()]));

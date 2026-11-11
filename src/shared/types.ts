@@ -46,6 +46,15 @@ export interface RuntimeInstall {
   problem?: 'install' | 'detect' | 'timeout';
 }
 
+export type NativeAccountProvider = 'codex' | 'claude';
+export type NativeAccountStatus = 'unknown' | 'signed-in' | 'signed-out' | 'not-required';
+export interface NativeRuntimeAccount {
+  status: NativeAccountStatus;
+  label?: string;
+  phase?: 'starting' | 'waiting' | 'signing-out' | 'failed' | 'cancelled';
+  challenge?: { url: string; code?: string };
+}
+
 export type WorkspaceTab =
   | { id: string; kind: 'agent'; sessionId: string }
   | { id: string; kind: 'terminal'; terminalId: string }
@@ -358,6 +367,10 @@ export interface WorkbenchAPI {
   runtimeInstalls(): Promise<RuntimeInstall[]>;
   installRuntime(providerId: string): Promise<void>;
   cancelRuntimeInstall(providerId: string): Promise<void>;
+  runtimeAccount(providerId: NativeAccountProvider, refresh?: boolean): Promise<NativeRuntimeAccount>;
+  signInRuntime(providerId: NativeAccountProvider, method: 'browser' | 'device'): Promise<void>;
+  cancelRuntimeSignIn(providerId: NativeAccountProvider): Promise<void>;
+  signOutRuntime(providerId: NativeAccountProvider): Promise<void>;
   chooseDirectory(): Promise<string | null>;
   createSession(input: CreateSessionInput): Promise<string>;
   sessionLocations(workspaceId: string): Promise<SessionLocations>;

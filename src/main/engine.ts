@@ -125,6 +125,7 @@ export class WorkbenchEngine {
   private providerInfo: ProviderInfo[] = [];
   private pluginErrors: string[] = [];
   private active = new Map<string, LogicalTask>();
+  private providerAccountChanges = new Set<string>();
   private projectClaims = new Map<string, ProjectClaim>();
   private projectMutations = new Set<Promise<unknown>>();
   private executionKeys = new Map<string, string>();
@@ -200,14 +201,25 @@ export class WorkbenchEngine {
 
   assertProviderIdle(id: string): void {
     this.assertOpen();
-    if (this.store.state.sessions.some(session => session.providerId === id
+    if (this.providerAccountChanges.has(id) || this.store.state.sessions.some(session => session.providerId === id
       && (this.active.has(session.id) || session.queue?.length || session.approvals.length))) {
-      throw new Error('请先结束该 ACP 运行时的任务并清空排队消息。');
+      throw new Error('请先结束此运行时的任务并清空队列。');
     }
   }
 
   async disposeRemovedProvider(adapter: ProviderAdapter): Promise<void> {
     if (this.disposableAdapters.delete(adapter)) await adapter.dispose?.();
+  }
+
+  async withProviderAccountChange<T>(providerId: string, operation: () => Promise<T>): Promise<T> {
+    this.assertProviderIdle(providerId);
+    this.providerAccountChanges.add(providerId);
+    try { return await operation(); }
+    finally { this.providerAccountChanges.delete(providerId); }
+  }
+
+  private assertProviderAccountStable(providerId: string) {
+    if (this.providerAccountChanges.has(providerId)) throw new Error('此运行时正在变更账号，请完成后再提交任务。');
   }
 
   liveSnapshot(): Snapshot {
@@ -900,6 +912,7 @@ export class WorkbenchEngine {
     }
     if (!hasPromptInput(input)) throw new Error('请输入任务。');
     this.assertProjectAdmission(session.cwd);
+    this.assertProviderAccountStable(session.providerId);
     if (!this.adapters.get(session.providerId)?.info.available) throw new Error('这个 Agent 目前不可用。');
     if (!this.active.has(id) && !session.queuePaused) this.assertProjectAvailable(session.cwd, id);
     if (!this.active.has(id)) this.assertDeliveryResolved(session);
@@ -1155,6 +1168,7 @@ export class WorkbenchEngine {
     const session = this.session(id);
     this.assertProjectAdmission(session.cwd);
     if (!hasPromptInput(input)) throw new Error('请输入任务。');
+    this.assertProviderAccountStable(session.providerId);
     if (this.active.has(id)) throw new Error('这个会话正在运行。');
     this.assertDeliveryResolved(session);
     if (!this.adapters.get(session.providerId)?.info.available) throw new Error('这个 Agent 目前不可用。');
@@ -1431,6 +1445,7 @@ export class WorkbenchEngine {
       this.authorizedMessageTarget(caller.sessionId, toSessionId);
       if (!this.canSendSessionMessage(task, target)) throw new Error('不能向权限更高的会话发消息。');
       this.assertProjectAdmission(target.cwd);
+      this.assertProviderAccountStable(target.providerId);
       if (!this.adapters.get(target.providerId)?.info.available) throw new Error('目标 Agent 目前不可用。');
       if (!this.active.has(target.id)) this.assertDeliveryResolved(target);
       const source = this.session(caller.sessionId);
