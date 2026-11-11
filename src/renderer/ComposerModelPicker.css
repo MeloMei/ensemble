@@ -69,6 +69,7 @@
   border-radius: var(--radius-panel);
   background: var(--surface);
 }
+.composer-model-picker .discrete-slider + .discrete-slider { margin-top: 4px; }
 .composer-model-catalog {
   margin-top: 4px;
 }

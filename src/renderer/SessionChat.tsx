@@ -45,6 +45,7 @@ import { WORKSPACE_FILE_DRAG_TYPE, WorkspaceFileNavigation, workspaceFileReferen
 import { diffLines } from './review-notes';
 import { questionExcerpt } from '../shared/side-question';
 import { permissionTiersFor, sessionPermissionSchema } from '../shared/session-permissions';
+import { providerForDirectory } from '../shared/provider-models';
 import { SideQuestion, SideQuestionAction, useAnswerQuestionSelection, type SideQuestionOrigin } from './SideQuestion';
 import { DraftEvidenceCards } from './DraftEvidence';
 import { useWorkspaceFileMention, WorkspaceFileMention } from './WorkspaceFileMention';
@@ -446,7 +447,7 @@ function SessionContinuation({ session, providers, connected, perform }: {
   const hasText = session.messages.some(hasConversationText) || Boolean(session.historyCursor);
   const unavailable = !alternatives.some(provider => provider.available);
   const disabled = !connected || session.historyLoaded === false || activeStatuses.has(session.status) || !hasText || unavailable;
-  const provider = alternatives.find(item => item.id === selection.providerId);
+  const provider = providerForDirectory(alternatives.find(item => item.id === selection.providerId), session.cwd);
   const title = t('chat.continueWithAgent');
   const hint = activeStatuses.has(session.status) ? t('chat.continueAfterTask')
     : !hasText ? t('chat.continueNoText') : unavailable ? t('chat.continueNoAgent') : title;

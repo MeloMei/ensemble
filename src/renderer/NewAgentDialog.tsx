@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Folder, GitBranch, Plus } from 'lucide-react';
 import type { CreateSessionInput, ProviderInfo, SessionLocations, Workspace } from '../shared/types';
 import { PROMPT_TEXT_LIMIT } from '../shared/types';
+import { providerForDirectory } from '../shared/provider-models';
 import { AppSelect } from './AppSelect';
 import { runSessionCommand } from './session-command';
 import { BusyIcon, Modal, ModelField, ProviderSelect, defaultModelId, validModelSelection } from './ui';
@@ -24,7 +25,6 @@ export function NewAgentDialog({ workspace, providers, running, onClose, onCreat
     return { providerId: provider?.id ?? '', modelId: defaultModelId(provider) };
   });
   const { providerId, modelId } = selection;
-  const provider = providers.find(item => item.id === providerId);
   const [title, setTitle] = useState('');
   const [draft, setDraft] = useState('');
   const [locations, setLocations] = useState<SessionLocations>();
@@ -53,6 +53,7 @@ export function NewAgentDialog({ workspace, providers, running, onClose, onCreat
 
   const directory = locationMode === 'registered' ? locations?.worktrees.find(item => item.cwd === worktree)
     : locationMode === 'managed' ? locations?.managed : locations?.current;
+  const provider = providerForDirectory(providers.find(item => item.id === providerId), directory?.cwd);
   const valid = Boolean(directory && validModelSelection(provider, modelId) && draft.length <= PROMPT_TEXT_LIMIT);
   const busyNote = locationMode === 'current' && running > 0;
   const submit = (event: FormEvent) => {

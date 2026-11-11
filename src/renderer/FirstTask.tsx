@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
+import { providerForDirectory } from '../shared/provider-models';
 import { ArrowRight, RefreshCw } from 'lucide-react';
 import { PROMPT_TEXT_LIMIT, type ProviderInfo } from '../shared/types';
 import { RuntimeHealth, useRuntimeHealth } from './RuntimeHealth';
@@ -28,7 +29,7 @@ export function FirstTask({ providers, connected, perform, pending }: {
   const [error, setError] = useState('');
   const health = useRuntimeHealth(providers, cwd.trim());
   const available = health.providers.some(item => item.available);
-  const provider = health.providers.find(item => item.id === selection.providerId);
+  const provider = providerForDirectory(health.providers.find(item => item.id === selection.providerId), cwd.trim());
   useEffect(() => {
     if (selection.providerId) return;
     const detected = health.providers.find(item => item.available);

@@ -3355,6 +3355,90 @@ const cases: Record<string, () => Promise<void>> = {
     });
     assert(keyboardControl.textContent?.trim() === 'Model B' && !closed, 'Keyboard selection did not update the model');
   },
+  'CLAUDE-CONTEXT: native windows choose exact IDs and stay scoped to their model': async () => {
+    const nativeProvider: ProviderInfo = {
+      ...provider, id: 'claude', name: 'Claude Code',
+      models: [{ id: 'sonnet', name: 'Configured Sonnet', free: false, efforts: ['medium'] }],
+      modelCatalogs: [{ cwd: session.cwd, models: [
+        { id: 'native-sonnet', name: 'Native Sonnet', free: false, efforts: ['low'] },
+        { id: 'native-sonnet[1m]', name: 'Native Sonnet Long', free: false, efforts: ['max'],
+          contextWindow: { tokens: 1_000_000, baseModelId: 'native-sonnet' } },
+        { id: 'claude-opus-4-6', name: 'Native Opus', free: false, efforts: [] },
+        { id: 'claude-opus-4-6-1m', name: 'Native Opus Long', free: false, efforts: [],
+          contextWindow: { tokens: 1_000_000, baseModelId: 'claude-opus-4-6' } },
+        { id: 'orphan[1m]', name: 'Native Orphan', free: false, efforts: [], contextWindow: { tokens: 1_000_000 } },
+      ] }],
+    };
+    const writes: (string | null | undefined)[] = [];
+    const draft = { text: 'Keep this draft' };
+    const initial = { ...session, providerId: nativeProvider.id, modelId: 'native-sonnet' };
+    let publish: React.Dispatch<React.SetStateAction<Session>>;
+    let current: Session = initial;
+    window.workbench = {
+      updateSession: async (_id: string, patch: { modelId?: string | null; expectedProviderId?: string }) => {
+        assert(patch.expectedProviderId === nativeProvider.id, 'The model write lost its runtime guard');
+        writes.push(patch.modelId);
+        current = { ...current, modelId: patch.modelId ?? undefined,
+          updatedAt: new Date(Date.parse(current.updatedAt) + 1).toISOString(), settings: { effort: undefined } };
+        publish(current);
+        return { modelId: current.modelId, updatedAt: current.updatedAt };
+      },
+    } as unknown as Window['workbench'];
+    function Fixture() {
+      const [displayed, setDisplayed] = React.useState<Session>(initial);
+      publish = setDisplayed;
+      return chat({ session: displayed, provider: nativeProvider, draft });
+    }
+    await render(<Fixture />);
+    const trigger = document.querySelector<HTMLButtonElement>('.composer-select-model')!;
+    await act(async () => { trigger.focus(); trigger.click(); await tick(); });
+    const picker = document.querySelector<HTMLElement>('.composer-model-picker[data-state=open]')!;
+    assert(picker, 'The Composer model picker did not open');
+    const slider = (key: string) => [...picker.querySelectorAll<HTMLInputElement>('input[type=range]')].find(element =>
+      document.getElementById(element.getAttribute('aria-labelledby') ?? '')?.textContent === translate(key));
+    const context = () => slider('workspace:chat.contextWindow');
+    const windowValue = () => context()?.getAttribute('aria-valuetext');
+    const text1m = translate('workspace:chat.contextWindow1m');
+    const textDefault = translate('workspace:chat.contextWindowDefault');
+    const right = async () => {
+      context()!.focus();
+      await act(async () => {
+        for (const type of ['keyDown', 'keyUp']) await rendererInput({ type, key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39 });
+      });
+    };
+    const disclosure = picker.querySelector<HTMLButtonElement>('.composer-model-disclosure')!;
+    const expand = async () => act(async () => { disclosure.click(); await tick(); });
+    const option = (label: string) => [...picker.querySelectorAll<HTMLButtonElement>('.composer-model-option')].find(item => item.textContent?.startsWith(label));
+    const choose = async (label: string) => {
+      const item = option(label);
+      assert(item && !item.disabled, `Missing native model ${label}`);
+      await act(async () => { item.click(); await tick(); });
+    };
+
+    assert(windowValue() === textDefault, 'A base model did not show its default context without a guessed limit');
+    await right();
+    await waitFor(() => windowValue() === text1m && writes[0] === 'native-sonnet[1m]', 'The keyboard did not select the exact reported 1M ID');
+    assert(slider('workspace:chat.effort')?.max === '1' && trigger.textContent?.includes(text1m), 'The 1M choice lost its advertised effort or current context label');
+    await expand();
+    assert(option('Native Sonnet')?.getAttribute('aria-pressed') === 'true' && !option('Native Sonnet Long') && !option('Configured Sonnet'),
+      'The native catalogue duplicated the active family or retained a fallback alias');
+    await change(input('.composer-model-search input'), 'native-sonnet[1m]');
+    assert(option('Native Sonnet')?.getAttribute('aria-pressed') === 'true', 'Searching the exact variant did not find its model family');
+    await choose('Native Sonnet');
+    assert(writes.length === 1 && windowValue() === text1m, 'Choosing the active family reset the context');
+    await expand();
+    await choose('Native Opus');
+    assert(writes.at(-1) === 'claude-opus-4-6' && windowValue() === textDefault && !slider('workspace:chat.effort'),
+      'Switching models carried a context or effort from the previous family');
+    await right();
+    await waitFor(() => writes.at(-1) === 'claude-opus-4-6-1m' && windowValue() === text1m, 'The reported hyphenated ID was not selectable');
+    await expand();
+    assert(option('Native Orphan')?.textContent?.includes(text1m), 'An unpaired 1M model was missing its context label');
+    await choose('Native Orphan');
+    assert(!context() && writes.at(-1) === 'orphan[1m]' && trigger.textContent?.includes(text1m),
+      'The unpaired 1M model synthesized an unavailable standard choice');
+    assert(input('.composer textarea').value === draft.text, 'Model and context changes replaced the draft');
+  },
   'UI-05: inline session controls preserve drafts, capabilities and partial settings updates': async () => {
     const writes: Record<string, unknown>[] = [];
     let sends = 0;

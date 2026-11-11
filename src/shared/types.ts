@@ -17,7 +17,14 @@ export type StepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'block
 export type RunStatus = 'draft' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
 
 export const BUILTIN_PROVIDER_IDS = ['codex', 'claude', 'pi', 'gemini', 'cursor', 'qoder', 'opencode', 'deepseek-harness'] as const;
-export interface ProviderModel { id: string; name: string; free: boolean; efforts?: string[] }
+export interface ProviderModel {
+  id: string;
+  name: string;
+  free: boolean;
+  efforts?: string[];
+  contextWindow?: { tokens: 1_000_000; baseModelId?: string };
+}
+export interface ProviderModelCatalog { cwd: string; models: ProviderModel[] }
 
 export interface CustomAcpInput {
   name: string;
@@ -55,6 +62,7 @@ export interface ProviderInfo {
   protocolVersion?: 1 | 2;
   declaredCapabilities?: ProviderCapabilities;
   models?: ProviderModel[];
+  modelCatalogs?: ProviderModelCatalog[];
   defaultModelId?: string;
   nativeDefaultModelId?: string;
   efforts?: string[];

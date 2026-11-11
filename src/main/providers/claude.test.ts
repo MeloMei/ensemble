@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -7,6 +7,8 @@ import type { ApprovalInput, Session } from '../../shared/types';
 import { configuredClaudeModels, createClaudeProvider } from './claude';
 import type { ProviderEvent, TurnContext } from './types';
 import { CollaborationServer } from '../collaboration-server';
+import { WorkbenchEngine } from '../engine';
+import { StateStore } from '../store';
 
 const fixture = String.raw`
 import { createInterface } from 'node:readline';
@@ -53,7 +55,18 @@ createInterface({ input: process.stdin }).on('line', line => {
   const frame = JSON.parse(line); log(frame);
   if (frame.type === 'control_request') {
     if (frame.request.subtype === 'initialize') {
-      send({ type: 'control_response', response: { subtype: 'success', request_id: frame.request_id, response: {} } }); return;
+      const response = mode === 'model-catalog' ? { models: [
+        { value: 'default', displayName: 'Default', supportedEffortLevels: ['medium'] },
+        { value: 'native-sonnet', resolvedModel: 'ignored-resolution', displayName: 'Native Sonnet', supportedEffortLevels: ['low'] },
+        { value: 'native-sonnet[1m]', displayName: 'Native Sonnet Long', supportedEffortLevels: ['high', 'max', 'unreported'] },
+        { value: 'claude-opus-4-6', displayName: 'Native Opus', supportsEffort: false, supportedEffortLevels: ['low'] },
+        { value: 'claude-opus-4-6-1m', displayName: 'Native Opus Long' },
+        { value: 'orphan[1m]', displayName: 'Orphan' },
+        { value: 'gateway', displayName: 'Gateway' },
+        { value: 'gateway-1m', displayName: 'Unverified Suffix' },
+        { value: '--bad', displayName: 'Invalid' },
+      ] } : {};
+      send({ type: 'control_response', response: { subtype: 'success', request_id: frame.request_id, response } }); return;
     }
     if (frame.request.subtype === 'interrupt') {
       send({ type: 'control_response', response: { subtype: 'success', request_id: frame.request_id, response: {} } });
@@ -134,7 +147,8 @@ async function withFixture(run: (scope: FixtureScope) => Promise<void>): Promise
   const binary = join(directory, 'claude.mjs');
   const trace = join(directory, 'trace.jsonl');
   await writeFile(binary, `#!${process.execPath}\n${fixture}`, { mode: 0o755 });
-  const saved = { CLAUDE_BINARY: process.env.CLAUDE_BINARY, CLAUDE_ADAPTER_FIXTURE_MODE: process.env.CLAUDE_ADAPTER_FIXTURE_MODE, CLAUDE_ADAPTER_FIXTURE_TRACE: process.env.CLAUDE_ADAPTER_FIXTURE_TRACE };
+  const saved = { CLAUDE_BINARY: process.env.CLAUDE_BINARY, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
+    CLAUDE_ADAPTER_FIXTURE_MODE: process.env.CLAUDE_ADAPTER_FIXTURE_MODE, CLAUDE_ADAPTER_FIXTURE_TRACE: process.env.CLAUDE_ADAPTER_FIXTURE_TRACE };
   process.env.CLAUDE_BINARY = binary; process.env.CLAUDE_ADAPTER_FIXTURE_TRACE = trace;
   const session: Session = { id: 'local', title: 'Fixture', providerId: 'claude', cwd: directory, status: 'running', messages: [], approvals: [], createdAt: '', updatedAt: '' };
   const context = (overrides: Partial<TurnContext> = {}): TurnContext & { events: ProviderEvent[] } => {
@@ -340,3 +354,56 @@ test('Claude model catalog uses only configured official aliases and does not in
     assert.deepEqual(await configuredClaudeModels(settings), []);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+test('Claude initialize advertises exact model context variants and queued prompts keep the selected model', async () => withFixture(async ({ session, records }) => {
+  process.env.CLAUDE_CONFIG_DIR = session.cwd;
+  process.env.CLAUDE_ADAPTER_FIXTURE_MODE = 'model-catalog';
+  await writeFile(join(session.cwd, 'settings.json'), JSON.stringify({ env: { ANTHROPIC_DEFAULT_SONNET_MODEL: 'configured-sonnet' } }));
+  const provider = await createClaudeProvider();
+  assert.deepEqual(provider.info.models?.map(model => model.id), ['sonnet']);
+  const store = new StateStore(join(session.cwd, 'state.json'));
+  const engine = new WorkbenchEngine(store, join(session.cwd, 'plugins'), () => {});
+  engine.setProviders([provider], [], []);
+  try {
+    const id = await engine.createSession({ title: 'Catalog', providerId: 'claude', cwd: session.cwd, modelId: 'sonnet' });
+    engine.sendMessage(id, 'Initial user prompt');
+    await engine.waitSession(id);
+    assert.equal(engine.getSession(id).status, 'completed');
+    const catalog = engine.snapshot().providers[0].modelCatalogs?.[0];
+    assert.equal(catalog?.cwd, engine.getSession(id).cwd);
+    const models = new Map(catalog?.models.map(model => [model.id, model]));
+    assert.equal(models.has('ignored-resolution'), false);
+    assert.equal(models.has('--bad'), false);
+    assert.deepEqual(models.get('native-sonnet[1m]')?.contextWindow, { tokens: 1_000_000, baseModelId: 'native-sonnet' });
+    assert.deepEqual(models.get('native-sonnet[1m]')?.efforts, ['high', 'max']);
+    assert.deepEqual(models.get('claude-opus-4-6-1m')?.contextWindow, { tokens: 1_000_000, baseModelId: 'claude-opus-4-6' });
+    assert.deepEqual(models.get('claude-opus-4-6')?.efforts, []);
+    assert.deepEqual(models.get('orphan[1m]')?.contextWindow, { tokens: 1_000_000 });
+    assert.equal(models.get('gateway-1m')?.contextWindow, undefined);
+    for (const modelId of ['sonnet', 'native-sonnet-1m', 'orphan', 'gateway[1m]']) {
+      assert.throws(() => engine.updateSession(id, { modelId }), /不提供所选模型/);
+    }
+    const sibling = join(session.cwd, 'different-directory');
+    await mkdir(sibling);
+    const other = await engine.createSession({ title: 'Other project', providerId: 'claude', cwd: sibling, modelId: 'sonnet' });
+    assert.throws(() => engine.updateSession(other, { modelId: 'native-sonnet[1m]' }), /不提供所选模型/);
+
+    engine.updateSession(id, { modelId: 'native-sonnet', settings: { effort: 'low' } });
+    engine.updateSession(id, { modelId: 'native-sonnet[1m]', settings: { effort: 'max' } });
+    assert.throws(() => engine.updateSession(id, { settings: { effort: 'low' } }), /不支持这个思考档/);
+    engine.setSessionQueuePaused(id, true);
+    engine.sendMessage(id, 'Queued user prompt');
+    assert.equal(engine.getSession(id).queue?.[0].modelId, 'native-sonnet[1m]');
+    assert.equal(engine.updateSession(id, { modelId: 'native-sonnet' }).effort, 'low');
+    engine.setSessionQueuePaused(id, false);
+    await engine.waitSession(id);
+    assert.equal(engine.getSession(id).status, 'completed');
+    assert.equal(engine.updateSession(id, { modelId: 'native-sonnet[1m]' }).effort, 'max');
+    const trace = await records();
+    const args = trace.filter(item => item.argv).map(item => item.argv as string[]);
+    assert.deepEqual(args.map(values => values[values.indexOf('--model') + 1]), ['sonnet', 'native-sonnet[1m]']);
+    assert.equal(args[1][args[1].indexOf('--effort') + 1], 'max');
+    assert.equal(trace.filter(item => item.type === 'control_request' && item.request.subtype === 'initialize').length, 2);
+    assert.deepEqual(trace.filter(item => item.type === 'user').map(item => item.message.content), ['Initial user prompt', 'Queued user prompt']);
+  } finally { await engine.shutdown(); }
+}));
