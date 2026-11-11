@@ -2523,6 +2523,7 @@ const cases: Record<string, () => Promise<void>> = {
     await waitFor(() => Boolean(document.querySelector('.context-usage-trigger')), 'The current context usage was missing');
     const card = () => document.querySelector<HTMLElement>('.ui-detail-card:not([data-state=closed])');
     const move = async (target: Element, vertical = .5) => {
+      await act(async () => { target.scrollIntoView({ block: 'nearest' }); await tick(); });
       const { x, y, width, height } = target.getBoundingClientRect();
       await act(async () => {
         await rendererInput({ type: 'mouseMoved', x: Math.floor(x + width / 2), y: Math.floor(y + height * vertical) });
@@ -3955,6 +3956,129 @@ const cases: Record<string, () => Promise<void>> = {
       'The existing full-width view was replaced');
     await click('workspace:files.restorePanel'); await frames();
     assert(inline() && sameReadingPosition(), 'Leaving full-width view lost the selected diff');
+  },
+  'SIDEBAR-SESSIONS: session placement, section editing, sort and density persist without stale rows': async () => {
+    const home = { ...workspace, pinned: true };
+    const other = { ...workspace, id: 'organize-other', name: 'Other project', cwd: '/organize-other' };
+    const first = { ...session, id: 'organize-first', title: 'First conversation',
+      createdAt: '2026-11-01', updatedAt: '2026-11-05',
+      attention: { reason: 'result' as const, revision: 1, seenRevision: 0, updatedAt: '2026-11-05' } };
+    const second = { ...session, id: 'organize-second', title: 'Second conversation', cwd: other.cwd,
+      createdAt: '2026-11-02', updatedAt: '2026-11-04' };
+    const third = { ...session, id: 'organize-third', title: 'Third conversation' };
+    let snapshot = { ...collaborationSnapshot([]), workspaces: [home, other], sessions: [first, second, third], providers: [provider] };
+    let publish = (_value: Snapshot) => {};
+    const opened: Array<[string, string]> = [];
+    window.workbench = {
+      ...applicationUpdateApi, snapshot: async () => snapshot,
+      subscribe: (listener: typeof publish) => { publish = listener; return () => {}; },
+      getConnection: async () => ({ status: 'connected', synced: true }), onConnectionChanged: () => () => {}, onFocusSession: () => () => {},
+      watchSessions: async () => {}, listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {},
+      openSessionTab: async (projectId: string, sessionId: string) => {
+        opened.push([projectId, sessionId]);
+        const tab = { kind: 'agent' as const, id: sessionId, sessionId };
+        snapshot = { ...snapshot, workspaces: snapshot.workspaces.map(project => project.id === projectId
+          ? { ...project, tabs: [tab], activeTabId: tab.id } : project) };
+        publish(snapshot);
+      },
+    } as unknown as Window['workbench'];
+    const key = 'ensemble.sidebar-sessions';
+    const previous = localStorage.getItem(key);
+    localStorage.removeItem(key);
+    const row = (id: string) => document.querySelector<HTMLElement>(`[data-sidebar-session-id="${id}"]`);
+    const trigger = (id: string) => row(id)?.querySelector<HTMLButtonElement>('[aria-haspopup=menu]')!;
+    const section = (name: string) => [...document.querySelectorAll<HTMLElement>('[data-sidebar-section]')]
+      .find(element => element.querySelector('h3')?.textContent === name);
+    const listed = (name: string) => [...section(name)?.querySelectorAll<HTMLElement>('[data-sidebar-session-id]') ?? []]
+      .map(element => element.dataset.sidebarSessionId).join(',');
+    const unique = (id: string) => document.querySelectorAll(`[data-sidebar-session-id="${id}"]`).length === 1;
+    const compact = () => document.querySelector('.workspace-sidebar-scroll')?.getAttribute('data-density') === 'compact';
+    const performClick = (element: HTMLElement) => act(async () => { element.click(); await tick(); });
+    const keyPress = (element: HTMLElement, key: string) => act(async () => {
+      element.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })); await tick();
+    });
+    const openMenu = () => document.querySelector<HTMLElement>('[role=menu]:popover-open');
+    const action = async (menuTrigger: HTMLButtonElement, label: string) => {
+      assert(menuTrigger, `Missing menu for ${label}`);
+      await performClick(menuTrigger);
+      await waitFor(() => Boolean(openMenu()), `Menu did not open for ${label}`);
+      const item = [...openMenu()!.querySelectorAll<HTMLButtonElement>('[role^=menuitem]')].find(button => button.textContent?.trim() === label);
+      assert(item, `Missing action ${label}`);
+      await performClick(item);
+    };
+    const organization = () => button('shell:sidebarSessions.options');
+    const nameSection = async (name: string) => {
+      const nameInput = labeledInput('shell:sidebarSessions.sectionName', document.querySelector('dialog[open]')!);
+      assert(document.activeElement === nameInput, 'Section name input did not receive focus');
+      await change(nameInput, name); await click('shell:sidebarSessions.saveSection');
+    };
+    const expand = async (project: Workspace) => {
+      const toggle = document.querySelector<HTMLButtonElement>(`[aria-controls="workspace-sessions-${project.id}"]`);
+      assert(toggle, 'Project session toggle disappeared');
+      if (toggle.getAttribute('aria-expanded') === 'false') await performClick(toggle);
+    };
+    const replace = (next: typeof snapshot) => act(async () => { snapshot = next; publish(next); await tick(); });
+
+    try {
+      await render(<App />);
+      await expand(home); await expand(other);
+      const initial = trigger(first.id);
+      initial.focus();
+      await keyPress(initial, 'ArrowDown');
+      await waitFor(() => document.activeElement === openMenu()?.querySelector('[role=menuitem]'), 'ArrowDown did not focus the first session action');
+      await keyPress(document.activeElement as HTMLElement, 'Escape');
+      assert(document.activeElement === initial && !openMenu(), 'Escape did not restore the session menu trigger');
+      await action(initial, 'Pin session');
+      await action(trigger(second.id), 'Pin session');
+      assert(listed('Pinned sessions') === [first.id, second.id].join(',') && unique(first.id) && unique(second.id),
+        'Pinned sessions did not follow activity order or appeared in their project as well');
+      assert(document.querySelector(`[data-workspace-id="${home.id}"]`)?.classList.contains('group-pinned'), 'Pinning a session changed the project pin');
+      await action(organization(), 'Sort by creation time');
+      assert(listed('Pinned sessions') === [second.id, first.id].join(','), 'Creation sort did not reorder pinned sessions');
+      await action(organization(), 'Sort by recent activity');
+
+      await action(organization(), 'New section'); await nameSection(' Research ');
+      await action(trigger(first.id), 'Move to Research');
+      await action(trigger(second.id), 'Move to Research');
+      assert(listed('Research') === [first.id, second.id].join(',') && !section('Pinned sessions') && unique(first.id)
+        && row(first.id)?.querySelector('.session-attention.is-unread'), 'Moving a pinned session lost attention or duplicated its row');
+      await action(organization(), 'Sort by creation time');
+      assert(listed('Research') === [second.id, first.id].join(','), 'Creation sort did not reorder the section');
+      const comfortableHeight = row(first.id)!.getBoundingClientRect().height;
+      await action(organization(), 'Compact sidebar');
+      assert(compact() && row(first.id)!.getBoundingClientRect().height < comfortableHeight, 'Compact density did not reduce row height');
+      await action(section('Research')!.querySelector('[aria-haspopup=menu]')!, 'Rename section'); await nameSection('Delivery');
+      assert(!section('Research') && listed('Delivery') === [second.id, first.id].join(','), 'Renaming did not keep section membership and order');
+      await action(trigger(first.id), 'Pin session');
+      assert(listed('Pinned sessions') === first.id && unique(first.id), 'Pinning an organized session duplicated it');
+      await action(trigger(first.id), 'Unpin session');
+      assert(listed('Delivery') === [second.id, first.id].join(',') && unique(first.id), 'Unpinning did not restore the existing section');
+      await action(trigger(second.id), 'Move back to project');
+      assert(row(second.id)?.closest(`#workspace-sessions-${other.id}`) && document.activeElement === trigger(second.id), 'Returning to a project did not reveal and focus the session');
+      await action(trigger(second.id), 'Move to Delivery');
+      await action(trigger(third.id), 'Pin session');
+
+      await render(<div />); await render(<App />);
+      assert(compact() && listed('Delivery') === [second.id, first.id].join(',') && listed('Pinned sessions') === third.id,
+        'Session pin, section membership, order or density did not survive reopening');
+      await performClick(row(second.id)!.querySelector<HTMLButtonElement>('.sidebar-session-open')!);
+      await settle();
+      assert(opened.at(-1)?.join(',') === [other.id, second.id].join(',') && row(second.id)?.querySelector('[aria-current=true]'),
+        'Opening a grouped session did not select its original project and session');
+      await action(trigger(third.id), 'Move to Delivery');
+      await replace({ ...snapshot, sessions: [{ ...first, archived: true }, third] });
+      assert(!row(first.id) && !row(second.id) && listed('Delivery') === third.id, 'An archived or deleted session remained in the sidebar');
+      await replace({ ...snapshot, sessions: [first, second, third] });
+      assert(listed('Delivery') === third.id, 'A stale placement returned when a session reappeared');
+      await expand(home);
+      await action(section('Delivery')!.querySelector('[aria-haspopup=menu]')!, 'Remove section');
+      assert(!section('Delivery') && row(third.id)?.closest(`#workspace-sessions-${home.id}`)
+        && document.activeElement === organization(), 'Removing a section did not return sessions to their projects or restore focus');
+    } finally {
+      await render(<div />);
+      if (previous === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, previous);
+    }
   },
   'SIDEBAR-LAYOUT: drag, keyboard and collapse preserve the sidebar preference and workspace': async () => {
     const snapshot: Snapshot = { ...collaborationSnapshot([]), workspaces: [workspace], sessions: [session], providers: [provider] };
