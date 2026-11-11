@@ -32,3 +32,4 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+      - run: node scripts/verify-backend-build.mjs
