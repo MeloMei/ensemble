@@ -4,6 +4,7 @@ export const ATTACHMENT_LIMITS = { count: 4, imageBytes: 4 * 1024 * 1024, textBy
 
 export function supportsPromptAttachment(provider: ProviderInfo | undefined, kind: PromptAttachment['kind']): boolean {
   const capabilities = provider?.declaredCapabilities ?? provider?.capabilities;
+  if (provider?.source === 'acp') return capabilities?.[kind === 'image' ? 'images' : 'textAttachments'] === true;
   return provider?.source !== 'plugin' || (provider.protocolVersion === 2
     && capabilities?.[kind === 'image' ? 'images' : 'textAttachments'] === true);
 }

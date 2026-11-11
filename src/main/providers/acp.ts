@@ -3,7 +3,9 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { Readable, Writable } from 'node:stream';
 import { pathToFileURL } from 'node:url';
 import * as acp from '@agentclientprotocol/sdk';
-import type { ProviderAdapter, TurnContext } from './types';
+import acpSchema from '@agentclientprotocol/sdk/schema/schema.json' with { type: 'json' };
+import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
+import type { ProviderAdapter, ProviderEvent, TurnContext } from './types';
 import type { AcpConfigChoice, AcpLaunchSpec, AcpRuntimeDescriptor } from './acp-types';
 import { abortError, asError } from './json-rpc';
 import { signalProcessTree, watchOutputDrain } from './process-tree';
@@ -11,7 +13,7 @@ import { attachmentText, emitProcess, processStatus, processText } from './provi
 import { answerFormElicitation } from './form-elicitation';
 import { PRODUCT_ID, PRODUCT_NAME, PRODUCT_VERSION } from '../../shared/app-identity';
 import { SESSION_PERMISSION_TIERS } from '../../shared/session-permissions';
-import type { ProviderModel } from '../../shared/types';
+import type { ApprovalInput, ProviderInfo, ProviderModel } from '../../shared/types';
 
 type Options = acp.SessionConfigOption[];
 type SessionConfiguration = {
@@ -19,6 +21,10 @@ type SessionConfiguration = {
   models?: { currentModelId: string; availableModels: { modelId: string; name: string }[] } | null;
   modes?: acp.SessionModeState | null;
 };
+
+class UnsupportedAcpVersion extends Error {
+  constructor() { super('运行时返回了不受支持的 ACP 协议版本。'); }
+}
 
 function permissionTiers(descriptor: AcpRuntimeDescriptor) {
   return descriptor.permissionTiers ?? SESSION_PERMISSION_TIERS.filter(tier => descriptor.sessionModes?.[tier] !== undefined);
@@ -41,6 +47,117 @@ async function bounded<T>(operation: Promise<T>, timeoutMs: number, message: str
   let timer: ReturnType<typeof setTimeout> | undefined;
   try { return await Promise.race([operation, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(message)), timeoutMs); })]); }
   finally { clearTimeout(timer); }
+}
+
+let validateSessionUpdate: ReturnType<AjvJsonSchemaValidator['getValidator']> | undefined;
+
+function privateAcpStream(stream: acp.Stream): acp.Stream {
+  const outgoing = stream.writable.getWriter();
+  const pending = new Set<acp.JsonRpcId>();
+  return {
+    writable: new WritableStream({
+      write(message: acp.AnyMessage) {
+        if ('method' in message && 'id' in message) pending.add(message.id);
+        if ('method' in message && message.method === acp.PROTOCOL_METHODS.cancel_request && message.params && typeof message.params === 'object') {
+          pending.delete(Reflect.get(message.params, 'requestId'));
+        }
+        return outgoing.write(message);
+      },
+      close: () => outgoing.close(),
+      abort: reason => outgoing.abort(reason),
+    }),
+    readable: stream.readable.pipeThrough(new TransformStream({
+      transform(message, controller) {
+        // The SDK prints invalid frames and unknown reply IDs verbatim.
+        if (!message || typeof message !== 'object' || Array.isArray(message) || message.jsonrpc !== '2.0') return;
+        if ('method' in message) {
+          if (typeof message.method !== 'string') return;
+          if (!('id' in message) && message.method === acp.methods.client.session.update) {
+            validateSessionUpdate ??= new AjvJsonSchemaValidator().getValidator({
+              $defs: JSON.parse(JSON.stringify(acpSchema.$defs, (key, value) => key === 'format' ? undefined : value)),
+              $ref: '#/$defs/SessionNotification',
+            });
+            if (!validateSessionUpdate(message.params).valid) return;
+          }
+        } else if (!('id' in message) || !pending.delete(message.id)) return;
+        controller.enqueue(message);
+      },
+    })),
+  };
+}
+
+function openAcp(app: ReturnType<typeof acp.client>, launch: AcpLaunchSpec, cwd: string, maxMessageBytes: number, privateOutput = false) {
+  const child = spawn(launch.command, launch.args, {
+    cwd, env: launch.env, stdio: ['pipe', 'pipe', 'pipe'], shell: false,
+    detached: process.platform !== 'win32', windowsHide: true,
+  });
+  const exited = new Promise<void>(resolve => child.once('close', () => resolve()));
+  const stream = acp.ndJsonStream(
+    Writable.toWeb(child.stdin) as WritableStream<Uint8Array>,
+    Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>, { maxMessageBytes },
+  );
+  const connection = app.connect(privateOutput ? privateAcpStream(stream) : stream);
+  child.on('error', error => connection.close(error));
+  watchOutputDrain(child, () => connection.close(new Error('ACP 进程已退出，但子进程仍占用输出连接')));
+  for (const stream of [child.stdin, child.stdout, child.stderr]) stream.on('error', error => connection.close(error));
+  child.stderr.resume();
+  return { child, exited, connection };
+}
+
+async function initializeAcp(connection: acp.ClientConnection, forms: boolean, signal?: AbortSignal) {
+  const initialized = await connection.agent.request(acp.methods.agent.initialize, {
+    protocolVersion: acp.PROTOCOL_VERSION,
+    clientInfo: { name: PRODUCT_ID, title: PRODUCT_NAME, version: PRODUCT_VERSION },
+    clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false, ...(forms ? { elicitation: { form: {} } } : {}) },
+  }, { cancellationSignal: signal });
+  if (initialized.protocolVersion !== acp.PROTOCOL_VERSION) throw new UnsupportedAcpVersion();
+  return initialized;
+}
+
+export async function probeAcp(launch: AcpLaunchSpec, cwd: string, signal: AbortSignal): Promise<acp.AgentCapabilities> {
+  signal.throwIfAborted();
+  const deadline = AbortSignal.timeout(8000);
+  const stopped = AbortSignal.any([signal, deadline]);
+  const { child, connection, exited } = openAcp(acp.client({ name: PRODUCT_ID }), launch, cwd, 64 * 1024, true);
+  let killRequested = false;
+  const kill = () => {
+    if (killRequested) return;
+    killRequested = true;
+    signalProcessTree(child, 'SIGKILL');
+  };
+  stopped.addEventListener('abort', kill, { once: true });
+  try {
+    const reply = await initializeAcp(connection, false, stopped);
+    stopped.throwIfAborted();
+    return reply.agentCapabilities ?? {};
+  } catch (error) {
+    if (signal.aborted) throw abortError();
+    if (deadline.aborted) throw new Error('ACP 握手超时。');
+    if (error instanceof UnsupportedAcpVersion) throw error;
+    throw new Error('ACP 初始化失败。请检查可执行文件、参数和环境配置。');
+  } finally {
+    stopped.removeEventListener('abort', kill);
+    connection.close();
+    kill();
+    await bounded(exited, 1500, 'ACP 探测进程未退出。');
+  }
+}
+
+function protectAcpContext(context: TurnContext, redact: (value: string) => string): TurnContext {
+  const visible = (value?: string) => value === undefined ? undefined : redact(value);
+  const emit = (event: ProviderEvent) => {
+    if (event.type === 'text') event = { ...event, itemId: redact(event.itemId), text: redact(event.text) };
+    if (event.type === 'activity') event = { ...event, text: redact(event.text) };
+    if (event.type === 'structured') {
+      const item = event.event;
+      event = { ...event, event: { ...item, id: redact(item.id), title: redact(item.title), input: visible(item.input), output: visible(item.output),
+        nativeId: visible(item.nativeId), parentId: visible(item.parentId), entries: item.entries?.map(entry => ({ ...entry, text: redact(entry.text) })) } };
+    }
+    context.emit(event);
+  };
+  const approve = (input: ApprovalInput, signal?: AbortSignal) =>
+    context.approve({ ...input, title: redact(input.title), detail: redact(input.detail) }, signal);
+  return { ...context, emit, approve };
 }
 
 class AcpSession {
@@ -73,16 +190,14 @@ class AcpSession {
     this.preparing = this.descriptor.launch(this.original, context.mcpServers ?? [], context);
     this.launch = await this.preparing;
     if (context.signal.aborted || this.closing) throw abortError();
-    this.child = spawn(this.launch.command, this.launch.args, {
-      cwd: this.original.cwd, env: this.launch.env, stdio: ['pipe', 'pipe', 'pipe'],
-      shell: false, detached: process.platform !== 'win32', windowsHide: true,
-    });
-    this.exited = new Promise(resolve => this.child.once('close', () => { this.closed = true; resolve(); }));
-    this.child.on('error', error => { this.fatal = error; this.connection?.close(error); });
-    watchOutputDrain(this.child, () => this.connection.close(new Error('ACP 进程已退出，但子进程仍占用输出连接')));
-    this.child.stderr.resume();
     const app = acp.client({ name: PRODUCT_ID })
-      .onNotification(acp.methods.client.session.update, event => this.update(event.params))
+      .onNotification(acp.methods.client.session.update, event => {
+        try { this.update(event.params); }
+        catch (error) {
+          if (!this.descriptor.redact) throw error;
+          this.connection.close(new Error('ACP 运行时返回了无效的会话更新。'));
+        }
+      })
       .onRequest(acp.methods.client.session.requestPermission, event => this.permission(event.params, event.signal))
       .onRequest(acp.methods.client.elicitation.create, event => this.elicitation(event.params, event.signal));
     for (const [method, handler] of Object.entries(this.descriptor.clientRequests ?? {})) {
@@ -95,20 +210,11 @@ class AcpSession {
         if (this.current && this.prompting && !this.current.signal.aborted) handler(value, this.current);
       });
     }
-    this.connection = app.connect(acp.ndJsonStream(
-      Writable.toWeb(this.child.stdin) as WritableStream<Uint8Array>,
-      Readable.toWeb(this.child.stdout) as ReadableStream<Uint8Array>,
-      { maxMessageBytes: 16 * 1024 * 1024 },
-    ));
-    this.child.stdout.on('error', error => this.connection.close(error));
-    this.child.stdin.on('error', error => this.connection.close(error));
-    this.child.stderr.on('error', error => this.connection.close(error));
-    const initialized = await this.request(acp.methods.agent.initialize, {
-      protocolVersion: acp.PROTOCOL_VERSION,
-      clientInfo: { name: PRODUCT_ID, title: PRODUCT_NAME, version: PRODUCT_VERSION },
-      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false, elicitation: { form: {} } },
-    });
-    if (initialized.protocolVersion !== 1) throw new Error(`不支持 ${this.descriptor.name} 的 ACP 版本 ${initialized.protocolVersion}`);
+    const transport = openAcp(app, this.launch, this.original.cwd, 16 * 1024 * 1024, Boolean(this.descriptor.redact));
+    this.child = transport.child;
+    this.connection = transport.connection;
+    this.exited = transport.exited.then(() => { this.closed = true; });
+    const initialized = await bounded(initializeAcp(this.connection, this.descriptor.allowFormElicitation !== false), 30_000, `${this.descriptor.name} 请求超时：initialize`);
     this.capabilities = initialized.agentCapabilities;
     const mcpServers: acp.McpServer[] = (this.launch.mcpServers ?? context.mcpServers ?? []).map(server => {
       if (server.type === 'stdio') return { name: server.name, command: server.command, args: server.args, env: Object.entries(server.env ?? {}).map(([name, value]) => ({ name, value })) };
@@ -128,6 +234,7 @@ class AcpSession {
       return options;
     }
     const session = await this.request(acp.methods.agent.session.new, input);
+    if (this.descriptor.redact && this.descriptor.redact(session.sessionId) !== session.sessionId) throw new Error('运行时返回了包含私密配置的会话 ID。');
     this.nativeId = session.sessionId;
     return session;
   }
@@ -138,18 +245,21 @@ class AcpSession {
     const choices = model?.type === 'select' ? configChoices(model.options)
       : configuration.models?.availableModels?.map(item => ({ value: item.modelId, name: item.name })) ?? [];
     const currentModel = model?.type === 'select' ? model.currentValue : configuration.models?.currentModelId;
-    if (!choices.length || !currentModel) throw new Error(`${this.descriptor.name} 没有返回可验证的模型选项。`);
-    const selected = this.descriptor.selectModel(choices, requestedModelId ?? currentModel);
+    const useDefault = this.descriptor.useAgentModelDefault && !requestedModelId;
+    if (!useDefault && (!choices.length || !currentModel)) throw new Error(`${this.descriptor.name} 没有返回可验证的模型选项。`);
+    const selected = useDefault ? choices.find(choice => choice.value === currentModel) : this.descriptor.selectModel(choices, requestedModelId ?? currentModel!);
     let configured = options;
-    if (model?.type === 'select') {
+    if (!useDefault && selected && model?.type === 'select') {
       const response = await this.request(acp.methods.agent.session.setConfigOption, { sessionId: this.nativeId!, configId: model.id, value: selected.value });
       const actual = response.configOptions.find(option => option.id === model.id);
       if (actual?.type !== 'select' || actual.currentValue !== selected.value) throw new Error(`${this.descriptor.name} 未确认所选模型，任务未发送。`);
       configured = response.configOptions;
-    } else {
+    } else if (!useDefault && selected) {
       await bounded(this.connection.agent.request('session/set_model', { sessionId: this.nativeId!, modelId: selected.value }), 30_000, `${this.descriptor.name} 模型设置超时。`);
     }
-    this.onModels?.(choices.map(choice => ({ id: choice.value, name: choice.name, free: false })));
+    const redact = this.descriptor.redact;
+    if (choices.length) this.onModels?.(choices.filter(choice => !redact || redact(choice.value) === choice.value)
+      .map(choice => ({ id: choice.value, name: redact?.(choice.name) ?? choice.name, free: false })));
     const requestedEffort = this.current?.session.settings?.effort;
     const reasoning = configured.find(option => option.id === 'reasoning_effort');
     if (requestedEffort && reasoning?.type !== 'select') throw new Error(`${this.descriptor.name} 没有声明思考档选项，任务未发送。`);
@@ -175,7 +285,7 @@ class AcpSession {
         await this.request(acp.methods.agent.session.setMode, { sessionId: this.nativeId!, modeId: value });
       }
     }
-    this.current?.emit({ type: 'activity', text: `ACP 模型：${selected.name}；${this.descriptor.name} ${this.descriptor.version}` });
+    if (selected) this.current?.emit({ type: 'activity', text: `ACP 模型：${selected.name}；${this.descriptor.name} ${this.descriptor.version}` });
   }
 
   private update(event: acp.SessionNotification): void {
@@ -230,12 +340,15 @@ class AcpSession {
       }
       const detail = [tool.title, tool.rawInput === undefined ? '' : JSON.stringify(tool.rawInput, null, 2)].filter(Boolean).join('\n');
       const signal = AbortSignal.any([requestSignal, current.signal, controller.signal]);
+      const publicChoices = choices.map((option, index) => ({ id: this.descriptor.redact ? String(index) : option.optionId,
+        label: option.kind === 'allow_once' ? '允许本次' : '拒绝本次', labelI18n: { key: option.kind === 'allow_once' ? 'runtime:approval.allowOnce' : 'runtime:approval.denyOnce' } }));
       const selected = await current.approve({ title: `${this.descriptor.name} 请求操作`, titleI18n: { key: 'runtime:approval.requestAction', values: { provider: this.descriptor.name } }, detail: detail || tool.toolCallId,
-        choices: choices.map(option => ({ id: option.optionId, label: option.kind === 'allow_once' ? '允许本次' : '拒绝本次', labelI18n: { key: option.kind === 'allow_once' ? 'runtime:approval.allowOnce' : 'runtime:approval.denyOnce' } })) },
+        choices: publicChoices },
       signal);
       if (signal.aborted) return { outcome: { outcome: 'cancelled' } };
-      if (!choices.some(option => option.optionId === selected)) throw new Error('审批结果不属于运行时提供的选项。');
-      return { outcome: { outcome: 'selected', optionId: selected } };
+      const choice = choices[publicChoices.findIndex(option => option.id === selected)];
+      if (!choice) throw new Error('审批结果不属于运行时提供的选项。');
+      return { outcome: { outcome: 'selected', optionId: choice.optionId } };
     } catch (error) {
       if (current.signal.aborted || requestSignal.aborted || controller.signal.aborted) return { outcome: { outcome: 'cancelled' } };
       this.fatal = asError(error);
@@ -267,6 +380,7 @@ class AcpSession {
   }
 
   private async elicitation(request: acp.CreateElicitationRequest, requestSignal: AbortSignal): Promise<acp.CreateElicitationResponse> {
+    if (this.descriptor.allowFormElicitation === false) return { action: 'decline' };
     const current = this.current;
     if (!current || current.signal.aborted || requestSignal.aborted || !('sessionId' in request) || request.sessionId !== this.nativeId) return { action: 'cancel' };
     if (request.mode !== 'form') return { action: 'decline' };
@@ -387,22 +501,24 @@ class AcpSession {
 
 export interface AcpProvider extends ProviderAdapter { refreshInfo(): Promise<void> }
 
-export async function createAcpProvider(id: string, name: string, discover: () => Promise<AcpRuntimeDescriptor>): Promise<AcpProvider> {
+export async function createAcpProvider(id: string, name: string, discover: () => Promise<AcpRuntimeDescriptor>, source: ProviderInfo['source'] = 'builtin'): Promise<AcpProvider> {
   let descriptor: AcpRuntimeDescriptor | undefined;
   let disposed = false;
   const sessions = new Set<AcpSession>();
   const provider: AcpProvider = {
     get tracksDelivery() { return descriptor?.tracksDelivery; },
-    info: { id, name, available: false, source: 'builtin', detail: '尚未检测', detailI18n: { key: 'runtime:detection.notChecked' }, capabilities: { resume: true, approvals: true } },
+    info: { id, name, available: false, source, detail: '尚未检测', detailI18n: { key: 'runtime:detection.notChecked' }, capabilities: { resume: source === 'builtin', approvals: true } },
     async refreshInfo() {
       try {
         descriptor = await discover();
         if (descriptor.id !== id) throw new Error('ACP provider 身份不符');
         const tiers = permissionTiers(descriptor);
+        const advertised = descriptor.agentCapabilities;
         provider.info = { ...provider.info, available: true, detail: descriptor.detail, detailI18n: descriptor.detailI18n, models: descriptor.models, defaultModelId: descriptor.defaultModelId,
-          health: discoveryHealth({ binary: true, catalog: descriptor.models?.length ? true : undefined, source: 'acp-runtime-discovery' }),
+          health: discoveryHealth({ binary: true, protocol: advertised ? true : undefined, catalog: descriptor.models?.length ? true : undefined, source: advertised ? 'acp-initialize' : 'acp-runtime-discovery' }),
           efforts: descriptor.efforts,
-          capabilities: { resume: true, approvals: true, images: true, textAttachments: true, structured: true, usage: descriptor.reportsUsage !== false, questions: Boolean(descriptor.clientRequests), rewind: false, effort: Boolean(descriptor.efforts?.length), permissions: tiers.length > 0, permissionTiers: tiers.length ? tiers : undefined } };
+          capabilities: { resume: !advertised || Boolean(advertised.loadSession || advertised.sessionCapabilities?.resume), approvals: true,
+            images: !advertised || Boolean(advertised.promptCapabilities?.image), textAttachments: true, structured: true, usage: descriptor.reportsUsage !== false, questions: Boolean(descriptor.clientRequests), rewind: false, effort: Boolean(descriptor.efforts?.length), permissions: tiers.length > 0, permissionTiers: tiers.length ? tiers : undefined } };
       } catch (error) { descriptor = undefined; provider.info = { ...provider.info, available: false, detail: asError(error).message, detailI18n: { key: 'runtime:detection.failed', values: { provider: name, reason: asError(error).message } }, models: undefined, defaultModelId: undefined,
         health: discoveryHealth({ binary: undefined, source: 'acp-discovery-error' }) }; }
     },
@@ -414,7 +530,9 @@ export async function createAcpProvider(id: string, name: string, discover: () =
           health: discoveryHealth({ binary: true, protocol: true, catalog: true, source: 'acp-native-session' }) };
       });
       sessions.add(session);
-      try { await session.run(context); }
+      const redact = descriptor.redact;
+      try { await session.run(redact ? protectAcpContext(context, redact) : context); }
+      catch (error) { if (redact) throw new Error(redact(asError(error).message)); throw error; }
       finally { sessions.delete(session); }
     },
     async dispose() {

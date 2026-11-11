@@ -14,10 +14,17 @@ export type RunStatus = 'draft' | 'running' | 'completed' | 'failed' | 'cancelle
 export const BUILTIN_PROVIDER_IDS = ['codex', 'claude', 'pi', 'gemini', 'cursor', 'qoder', 'opencode', 'deepseek-harness'] as const;
 export interface ProviderModel { id: string; name: string; free: boolean; efforts?: string[] }
 
+export interface CustomAcpInput {
+  name: string;
+  command: string;
+  args: string[];
+  environment: { key: string; value: string }[];
+}
+
 export interface ProviderInfo {
   id: string;
   name: string;
-  source: 'builtin' | 'plugin';
+  source: 'builtin' | 'plugin' | 'acp';
   available: boolean;
   detail: string;
   detailI18n?: DisplayText;
@@ -331,6 +338,10 @@ export interface WorkbenchAPI {
   setSessionQueuePaused(id: string, paused: boolean): Promise<void>;
   reconcileSessionDelivery(id: string): Promise<void>;
   providerHealth(cwd?: string): Promise<ProviderInfo[]>;
+  chooseAcpExecutable(): Promise<string | null>;
+  addCustomAcp(requestId: string, input: CustomAcpInput): Promise<void>;
+  cancelCustomAcp(requestId: string): Promise<void>;
+  removeCustomAcp(providerId: string): Promise<void>;
   diagnostics(): Promise<DiagnosticEntry[]>;
   exportDiagnostics(): Promise<string>;
   setDiagnosticTracing(enabled: boolean): Promise<void>;

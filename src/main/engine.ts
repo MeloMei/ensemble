@@ -198,6 +198,18 @@ export class WorkbenchEngine {
     this.pluginErrors = errors; this.changed();
   }
 
+  assertProviderIdle(id: string): void {
+    this.assertOpen();
+    if (this.store.state.sessions.some(session => session.providerId === id
+      && (this.active.has(session.id) || session.queue?.length || session.approvals.length))) {
+      throw new Error('请先结束该 ACP 运行时的任务并清空排队消息。');
+    }
+  }
+
+  async disposeRemovedProvider(adapter: ProviderAdapter): Promise<void> {
+    if (this.disposableAdapters.delete(adapter)) await adapter.dispose?.();
+  }
+
   liveSnapshot(): Snapshot {
     return { ...this.store.state, providers: this.providerInfo, dataPath: this.store.path, pluginPath: this.pluginPath, pluginErrors: this.pluginErrors, terminals: this.terminals };
   }
@@ -426,6 +438,7 @@ export class WorkbenchEngine {
     const modelId = selectProviderModel(provider, input.modelId);
     const cwd = await validateWorkspace(resolveDirectory ? await resolveDirectory() : input.cwd);
     await this.prepareExecutionKey(cwd); this.assertOpen();
+    if (!this.adapters.get(input.providerId)?.info.available) throw new Error('这个 Agent 目前不可用。');
     this.assertProjectAdmission(cwd);
     if (input.location && this.store.state.workspaces.some(workspace => workspace.cwd === cwd && workspace.archived)) {
       throw new Error(archivedProjectNotice);

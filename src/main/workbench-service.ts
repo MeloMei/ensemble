@@ -11,6 +11,8 @@ import { createCodexProvider } from './providers/codex';
 import { createClaudeProvider } from './providers/claude';
 import { createPiProvider } from './providers/pi';
 import { createAcpProvider, type AcpProvider } from './providers/acp';
+import { InstalledAcpRuntimes } from './providers/installed-acp';
+import type { ProviderAdapter } from './providers/types';
 import { createOpenCodeDescriptor } from './providers/opencode';
 import { createDeepSeekHarnessDescriptor } from './providers/deepseek-harness';
 import { createGeminiDescriptor } from './providers/gemini';
@@ -120,6 +122,9 @@ export async function createWorkbenchService(options: {
     const engine = new WorkbenchEngine(store, pluginPath, publish);
     const updateGuard = new ApplicationUpdateGuard(() => publicSnapshot(engine.liveSnapshot()));
     cleanup.push(() => engine.shutdown());
+    const installedAcp = new InstalledAcpRuntimes(join(options.dataPath, 'acp-runtimes'));
+    cleanup.push(() => installedAcp.close());
+    await installedAcp.load();
     await engine.prepareExecutionKeys();
     const attachments = new AttachmentService(join(options.dataPath, 'attachments'));
     const core = new CollaborationCore(store, engine, { attachments, publish: () => publish(engine.liveSnapshot()) });
@@ -179,6 +184,9 @@ export async function createWorkbenchService(options: {
     let geminiProvider: AcpProvider | undefined;
     let cursorProvider: AcpProvider | undefined;
     let qoderProvider: AcpProvider | undefined;
+    let baseProviders: ProviderAdapter[] = options.providers ?? [];
+    let pluginErrors: string[] = [];
+    const publishProviders = () => engine.setProviders([...baseProviders, ...installedAcp.adapters()].map(instrument), [], pluginErrors);
     const installer = new RuntimeInstaller(options.dataPath, async id => {
       await refreshProviders();
       return engine.liveSnapshot().providers.some(provider => provider.id === id && provider.available);
@@ -201,9 +209,11 @@ export async function createWorkbenchService(options: {
         geminiProvider ? geminiProvider.refreshInfo() : createAcpProvider('gemini', 'Gemini CLI', async () => createGeminiDescriptor({ dataPath, managedBinary: await installer.managedBinary('gemini') })).then(provider => { geminiProvider = provider; }),
         cursorProvider ? cursorProvider.refreshInfo() : createAcpProvider('cursor', 'Cursor Agent', () => createCursorDescriptor({ dataPath })).then(provider => { cursorProvider = provider; }),
         qoderProvider ? qoderProvider.refreshInfo() : createAcpProvider('qoder', 'Qoder CLI', () => createQoderDescriptor()).then(provider => { qoderProvider = provider; }),
+        installedAcp.refresh(),
       ]);
-      const codex = codexProvider;
-      engine.setProviders([codex, claude, pi, geminiProvider!, cursorProvider!, qoderProvider!, openCodeProvider!, deepSeekProvider!, ...plugins.adapters].map(instrument), [], plugins.errors);
+      baseProviders = [codexProvider, claude, pi, geminiProvider!, cursorProvider!, qoderProvider!, openCodeProvider!, deepSeekProvider!, ...plugins.adapters];
+      pluginErrors = plugins.errors;
+      publishProviders();
     }
 
 
@@ -281,6 +291,18 @@ export async function createWorkbenchService(options: {
       return installer.install(id);
     });
     handle('workbench:cancel-runtime-install', (_event, id) => installer.cancel(idSchema.parse(id)));
+    handle('workbench:add-custom-acp', async (_event, requestId, input) => {
+      await installedAcp.add(z.string().uuid().parse(requestId), input);
+      publishProviders();
+    });
+    handle('workbench:cancel-custom-acp', (_event, requestId) => installedAcp.cancel(z.string().uuid().parse(requestId)));
+    handle('workbench:remove-custom-acp', async (_event, providerId) => {
+      const id = idSchema.parse(providerId);
+      engine.assertProviderIdle(id);
+      const removed = installedAcp.remove(id);
+      publishProviders();
+      await engine.disposeRemovedProvider(instrument(removed));
+    });
     handle('workbench:session-locations', (_event, id) => managedWorktrees!.sessionLocations(idSchema.parse(id)));
     handle('workbench:create-session', (_event, input: unknown) => {
       const parsed = sessionInputSchema.parse(input);
@@ -443,7 +465,7 @@ export async function createWorkbenchService(options: {
       return attachments.importFiles(files);
     });
 
-    if (options.providers) engine.setProviders(options.providers.map(instrument), [], []);
+    if (options.providers) publishProviders();
     else await refreshProviders();
     const readUpdateRecord = async (name: string): Promise<unknown> => {
       try { return JSON.parse(await readFile(join(options.dataPath, 'updates', name), 'utf8')); }
@@ -478,7 +500,7 @@ export async function createWorkbenchService(options: {
       async shutdown(): Promise<void> {
         stopDiagnostics();
         await installer.shutdown();
-        const results = await Promise.allSettled([core.close(), terminalManager.shutdown(), engine.shutdown(), collaboration.close()]);
+        const results = await Promise.allSettled([core.close(), terminalManager.shutdown(), engine.shutdown(), collaboration.close(), installedAcp.close()]);
         results.push(...await Promise.allSettled([store.close(), diagnostics.flush()]));
         const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
         if (failures.length) throw new AggregateError(failures.map(result => result.reason), '后台退出未完成');

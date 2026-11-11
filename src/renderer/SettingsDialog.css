@@ -47,3 +47,10 @@
 .notification-setting-row:has(input:disabled) { color: var(--muted); }
 .window-capture-preview { display: block; width: 100%; max-height: 220px; object-fit: contain; border-radius: var(--radius-control); }
 .setting-search-highlight { outline: 1px solid var(--accent); outline-offset: 2px; border-radius: var(--radius-control); background-color: var(--hover); }
+.custom-acp-form { display: grid; gap: 12px; margin-top: 12px; }
+.custom-acp-form fieldset { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.custom-acp-form legend { margin-bottom: 5px; }
+.custom-acp-form fieldset > button { justify-self: start; }
+.custom-acp-row { display: flex; align-items: center; gap: 8px; }
+.custom-acp-row input { flex: 1; min-width: 0; }
+.custom-acp-row button { flex: 0 0 auto; }

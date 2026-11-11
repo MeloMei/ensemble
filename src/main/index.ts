@@ -182,6 +182,10 @@ function registerIPC(commands: string[]): void {
     const result = await dialog.showOpenDialog(window!, { title: translate('native:dialog.chooseDirectory'), buttonLabel: translate('native:dialog.chooseDirectoryButton'), properties: ['openDirectory', 'createDirectory'] });
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
+  handle('workbench:choose-acp-executable', async () => {
+    const result = await dialog.showOpenDialog(window!, { title: translate('shell:provider.acpChooseExecutable'), properties: ['openFile'] });
+    return result.canceled ? null : result.filePaths[0] ?? null;
+  });
   handle('workbench:choose-attachments', async () => {
     const result = await dialog.showOpenDialog(window!, { title: translate('native:dialog.chooseAttachments'), buttonLabel: translate('native:dialog.chooseAttachmentsButton'), properties: ['openFile', 'multiSelections'] });
     return result.canceled ? [] : backend.call('workbench:import-attachments', result.filePaths);

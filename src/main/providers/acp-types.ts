@@ -1,7 +1,7 @@
 import type { McpServerConfig, ProviderModel, Session } from '../../shared/types';
 import type { DisplayText } from '../../shared/display-text';
 import type { SessionPermission } from '../../shared/session-permissions';
-import type { ToolCallUpdate } from '@agentclientprotocol/sdk';
+import type { AgentCapabilities, ToolCallUpdate } from '@agentclientprotocol/sdk';
 import type { TurnContext } from './types';
 
 export interface AcpConfigChoice { value: string; name: string }
@@ -23,6 +23,10 @@ export interface AcpRuntimeDescriptor {
   detailI18n?: DisplayText;
   models?: ProviderModel[];
   defaultModelId?: string;
+  agentCapabilities?: AgentCapabilities;
+  useAgentModelDefault?: boolean;
+  allowFormElicitation?: boolean;
+  redact?(text: string): string;
   tracksDelivery?: boolean;
   usageScope?: 'turn' | 'cumulative';
   reportsUsage?: boolean;
