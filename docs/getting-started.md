@@ -143,6 +143,21 @@ Set `WORKBENCH_DATA_DIR` before starting the desktop application or CLI to use a
 
 `backend.json` contains a local management credential and is written with mode `0600`. Keep the data directory and issued connection configurations private. The backend listens only on `127.0.0.1`; a local address does not remove the need for authentication.
 
+### Run the backend as a user service
+
+Use Node.js 22.22 or later in a stable checkout. Build the CLI and backend without downloading or launching Electron:
+
+```sh
+ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci
+npm run build:headless
+bin/workbench daemon install
+bin/workbench daemon status
+```
+
+macOS uses a LaunchAgent when the user is logged into the graphical session. Linux uses a systemd user service. To keep it running after logout on Linux, the account needs systemd lingering enabled. The service restarts the backend after failure. Use `daemon stop`, `daemon start`, `daemon restart`, or `daemon uninstall`. Uninstall leaves all sessions and data in place. `daemon status` reports whether the backend is accepting connections. See `backend.log` on macOS and the systemd user journal on Linux.
+
+For an existing desktop data directory, quit Ensemble and run `bin/workbench stop` if its ordinary backend is still running before installing the service. Clients with the same data directory use the service. Uninstall the service before using the desktop app's automatic updater with that data directory.
+
 ## Connect an external agent
 
 Open **Collaboration → Agent MCP connections**, give the agent a name, and authorize its project directories and platform runtimes. Copy the generated configuration into the original client. The credential is shown only when issued and can be revoked independently.

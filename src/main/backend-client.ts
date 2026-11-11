@@ -5,6 +5,7 @@ import type { BackendConnectionState, BackendEndpoint, BackendReply, BackendStre
 import { BACKEND_STREAM_VERSION } from '../shared/backend';
 import type { Snapshot } from '../shared/types';
 import { SnapshotGapError, SnapshotReplica } from '../shared/snapshot-stream';
+import { managedBackend } from './backend-discovery';
 
 class BackendProtocolError extends Error {}
 
@@ -210,6 +211,9 @@ export async function connectBackend(dataPath: string, launch?: { command: strin
   };
   const existing = await read(); if (existing) return existing;
   if (!launch) throw new Error('后台未运行，请先启动工作台。');
+  if (await managedBackend(dataPath) !== undefined) {
+    throw new Error('此数据目录由后台服务管理。请运行 workbench daemon status 或 workbench daemon start。');
+  }
   await mkdir(dataPath, { recursive: true, mode: 0o700 });
   const log = await open(join(dataPath, 'backend.log'), 'a', 0o600);
   const child = spawn(launch.command, [launch.entryPath, '--data-dir', dataPath], {

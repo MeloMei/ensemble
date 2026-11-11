@@ -49,6 +49,7 @@ function listen(server: Server, port: number): Promise<void> {
 
 export async function startBackend(options: {
   dataPath: string; command: string; bridgePath: string;
+  managedService?: string;
   providers?: Parameters<typeof createWorkbenchService>[0]['providers'];
 }) {
   await mkdir(options.dataPath, { recursive: true, mode: 0o700 });
@@ -176,7 +177,8 @@ export async function startBackend(options: {
     }
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('后台地址无效。');
-    const endpoint: BackendEndpoint = { version: 1, url: `http://127.0.0.1:${address.port}`, token, pid: process.pid, instanceId, startedAt: new Date().toISOString() };
+    const endpoint: BackendEndpoint = { version: 1, url: `http://127.0.0.1:${address.port}`, token, pid: process.pid, instanceId,
+      startedAt: new Date().toISOString(), managedService: options.managedService };
     service.setPublicEndpoint(endpoint.url);
     await saveEndpoint(endpointPath, endpoint);
     return {
