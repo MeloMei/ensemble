@@ -7,7 +7,7 @@ import { constants } from 'node:fs';
 import { lstat, open, opendir, realpath, rename, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { TextDecoder } from 'node:util';
-import type { FileContent, FileDiff, FileEntry, GitBranchComparison, GitCommitPreview, GitMutation, GitState,
+import type { FileContent, FileDiff, FileEntry, GitBranchComparison, GitCommitPreview, GitHistory, GitHistoryCommit, GitMutation, GitState,
   WorkspaceFileMatch, WorkspaceTextMatch, WorkspaceTextSearch } from '../shared/types';
 import { parsePorcelainV1Records, type PorcelainV1Record } from './vendor/orca/porcelain-v1-records';
 
@@ -533,6 +533,57 @@ export class WorkspaceFiles {
   async gitBranchRefs(cwd: string): Promise<string[]> {
     const root = await workspaceRoot(cwd);
     return (await branchRefs(root, ['refs/heads/', 'refs/remotes/'])).map(({ ref }) => ref);
+  }
+
+  async gitHistory(cwd: string, query: string, allBranches: boolean, limit: number): Promise<GitHistory> {
+    const root = await workspaceRoot(cwd);
+    const head = await branchGit(root, ['rev-parse', '--verify', 'HEAD^{commit}'], { allowedCodes: [0, 128] });
+    if (!allBranches && head.code !== 0) return { commits: [], limited: false };
+    if (head.code !== 0) {
+      const refs = await branchGit(root, ['for-each-ref', '--count=1', '--format=%(objectname)', 'refs/heads', 'refs/remotes']);
+      if (!refs.stdout.trim()) return { commits: [], limited: false };
+    }
+    const refs = allBranches ? ['--branches', '--remotes', ...(head.code === 0 ? ['HEAD'] : [])] : ['HEAD'];
+    const filter = query ? ['--fixed-strings', '--regexp-ignore-case', `--grep=${query}`] : [];
+    const format = ['%H', '%P', '%s', '%an', '%aI', '%D'].join('%x00');
+    const result = await branchGit(root, ['log', '--topo-order', '--full-history', '--parents', '-z', `--max-count=${limit + 1}`,
+      `--format=${format}`, ...filter, ...refs, '--', '.']);
+    const fields = result.stdout.split('\0');
+    const commits: GitHistoryCommit[] = [];
+    for (let index = 0; index + 5 < fields.length; index += 6) {
+      const [sha, parentList, subject, author, authoredAt, refs] = fields.slice(index, index + 6);
+      if (!commitShaPattern.test(sha)) throw new Error('Git returned an invalid commit history record');
+      commits.push({ sha, parents: parentList.split(' ').filter(parent => commitShaPattern.test(parent)), subject, author, authoredAt, refs });
+    }
+    return { commits: commits.slice(0, limit), limited: commits.length > limit };
+  }
+
+  private async commitDiffArgs(root: string, sha: string) {
+    if (!commitShaPattern.test(sha)) throw new Error('Select a valid commit');
+    const { stdout } = await branchGit(root, ['rev-list', '--parents', '-n', '1', `${sha}^{commit}`, '--']);
+    const [commit, parent] = stdout.trim().split(' ');
+    if (commit !== sha) throw new Error('The selected commit is unavailable');
+    return parent ? ['diff', parent, sha] : ['show', '--format=', '--root', sha];
+  }
+
+  private async commitPaths(root: string, args: string[]) {
+    const { stdout } = await branchGit(root, [...args, '--name-only', '-z', '--no-renames', ...diffOptions, '--', '.']);
+    const files = stdout.split('\0').filter(Boolean);
+    if (files.length > ENTRY_LIMIT) throw new Error('Commit changes exceed the 2000 entry limit');
+    return files;
+  }
+
+  async gitCommitFiles(cwd: string, sha: string): Promise<string[]> {
+    const root = await workspaceRoot(cwd);
+    return this.commitPaths(root, await this.commitDiffArgs(root, sha));
+  }
+
+  async gitCommitDiff(cwd: string, sha: string, path: string): Promise<FileDiff> {
+    const root = await workspaceRoot(cwd);
+    const args = await this.commitDiffArgs(root, sha);
+    if (!(await this.commitPaths(root, args)).includes(path)) throw new Error('The file did not change in this commit inside the workspace');
+    const result = await branchGit(root, [...args, '--no-renames', ...diffOptions, '--', path], { allowTruncated: true });
+    return { path, patch: result.stdout, binary: /^Binary files .* differ$/m.test(result.stdout), truncated: result.truncated };
   }
 
   async gitBranchComparison(cwd: string, targetRef: string): Promise<GitBranchComparison> {

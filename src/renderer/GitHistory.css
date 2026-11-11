@@ -1,0 +1,17 @@
+.git-history { display: grid; gap: 12px; }
+.git-history-search { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.git-history-search > input { flex: 1 1 220px; }
+.git-history-search label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--font-size-12); }
+.git-history-content { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+.git-history-commits, .git-history-details { display: flex; flex-direction: column; min-width: 0; max-height: min(55vh, 550px); overflow: auto; }
+.git-history-commit { display: flex; align-items: stretch; gap: 8px; min-height: 42px; padding: 0 6px; text-align: start; border-radius: var(--radius-control); }
+.git-history-commit:hover, .git-history-commit[aria-pressed=true], .git-history-files .tree-row[aria-pressed=true] { background: var(--selected); }
+.git-history-commit > span { display: grid; align-content: center; min-width: 0; padding-block: 5px; }
+.git-history-commit strong, .git-history-commit small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-history-commit strong { font-size: var(--font-size-13); font-weight: 550; }
+.git-history-commit small { color: var(--muted); }
+.git-history-lanes { align-self: stretch; fill: var(--accent); color: var(--accent); }
+.git-history-lanes path { fill: none; stroke: currentColor; vector-effect: non-scaling-stroke; }
+.git-history-details { gap: 8px; padding-inline-start: 10px; border-inline-start: 1px solid var(--border); }
+.git-history-files { flex: 0 0 auto; max-height: 145px; overflow: auto; }
+.git-history-details pre { margin: 0; padding: 8px; background: var(--editor-bg); border: 1px solid var(--border); border-radius: var(--radius-control); overflow: auto; }

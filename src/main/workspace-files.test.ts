@@ -49,6 +49,34 @@ test('workspace file access stays inside realpath boundaries, including dangling
   await assert.rejects(files.diff(root, 'outside-directory/missing.txt'), /outside/);
 });
 
+test('commit history filters branches and messages and reads committed diffs inside the workspace', async () => {
+  const root = await repository();
+  const project = path.join(root, 'project');
+  await mkdir(project);
+  assert.deepEqual(await files.gitHistory(project, '', true, 50), { commits: [], limited: false });
+  const name = 'file [literal]*.txt';
+  await writeFile(path.join(project, name), 'initial\n');
+  await writeFile(path.join(root, 'outside.txt'), 'outside secret\n');
+  git(root, 'add', '.'); git(root, 'commit', '-qm', 'Initial');
+  const initial = git(root, 'rev-parse', 'HEAD').trim();
+  git(root, 'switch', '-qc', 'topic');
+  await writeFile(path.join(project, name), 'committed content\n');
+  git(root, 'commit', '-qam', 'Change [topic]*');
+  const topic = git(root, 'rev-parse', 'HEAD').trim();
+  git(root, 'switch', '-q', 'main');
+  await writeFile(path.join(project, name), 'uncommitted content\n');
+  assert.deepEqual((await files.gitHistory(project, '[TOPIC]*', false, 50)).commits, []);
+  assert.deepEqual((await files.gitHistory(project, '[TOPIC]*', true, 50)).commits.map(commit => commit.sha), [topic]);
+  assert.equal((await files.gitHistory(project, '', true, 1)).limited, true);
+  assert.deepEqual(await files.gitCommitFiles(project, initial), [name]);
+  assert.deepEqual(await files.gitCommitFiles(project, topic), [name]);
+  assert.match((await files.gitCommitDiff(project, initial, name)).patch, /\+initial/);
+  const patch = (await files.gitCommitDiff(project, topic, name)).patch;
+  assert.match(patch, /\+committed content/);
+  assert.doesNotMatch(patch, /uncommitted content|outside secret/);
+  await assert.rejects(files.gitCommitDiff(project, topic, '../outside.txt'), /inside the workspace/);
+});
+
 test('file reader rejects binary, non-UTF-8 and larger files without returning their contents', async () => {
   const root = await directory();
   await writeFile(path.join(root, 'binary.bin'), Buffer.from([65, 0, 66]));

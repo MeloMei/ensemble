@@ -8,6 +8,7 @@ import type { FileContent, FileDiff, FileEntry, GitCommitPreview, GitMutation, G
 import { BranchComparison } from './BranchComparison';
 import { CodeEditor, type CodeEditorHandle } from './CodeEditor';
 import { DiffReview } from './DiffReview';
+import { GitHistory } from './GitHistory';
 import { WorkspaceFileTree } from './WorkspaceFileTree';
 import { FileDraftStore } from './file-drafts';
 import { diffRangeLines, reviewFeedback, reviewNoteSchema, type DiffNoteDraft, type ReviewNote } from './review-notes';
@@ -300,6 +301,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
     </div>
     {!missingDirectory && <div className="file-branch"><GitBranch size={13} /><span>{git?.available ? git.branch : t('files.notGitLabel')}</span>
       {view === 'changes' && <BranchComparison workspaceId={workspace.id} />}
+      {view === 'changes' && git?.available && <GitHistory workspaceId={workspace.id} />}
       {git?.available && <button className="review-text-button" disabled={!!busy || dirty} onClick={() => run('preview', async () => setPreview(await window.workbench.gitCommitPreview(workspace.id)))}>{t('files.commitPreview')}</button>}
     </div>}
     {notice && <div className="pane-note error-text" role="alert">{typeof notice === 'string' ? notice : renderDisplayText('', notice)}</div>}

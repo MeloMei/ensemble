@@ -1999,6 +1999,34 @@ const cases: Record<string, () => Promise<void>> = {
     assert(JSON.stringify(calls) === JSON.stringify([[currentProject.id], [currentProject.id, remote], [currentProject.id, local], [currentProject.id, remote]]),
       'Branch comparison used a different workspace or did not send the full selected ref');
   },
+  'GIT-HISTORY: search and branch scope lead to the selected committed file': async () => {
+    const main = { sha: 'a'.repeat(40), parents: [], subject: 'Main history', author: 'Fixture', authoredAt: '2026-10-01T00:00:00Z', refs: 'main' };
+    const topic = { ...main, sha: 'b'.repeat(40), parents: [main.sha], subject: 'Topic change', refs: 'topic' };
+    const paths: string[][] = [];
+    window.workbench = {
+      listFiles: async () => [], setUnsavedFiles: () => {},
+      gitState: async () => ({ available: true, branch: 'main', changes: [] }),
+      gitHistory: async (_id: string, query: string, all: boolean) => ({ commits: (all ? [topic, main] : [main]).filter(commit => commit.subject.includes(query)), limited: false }),
+      gitCommitFiles: async (_id: string, sha: string) => { paths.push([sha]); return ['topic.txt']; },
+      gitCommitDiff: async (_id: string, sha: string, path: string) => { paths.push([sha, path]); return { path, patch: '+committed text', binary: false, truncated: false }; },
+    } as unknown as Window['workbench'];
+    await render(<FileReviewPanel workspace={workspace} refreshKey="git-history" perform={perform} />);
+    await settle();
+    await act(async () => { document.querySelector<HTMLButtonElement>('.file-view-tabs button:nth-child(2)')!.click(); await tick(); });
+    await click('workspace:files.gitHistory');
+    await waitFor(() => Boolean(document.querySelector('.git-history-commit')), 'History did not load');
+    assert(document.querySelectorAll('.git-history-commit').length === 1, 'Current branch included other branches');
+    await act(async () => { input('.git-history-search input[type=checkbox]').click(); await tick(); });
+    await waitFor(() => document.querySelectorAll('.git-history-commit svg').length === 2, 'All branches did not display both graph rows');
+    await change(input('.git-history-search input[type=search]'), 'Topic');
+    await click('workspace:files.historySearch');
+    await waitFor(() => document.querySelectorAll('.git-history-commit').length === 1, 'The submitted search did not narrow the list');
+    await act(async () => { document.querySelector<HTMLButtonElement>('.git-history-commit')!.click(); await tick(); });
+    await waitFor(() => Boolean(document.querySelector('.git-history-files button')), 'Commit files did not load');
+    await act(async () => { document.querySelector<HTMLButtonElement>('.git-history-files button')!.click(); await tick(); });
+    await waitFor(() => document.querySelector('.git-history-details pre')?.textContent === '+committed text', 'The committed patch did not render');
+    assert(JSON.stringify(paths) === JSON.stringify([[topic.sha], [topic.sha, 'topic.txt']]), 'The file patch used a different commit');
+  },
   'DIFF-NOTES: pointer and keyboard select a range and preserve its text when the diff changes': async () => {
     const filePath = 'range.ts';
     const legacyPath = 'legacy.ts';
