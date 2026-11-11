@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { motion, useReducedMotion } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { ArrowUpRight, CircleHelp, Clock3, FileCheck2, FileText, GitBranch, Maximize, Minus, Network, Plus, RefreshCw, X } from 'lucide-react';
 import { Background, BaseEdge, ControlButton, Controls, EdgeLabelRenderer, Handle, MarkerType, Position, ReactFlow, getSmoothStepPath, useNodes, useNodesInitialized, useReactFlow, useStore, type Connection, type Edge, type EdgeChange, type EdgeProps, type Node, type NodeChange, type NodeProps } from '@xyflow/react';
 import ELK from 'elkjs/lib/elk-api.js';
 import ELKWorker from 'elkjs/lib/elk-worker.min.js?worker';
-import { useAppearance } from './appearance';
+import { useAppearance, useReducedMotion } from './appearance';
 import { AgentIcon } from './AgentIcon';
 import { Tooltip } from './Tooltip';
 import { Status } from './ui';

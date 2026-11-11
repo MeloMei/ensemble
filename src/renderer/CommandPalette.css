@@ -11,7 +11,7 @@
   background: var(--surface-raised);
   color: var(--muted);
   text-align: start;
-  font-size: 12px;
+  font-size: var(--font-size-12);
 }
 .command-palette-trigger:hover {
   border-color: var(--border-strong);
@@ -35,7 +35,7 @@
   border-radius: 4px;
   color: var(--dim);
   font: inherit;
-  font-size: 10px;
+  font-size: var(--font-size-10);
   white-space: nowrap;
 }
 .modal.command-palette {
@@ -50,7 +50,7 @@
   margin-bottom: 8px;
   padding-inline: 4px;
 }
-.command-palette .modal-heading h2 { font-size: 14px; }
+.command-palette .modal-heading h2 { font-size: var(--font-size-14); }
 .command-palette-scopes {
   display: flex;
   flex: 0 0 auto;
@@ -68,7 +68,7 @@
   padding-inline: 7px;
   border-radius: var(--radius-control);
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--font-size-12);
 }
 .command-palette-scopes > button:hover { background: var(--hover); }
 .command-palette-scopes > button[aria-selected=true] {
@@ -83,7 +83,7 @@
   padding: 8px 4px 0;
   border-top: 1px solid var(--border);
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--font-size-11);
 }
 .command-palette-hints > span {
   display: flex;

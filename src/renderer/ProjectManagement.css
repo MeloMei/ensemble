@@ -45,7 +45,7 @@
   padding: 5px 8px;
   border-radius: var(--radius-control);
   text-align: left;
-  font-size: 12px;
+  font-size: var(--font-size-12);
 }
 .project-actions-menu button:hover,
 .project-actions-menu button:focus-visible { background: var(--hover); outline-offset: -2px; }
@@ -60,8 +60,8 @@
 .modal .project-management-name > label { flex: 1 1 170px; min-width: 0; margin: 0; }
 .project-management-directory { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
 .project-management-directory > div { flex: 1 1 170px; min-width: 0; }
-.project-management-directory strong, .project-management-destination strong { font-size: 12px; font-weight: 550; }
-.project-management-path { display: block; margin-top: 5px; color: var(--muted); overflow-wrap: anywhere; font-size: 12px; }
+.project-management-directory strong, .project-management-destination strong { font-size: var(--font-size-12); font-weight: 550; }
+.project-management-path { display: block; margin-top: 5px; color: var(--muted); overflow-wrap: anywhere; font-size: var(--font-size-12); }
 .project-management-destination {
   display: grid;
   justify-items: start;
@@ -73,4 +73,4 @@
   background: var(--surface);
 }
 .project-management-destination .project-management-path { margin: 0; }
-.project-management-error { margin-top: 12px; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.project-management-error { margin-top: 12px; font-size: var(--font-size-12); line-height: 1.7; overflow-wrap: anywhere; }

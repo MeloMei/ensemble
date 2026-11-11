@@ -28,7 +28,3 @@
 @keyframes ui-roll-enter {
   from { transform: translateY(-.7em) scale(.93); opacity: 0; }
 }
-@media (prefers-reduced-motion: reduce) {
-  .ui-rolling-text-leaving { display: none; }
-  .ui-rolling-text-entering { animation: none; }
-}

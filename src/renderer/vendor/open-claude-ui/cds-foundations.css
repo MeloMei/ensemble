@@ -39,7 +39,7 @@
 .cds-control-danger { color: var(--danger); }
 .cds-control-danger > [data-cds-part="paint"] { background: var(--danger-soft); }
 .cds-control-icon { width: 32px; height: 32px; }
-.cds-control-sm { min-height: 30px; padding: 6px 10px; font-size: 12px; }
-.cds-control-md { min-height: 36px; padding: 8px 14px; font-size: 13px; }
-.cds-control-lg { min-height: 42px; padding: 10px 18px; font-size: 14px; border-radius: 12px; }
+.cds-control-sm { min-height: 30px; padding: 6px 10px; font-size: var(--font-size-12); }
+.cds-control-md { min-height: 36px; padding: 8px 14px; font-size: var(--font-size-13); }
+.cds-control-lg { min-height: 42px; padding: 10px 18px; font-size: var(--font-size-14); border-radius: 12px; }
 .cds-control-indicator { display: inline-flex; align-items: center; }

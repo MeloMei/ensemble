@@ -10,7 +10,8 @@ import { draftPromptText, EVIDENCE_EXCERPT_LIMIT, hasPromptInput } from '../shar
 import { PROMPT_TEXT_LIMIT } from '../shared/types';
 import { Fragment, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type FormEvent, type ReactNode, type Ref } from 'react';
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual';
-import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
+import { AnimatePresence, motion } from 'framer-motion';
+import { useReducedMotion } from './appearance';
 import { AppSelect } from './AppSelect';
 import { ComposerModelPicker } from './ComposerModelPicker';
 import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown';

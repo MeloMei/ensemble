@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useReducedMotion } from 'framer-motion';
+import { useReducedMotion } from '../appearance';
 import './RollingText.css';
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });

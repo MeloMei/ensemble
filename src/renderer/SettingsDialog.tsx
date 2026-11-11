@@ -2,7 +2,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { FolderCog, MessageCircle, Palette, Plug, Search } from 'lucide-react';
 import type { Session, Snapshot, Workspace } from '../shared/types';
-import { ThemeOptions } from './appearance';
+import { AppearanceSettings } from './AppearanceSettings';
 import { LanguageOptions } from './language';
 import { ApplicationUpdateSettings, type useApplicationUpdates } from './ApplicationUpdates';
 import { AppSelect } from './AppSelect';
@@ -142,7 +142,7 @@ export function SettingsDialog({ snapshot, workspace, sessions, session, perform
           {visited.has('general') && <>
             <header className="settings-section-heading"><h3>{t('settings.general')}</h3><p>{t('settings.generalDescription')}</p></header>
             <div data-setting-anchor="language"><LanguageOptions /></div>
-            <section className="settings-appearance" data-setting-anchor="theme"><h3 className="preferences-heading">{t('preferences.theme')}</h3><ThemeOptions /><p className="appearance-note">{t('preferences.themeNote')}</p></section>
+            <AppearanceSettings />
             <NotificationSettings perform={perform} />
             <WindowCaptureSettings perform={perform} />
             <div data-setting-anchor="updates"><ApplicationUpdateSettings {...updates} /></div>

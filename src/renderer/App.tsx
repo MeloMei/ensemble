@@ -5,7 +5,8 @@ import {
   Camera, GitBranch, Globe, History, Inbox, Layers2, LoaderCircle, MessageSquare,
   Network, PanelLeft, PanelRight, Pin, Plus, Search, Settings2, TerminalSquare, X, LayoutGrid, FolderOpen,
 } from 'lucide-react';
-import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
+import { AnimatePresence, motion } from 'framer-motion';
+import { useReducedMotion } from './appearance';
 import { SPRING_SNAPPY, motionPopover } from './vendor/open-claude-ui/ClaudeMotionPresets';
 import type { DraftEvidence, PromptAttachment, PromptInput, ProviderInfo, Session, Snapshot, Workspace, WorkspaceTab } from '../shared/types';
 import type { BackendConnectionState } from '../shared/backend';

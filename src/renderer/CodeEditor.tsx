@@ -10,8 +10,8 @@ import type { FileReference } from './workspace-file-reference';
 const remoteUpdate = Annotation.define<boolean>();
 const findKeymap = searchKeymap.filter(binding => binding.scope === 'editor search-panel');
 const editorTheme = (dark: boolean) => EditorView.theme({
-  '&': { height: '100%', fontSize: '12px', backgroundColor: 'var(--editor-bg)', color: 'var(--text)' },
-  '.cm-scroller': { overflow: 'auto', fontFamily: '"SFMono-Regular", Menlo, monospace', lineHeight: '1.8' },
+  '&': { height: '100%', fontSize: 'var(--code-font-size)', backgroundColor: 'var(--editor-bg)', color: 'var(--text)' },
+  '.cm-scroller': { overflow: 'auto', fontFamily: 'var(--font-mono)', lineHeight: '1.8' },
   '.cm-gutters': { backgroundColor: 'var(--editor-bg)', color: 'var(--dim)', borderRight: '1px solid var(--border)' },
   '.cm-lineNumbers .cm-gutterElement': { padding: '0 10px 0 8px' },
   '.cm-activeLine': { backgroundColor: 'var(--selected)' },
@@ -93,7 +93,7 @@ export function CodeEditor({ value, onChange, readOnly = false, wrapLines = fals
   ref?: Ref<CodeEditorHandle>;
 }) {
   const { t } = useTranslation('workspace');
-  const { theme } = useAppearance();
+  const { theme, preferences: { codeFont, codeSize } } = useAppearance();
   const host = useRef<HTMLDivElement>(null);
   const editor = useRef<EditorView | null>(null);
   const permission = useRef(new Compartment());
@@ -135,6 +135,7 @@ export function CodeEditor({ value, onChange, readOnly = false, wrapLines = fals
   useEffect(() => {
     editor.current?.dispatch({ effects: appearance.current.reconfigure(editorTheme(theme === 'dark')) });
   }, [theme]);
+  useEffect(() => { editor.current?.requestMeasure(); }, [codeFont, codeSize]);
   useEffect(() => {
     editor.current?.dispatch({ effects: accessibility.current.reconfigure(editorAccessibility()) });
   }, [language, t]);

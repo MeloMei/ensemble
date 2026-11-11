@@ -1,49 +1,105 @@
-import { useTranslation } from 'react-i18next';
-import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from 'react';
-import { Monitor, Moon, Sun } from 'lucide-react';
-import { motion } from 'framer-motion';
-import { SPRING_SNAPPY } from './vendor/open-claude-ui/ClaudeMotionPresets';
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from 'react';
+import { MotionConfig } from 'framer-motion';
 
 export type Theme = 'light' | 'dark';
-export type ThemePreference = Theme | 'system';
-const storageKey = 'ensemble.appearance';
-const systemTheme = () => window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-const readPreference = (): ThemePreference => {
-  try {
-    const saved = localStorage.getItem(storageKey);
-    return saved === 'dark' || saved === 'system' ? saved : 'light';
-  } catch { return 'light'; }
-};
-const resolveTheme = (preference: ThemePreference): Theme => preference === 'system' ? systemTheme() : preference;
-const applyTheme = (theme: Theme) => {
-  document.documentElement.dataset.theme = theme;
-  document.documentElement.style.colorScheme = theme;
+export const themes = ['light', 'dark', 'system'] as const;
+export const textSizes = ['small', 'default', 'large'] as const;
+export const codeFonts = ['system', 'menlo', 'courier'] as const;
+
+type AppearancePreferences = {
+  theme: (typeof themes)[number];
+  textSize: (typeof textSizes)[number];
+  codeFont: (typeof codeFonts)[number];
+  codeSize: (typeof textSizes)[number];
+  reduceMotion: boolean;
 };
 
-export function initializeAppearance() { applyTheme(resolveTheme(readPreference())); }
+const storageKey = 'ensemble.appearance';
+const darkModeQuery = '(prefers-color-scheme: dark)';
+const reducedMotionQuery = '(prefers-reduced-motion: reduce)';
+const defaults: AppearancePreferences = {
+  theme: 'light', textSize: 'default', codeFont: 'system', codeSize: 'default', reduceMotion: false,
+};
+
+function isOption<T extends string>(options: readonly T[], value: unknown): value is T {
+  return options.some(option => option === value);
+}
+
+function readPreferences(): AppearancePreferences {
+  try {
+    const saved = localStorage.getItem(storageKey);
+    if (isOption(themes, saved)) return { ...defaults, theme: saved };
+    if (!saved) return defaults;
+    const value: unknown = JSON.parse(saved);
+    if (!value || typeof value !== 'object') return defaults;
+    const stored = value as Partial<Record<keyof AppearancePreferences, unknown>>;
+    return {
+      theme: isOption(themes, stored.theme) ? stored.theme : defaults.theme,
+      textSize: isOption(textSizes, stored.textSize) ? stored.textSize : defaults.textSize,
+      codeFont: isOption(codeFonts, stored.codeFont) ? stored.codeFont : defaults.codeFont,
+      codeSize: isOption(textSizes, stored.codeSize) ? stored.codeSize : defaults.codeSize,
+      reduceMotion: stored.reduceMotion === true,
+    };
+  } catch { return defaults; }
+}
+
+function resolveAppearance(preferences: AppearancePreferences, systemDark: boolean, systemReducedMotion: boolean) {
+  const theme: Theme = preferences.theme === 'system' ? (systemDark ? 'dark' : 'light') : preferences.theme;
+  return { theme, reducedMotion: preferences.reduceMotion || systemReducedMotion };
+}
+
+function applyAppearance(preferences: AppearancePreferences, theme: Theme, reducedMotion: boolean) {
+  const root = document.documentElement;
+  root.dataset.theme = theme;
+  root.style.colorScheme = theme;
+  root.dataset.textSize = preferences.textSize;
+  root.dataset.codeFont = preferences.codeFont;
+  root.dataset.codeSize = preferences.codeSize;
+  root.toggleAttribute('data-reduced-motion', reducedMotion);
+}
+
+export function initializeAppearance() {
+  const preferences = readPreferences();
+  const { theme, reducedMotion } = resolveAppearance(preferences,
+    window.matchMedia(darkModeQuery).matches, window.matchMedia(reducedMotionQuery).matches);
+  applyAppearance(preferences, theme, reducedMotion);
+}
 
 const AppearanceContext = createContext<{
   theme: Theme;
-  preference: ThemePreference;
-  setPreference: (preference: ThemePreference) => void;
+  reducedMotion: boolean;
+  preferences: AppearancePreferences;
+  setPreference: <K extends keyof AppearancePreferences>(key: K, value: AppearancePreferences[K]) => void;
 } | null>(null);
 
+function useMediaQuery(query: string) {
+  const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const media = window.matchMedia(query);
+    const update = () => setMatches(media.matches);
+    media.addEventListener('change', update);
+    update();
+    return () => media.removeEventListener('change', update);
+  }, [query]);
+  return matches;
+}
+
 export function AppearanceProvider({ children }: { children: ReactNode }) {
-  const [preference, setPreference] = useState<ThemePreference>(readPreference);
-  const [system, setSystem] = useState<Theme>(systemTheme);
-  const theme = preference === 'system' ? system : preference;
-  useLayoutEffect(() => { applyTheme(theme); }, [theme]);
-  useEffect(() => {
-    const query = window.matchMedia('(prefers-color-scheme: dark)');
-    const changed = () => setSystem(query.matches ? 'dark' : 'light');
-    query.addEventListener('change', changed);
-    return () => query.removeEventListener('change', changed);
+  const [preferences, setPreferences] = useState(readPreferences);
+  const systemDark = useMediaQuery(darkModeQuery);
+  const systemReducedMotion = useMediaQuery(reducedMotionQuery);
+  const { theme, reducedMotion } = resolveAppearance(preferences, systemDark, systemReducedMotion);
+  const setPreference = useCallback(<K extends keyof AppearancePreferences>(key: K, value: AppearancePreferences[K]) => {
+    setPreferences(current => current[key] === value ? current : { ...current, [key]: value });
   }, []);
+  useLayoutEffect(() => { applyAppearance(preferences, theme, reducedMotion); }, [preferences, theme, reducedMotion]);
   useEffect(() => {
-    try { localStorage.setItem(storageKey, preference); } catch { /* Storage can be unavailable in restricted desktop profiles. */ }
-  }, [preference]);
-  const value = useMemo(() => ({ theme, preference, setPreference }), [theme, preference]);
-  return <AppearanceContext.Provider value={value}>{children}</AppearanceContext.Provider>;
+    try { localStorage.setItem(storageKey, JSON.stringify(preferences)); } catch { /* Storage can be unavailable in restricted desktop profiles. */ }
+  }, [preferences]);
+  const value = useMemo(() => ({ theme, reducedMotion, preferences, setPreference }), [theme, reducedMotion, preferences, setPreference]);
+  return <AppearanceContext.Provider value={value}>
+    <MotionConfig reducedMotion={reducedMotion ? 'always' : 'never'}>{children}</MotionConfig>
+  </AppearanceContext.Provider>;
 }
 
 export function useAppearance() {
@@ -52,19 +108,6 @@ export function useAppearance() {
   return context;
 }
 
-export function ThemeOptions() {
-  const { t } = useTranslation('shell');
-  const { preference, setPreference } = useAppearance();
-  const options = [
-    { value: 'light', label: t('preferences.light'), Icon: Sun },
-    { value: 'dark', label: t('preferences.dark'), Icon: Moon },
-    { value: 'system', label: t('preferences.system'), Icon: Monitor },
-  ] as const;
-  return <div className="appearance-options" role="group" aria-label={t('preferences.theme')}>
-    {options.map(({ value, label, Icon }) => <button key={value} type="button" className={`appearance-option ${preference === value ? 'selected' : ''}`} aria-pressed={preference === value} onClick={() => setPreference(value)}>
-      {preference === value && <motion.span className="appearance-selection" layoutId="appearance-selection" transition={SPRING_SNAPPY} />}
-      <span className={`theme-sample sample-${value}`} aria-hidden="true"><span /><span><i /><i /><i /></span></span>
-      <span className="appearance-label"><Icon size={15} />{label}</span>
-    </button>)}
-  </div>;
+export function useReducedMotion() {
+  return useAppearance().reducedMotion;
 }

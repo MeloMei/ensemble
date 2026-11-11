@@ -1,10 +1,10 @@
 import { CollaborationViews } from './CollaborationViews';
 import { readGraphView, writeGraphView } from './graph-view-state';
 import type { CollaborationRun, CollaborationEvent, CollaborationParticipant, CollaborationTask, SessionCollaboration, SessionCollaborationMessage } from '../shared/collaboration';
-import React, { act, type ReactElement } from 'react';
+import React, { act, useContext, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { I18nextProvider } from 'react-i18next';
-import { MotionConfig } from 'framer-motion';
+import { MotionConfig, MotionConfigContext } from 'framer-motion';
 import { EditorView } from '@codemirror/view';
 import { i18n, translate } from '../shared/i18n';
 import type { DiagnosticEntry, FileContent, McpSettingsView, Message, PromptInput, ProviderInfo, Session, Snapshot, UnsavedFileSummary, Workflow, WorkflowInput, Workspace, WorkspaceManagement } from '../shared/types';
@@ -29,7 +29,9 @@ import { ApplicationUpdateNotice, ApplicationUpdateSettings, useApplicationUpdat
 import type { AppUpdateState } from '../shared/application-updates';
 import { TerminalPane } from './TerminalPane';
 import { Terminal } from '@xterm/xterm';
-import { AppearanceProvider } from './appearance';
+import { AppearanceProvider, initializeAppearance } from './appearance';
+import { CodeEditor } from './CodeEditor';
+import { CodeBlock } from './ui-kit/CodeBlock';
 import { RollingText } from './ui-kit/RollingText';
 import type { Perform } from './ui';
 import './vendor/open-claude-ui/cds-foundations.css';
@@ -86,7 +88,10 @@ let root: Root;
 const errors: string[] = [];
 let operations: Promise<void>[] = [];
 const perform: Perform = (_key, action) => { const operation = action().then(() => {}, error => { errors.push(String(error)); }); operations.push(operation); return operation; };
-async function render(element: ReactElement, reducedMotion: 'always' | 'user' = 'always') { await act(async () => { root.render(<I18nextProvider i18n={i18n}><AppearanceProvider><OverlayProvider><TooltipProvider><MotionConfig reducedMotion={reducedMotion}>{element}</MotionConfig></TooltipProvider></OverlayProvider></AppearanceProvider></I18nextProvider>); await tick(); }); }
+async function render(element: ReactElement, reducedMotion: 'always' | 'user' = 'always') {
+  const content = reducedMotion === 'always' ? <MotionConfig reducedMotion="always">{element}</MotionConfig> : element;
+  await act(async () => { root.render(<I18nextProvider i18n={i18n}><AppearanceProvider><OverlayProvider><TooltipProvider>{content}</TooltipProvider></OverlayProvider></AppearanceProvider></I18nextProvider>); await tick(); });
+}
 async function click(key: string) { await act(async () => { button(key).click(); await tick(); }); }
 async function settle() { await act(async () => { await Promise.all(operations); await tick(); }); }
 function rendererInput(event: Record<string, string | number>) {
@@ -145,6 +150,95 @@ async function graphReady(count: number) {
 }
 
 const cases: Record<string, () => Promise<void>> = {
+  'APPEARANCE: text, code typography and motion update live and survive a renderer restart': async () => {
+    const storageKey = 'ensemble.appearance';
+    const saved = localStorage.getItem(storageKey);
+    const rootElement = document.documentElement;
+    const systemReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const appearance = (anchor: string) => document.querySelector<HTMLButtonElement>(`[data-setting-anchor="${anchor}"] .app-select`)!;
+    const motionSwitch = () => document.querySelector<HTMLInputElement>('[data-setting-anchor="reduce-motion"] input')!;
+    const computed = (selector: string) => {
+      const element = document.querySelector(selector);
+      assert(element, `Missing appearance surface ${selector}`);
+      return getComputedStyle(element);
+    };
+    function MotionProbe({ value }: { value: string }) {
+      const { reducedMotion } = useContext(MotionConfigContext);
+      return <div data-motion-config={reducedMotion}><span className="spin" /><RollingText value={value} /></div>;
+    }
+    const show = (value: string) => render(<>
+      <nav className="sidebar-navigation"><button>Interface text</button></nav>
+      <CodeBlock text="const code = 1;" language="ts" copyLabels={{ copy: 'Copy', copied: 'Copied', failed: 'Failed' }} />
+      <div className="review-diff"><code>Code diff</code></div>
+      <CodeEditor value="const code = 1;" location={{ path: 'index.ts', line: 1 }} onChange={() => {}} />
+      <MotionProbe value={value} />
+      <LanguageProvider initial={{ preference: 'en', language: 'en' }}>
+        <SettingsDialog snapshot={null} sessions={[]} perform={perform} pending={new Set()} updates={idleUpdates}
+          initialSection="general" openSession={() => {}} onClose={() => {}} />
+      </LanguageProvider>
+    </>, 'user');
+    const assertMotion = (reduced: boolean) => {
+      assert(rootElement.hasAttribute('data-reduced-motion') === reduced, 'The document motion preference was incorrect');
+      assert(computed('[data-motion-config] .spin').animationName === (reduced ? 'none' : 'spin'), 'CSS motion diverged from the appearance preference');
+      assert(document.querySelector('[data-motion-config]')?.getAttribute('data-motion-config') === (reduced ? 'always' : 'never'),
+        'Framer Motion diverged from the appearance preference');
+    };
+    const assertCode = (size: string, family: string) => {
+      for (const selector of ['.ui-code-block code', '.review-diff code', '.cm-scroller']) {
+        const style = computed(selector);
+        assert(style.fontSize === size && style.fontFamily.includes(family), `Unexpected code typography for ${selector}: ${style.fontSize} ${style.fontFamily}`);
+      }
+    };
+    try {
+      window.workbench = { ...applicationUpdateApi, onLanguageChanged: () => () => {} } as unknown as Window['workbench'];
+      localStorage.setItem(storageKey, 'dark');
+      initializeAppearance();
+      assert(rootElement.dataset.theme === 'dark' && getComputedStyle(rootElement).fontSize === '13px', 'Legacy dark preference did not initialize with default text size');
+      await show('56/100');
+      assert(computed('.sidebar-navigation button').fontSize === '12px', 'Default interface size changed');
+      assertCode('12px', 'SFMono-Regular');
+      assertMotion(systemReduced);
+
+      await chooseOption(appearance('text-size'), 'large');
+      assert(getComputedStyle(rootElement).fontSize === '15px' && parseFloat(computed('.sidebar-navigation button').fontSize) > 12,
+        'Changing interface size did not scale the interface');
+      assertCode('12px', 'SFMono-Regular');
+      const editor = document.querySelector('.cm-editor');
+      await chooseOption(appearance('code-font'), 'courier');
+      await chooseOption(appearance('code-size'), 'large');
+      assertCode('14px', 'Courier New');
+      assert(document.querySelector('.cm-editor') === editor && getComputedStyle(rootElement).fontSize === '15px',
+        'Code typography changed the interface size or recreated the open editor');
+      await click('shell:preferences.system');
+      assert(String(rootElement.dataset.theme) === (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
+        'System theme did not follow the color scheme');
+
+      await change(motionSwitch(), true);
+      await show('57/100');
+      assertMotion(true);
+      assert(!document.querySelector('.ui-rolling-text-change'), 'Manually reducing motion still animated rolling text');
+      await act(async () => { root.render(null); await tick(); });
+      initializeAppearance();
+      assert(rootElement.hasAttribute('data-reduced-motion') && getComputedStyle(rootElement).fontSize === '15px',
+        'Saved appearance did not apply before the renderer mounted');
+      await show('57/100');
+      assertMotion(true);
+      assert(motionSwitch().checked && appearance('text-size').textContent === 'Large' && appearance('code-font').textContent === 'Courier New'
+        && appearance('code-size').textContent === 'Large' && button('shell:preferences.system').getAttribute('aria-pressed') === 'true',
+        'Appearance choices did not survive a renderer restart');
+      assertCode('14px', 'Courier New');
+
+      await change(motionSwitch(), false);
+      assertMotion(systemReduced);
+      await show('58/100');
+      assert(Boolean(document.querySelector('.ui-rolling-text-change')) !== systemReduced, 'Disabling the manual switch did not restore the system motion preference');
+    } finally {
+      await act(async () => { root.render(null); await tick(); });
+      if (saved === null) localStorage.removeItem(storageKey);
+      else localStorage.setItem(storageKey, saved);
+      initializeAppearance();
+    }
+  },
   'VISIT-HISTORY: cross-project traversal returns to the active split and conversation reading position': async () => {
     const source: Session = { ...session, id: 'visits-source', title: 'Original session',
       draft: { text: 'Preserved draft' }, messages: messageRange(0, 100) };
