@@ -2,7 +2,7 @@ import { useTranslation } from 'react-i18next';
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import {
   Archive, ArrowLeft, ArrowRight, ArrowUpRight, CheckCircle2, ChevronRight, Circle, CircleAlert, CircleDot,
-  Camera, GitBranch, Globe, History, Inbox, Layers2, LoaderCircle, MessageSquare,
+  Camera, GitBranch, Globe, History, Inbox, Layers2, LoaderCircle, MessageSquare, PanelsTopLeft,
   Network, PanelLeft, PanelRight, Pin, Plus, Search, Settings2, TerminalSquare, X, LayoutGrid, FolderOpen,
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -17,6 +17,7 @@ import { PRODUCT_NAME } from '../shared/app-identity';
 import ensembleLogo from '../../docs/brand/ensemble-avatar.png';
 import { AgentIcon } from './AgentIcon';
 import { ApplicationUpdateNotice, useApplicationUpdates } from './ApplicationUpdates';
+import { BrowserPane } from './BrowserPane';
 import { CommandPalette } from './CommandPalette';
 import { FileReviewPanel } from './FileReviewPanel';
 import { WorkspaceFilePane, useWorkspaceFilePane } from './WorkspaceFilePane';
@@ -475,6 +476,7 @@ export function App() {
         onHide={() => setTerminalHidden(tabTerminal.id, true)}
         onStop={() => setTerminalAction({ workspaceId: workspace.id, tabId: tab.id, terminalId: tabTerminal.id, kind: 'stop' })} />;
     }
+    if (tab?.kind === 'browser') return <BrowserPane key={tab.id} id={tab.id} obscured={Boolean(draggedTabId || tabMenu)} />;
     if (tab?.kind === 'preview') return <PreviewPane key={tab.id} tab={tab} drafts={drafts}
       keyboardShortcut={tab.id === activeTab?.id || activeTab?.kind !== 'preview'}
       onChooseEvidence={connected ? setEvidenceTarget : undefined} annotationJump={annotationJump} />;
@@ -675,7 +677,7 @@ export function App() {
         {page === 'workspace' && (workspace ? <div className="workspace-columns" ref={filePane.columns}><div className="workspace-center"><div className="tabbar"><div className="workspace-tabs">{workspace.tabs.map(tab => {
           const tabSession = tab.kind === 'agent' ? sessions.find(item => item.id === tab.sessionId) : undefined;
           const tabTerminal = tab.kind === 'terminal' ? snapshot.terminals.find(item => item.id === tab.terminalId) : undefined;
-          const label = tab.kind === 'agent' ? tabSession?.title || providers.find(provider => provider.id === tabSession?.providerId)?.name || tabSession?.providerId || 'Agent' : tab.kind === 'terminal' ? tabTerminal?.title ?? 'Terminal' : tab.url;
+          const label = tab.kind === 'agent' ? tabSession?.title || providers.find(provider => provider.id === tabSession?.providerId)?.name || tabSession?.providerId || 'Agent' : tab.kind === 'terminal' ? tabTerminal?.title ?? 'Terminal' : tab.kind === 'browser' ? t('browser.title') : tab.url;
           const canDrag = Boolean(tabSession && connected && !splitBusy && tab.id !== activeTab?.id);
           const tabButton = <button className="tab-select" aria-current={activeTab?.id === tab.id ? 'page' : undefined} title={tabSession ? undefined : label}
             draggable={canDrag} onDragStart={event => {
@@ -685,7 +687,7 @@ export function App() {
               setDraggedTab({ workspaceId: workspace.id, tabId: tab.id, activeTabId: workspace.activeTabId, secondaryTabId: workspace.secondaryTabId ?? null });
             }} onDragEnd={() => setDraggedTab(undefined)}
             onClick={() => activateTab(workspace.id, tab)}>
-            {tab.kind === 'agent' ? <AgentIcon providerId={tabSession?.providerId ?? ''} size={14} /> : tab.kind === 'terminal' ? <TerminalSquare size={14} /> : <Globe size={14} />}
+            {tab.kind === 'agent' ? <AgentIcon providerId={tabSession?.providerId ?? ''} size={14} /> : tab.kind === 'terminal' ? <TerminalSquare size={14} /> : tab.kind === 'browser' ? <PanelsTopLeft size={14} /> : <Globe size={14} />}
             <span>{label}</span>{tabSession && <AttentionBadge session={tabSession} />}
             {tabSession && ['running', 'waiting_approval', 'waiting_children', 'failed'].includes(tabSession.status) && <i className={`tab-state tab-state-${tabSession.status}`} aria-label={statusLabel(tabSession.status)} />}
           </button>;
@@ -703,7 +705,10 @@ export function App() {
             const index = items.indexOf(document.activeElement as HTMLButtonElement);
             const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowUp' ? -1 : 1) + items.length) % items.length;
             items[next]?.focus({ preventScroll: true });
-          }}><IconButton label={t('app.addTab')} aria-haspopup="menu" aria-expanded={tabMenu} onClick={() => setTabMenu(value => !value)}><Plus size={17} /></IconButton><AnimatePresence>{tabMenu && <><button key="dismiss" className="menu-dismiss" tabIndex={-1} aria-label={t('app.dismissAddMenu')} onClick={() => setTabMenu(false)} /><motion.div key="menu" className="tab-menu" role="menu" aria-label={t('app.addTabMenu')} initial={reducedMotion ? false : "initial"} animate="animate" exit={reducedMotion ? undefined : "exit"} variants={motionPopover}><button role="menuitem" onClick={openAgentDialog}><MessageSquare size={15} />{t('app.newAgentSession')}</button><button role="menuitem" disabled={pending.has('create-terminal')} onClick={openLocalTerminal}><TerminalSquare size={15} />{t('app.openLocalTerminal')}</button><button role="menuitem" onClick={() => { setDialog('preview'); setTabMenu(false); }}><Globe size={15} />{t('app.addPreview')}</button></motion.div></>}</AnimatePresence></div></div>
+          }}><IconButton label={t('app.addTab')} aria-haspopup="menu" aria-expanded={tabMenu} onClick={() => setTabMenu(value => !value)}><Plus size={17} /></IconButton><AnimatePresence>{tabMenu && <><button key="dismiss" className="menu-dismiss" tabIndex={-1} aria-label={t('app.dismissAddMenu')} onClick={() => setTabMenu(false)} /><motion.div key="menu" className="tab-menu" role="menu" aria-label={t('app.addTabMenu')} initial={reducedMotion ? false : "initial"} animate="animate" exit={reducedMotion ? undefined : "exit"} variants={motionPopover}><button role="menuitem" onClick={openAgentDialog}><MessageSquare size={15} />{t('app.newAgentSession')}</button><button role="menuitem" disabled={pending.has('create-terminal')} onClick={openLocalTerminal}><TerminalSquare size={15} />{t('app.openLocalTerminal')}</button><button role="menuitem" onClick={() => { setDialog('preview'); setTabMenu(false); }}><Globe size={15} />{t('app.addPreview')}</button><button role="menuitem" disabled={pending.has('create-browser')} onClick={() => {
+            setTabMenu(false);
+            void perform('create-browser', () => window.workbench.createBrowser(workspace.id));
+          }}><PanelsTopLeft size={15} />{t('browser.open')}</button></motion.div></>}</AnimatePresence></div></div>
           <WorkspacePanes workspace={workspace} active={activeTab} secondary={secondaryTab} renderTab={renderTab} perform={perform}
             draggedTabId={connected ? draggedTabId : undefined} onDropTab={split => {
               setDraggedTab(undefined);

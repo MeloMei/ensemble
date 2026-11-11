@@ -402,6 +402,9 @@ export async function createWorkbenchService(options: {
     handle('workbench:resize-terminal', (_event, id: unknown, columns: unknown, rows: unknown) => terminalManager.resize(idSchema.parse(id), z.number().int().min(2).max(1000).parse(columns), z.number().int().min(1).max(1000).parse(rows)));
     handle('workbench:stop-terminal', (_event, id: unknown) => terminalManager.stop(idSchema.parse(id)));
     handle('workbench:list-terminal-services', (_event, id: unknown) => terminalManager.listServices(idSchema.parse(id)));
+    handle('workbench:create-browser', (_event, workspaceId: unknown) => {
+      engine.addTab(idSchema.parse(workspaceId), { id: randomUUID(), kind: 'browser' });
+    });
     handle('workbench:create-preview', (_event, workspaceId: unknown, input: unknown) => {
       const id = idSchema.parse(workspaceId);
       const url = localPreviewUrl(z.string().max(4096).parse(input));
