@@ -5,9 +5,10 @@ import { formatDate, formatNumber, renderDisplayText } from '../shared/i18n';
 import { sessionComposerActivity } from '../shared/session-composer-activity';
 import { validQuestionAnswers } from '../shared/question-answers';
 import { ATTACHMENT_LIMITS, attachmentLimitIssue, supportsPromptAttachment } from '../shared/prompt-attachments';
+import { canMoveQueuedPrompt } from '../shared/prompt-queue';
 import { draftPromptText, EVIDENCE_EXCERPT_LIMIT, hasPromptInput } from '../shared/draft-evidence';
 import { PROMPT_TEXT_LIMIT } from '../shared/types';
-import { Fragment, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type Ref } from 'react';
+import { Fragment, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type FormEvent, type ReactNode, type Ref } from 'react';
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { AppSelect } from './AppSelect';
@@ -17,7 +18,7 @@ import remarkGfm from 'remark-gfm';
 import {
   Activity, Archive, ArrowDown, ArrowUp, ArrowUpLeft, Check, ChevronDown,
   CircleAlert, CircleStop, Clock3, CornerDownLeft, FileText, FolderOpen,
-  GitCompareArrows, GitFork, Image, ListChecks, LoaderCircle, MessageCircle, PanelsTopLeft,
+  GitCompareArrows, GitFork, GripVertical, Image, ListChecks, LoaderCircle, MessageCircle, PanelsTopLeft,
   Paperclip, Pause, Play, Plus, Search, ShieldCheck, TerminalSquare, Users, X, ArrowRightLeft,
 } from 'lucide-react';
 import type {
@@ -672,12 +673,46 @@ function AgentMessageAttribution({ source, sessions, openSession }: {
 type QueueProps = Pick<SessionChatProps, 'session' | 'provider' | 'pending' | 'perform' | 'sessions' | 'openSession'> & { connected: boolean };
 const queueEditorWindowId = crypto.randomUUID();
 const queueDraftFlushes = new Map<string, Promise<void>>();
+const queuedPromptDragType = 'application/x-ensemble-queued-prompt';
 
 function PromptQueue({ session, provider, pending, perform, connected, sessions, openSession }: QueueProps) {
   const { t } = useTranslation('workspace');
   const queue = session.queue ?? [];
+  const [drag, setDrag] = useState<{ itemId: string; expectedOrder: string[]; targetId?: string }>();
+  const focusedMove = useRef<{ button: HTMLButtonElement; itemId: string; from: number }>(null);
+  useLayoutEffect(() => {
+    const request = focusedMove.current;
+    if (!request || queue[request.from]?.id === request.itemId) return;
+    focusedMove.current = null;
+    if (request.button.isConnected && document.activeElement === document.body) request.button.focus({ preventScroll: true });
+  }, [queue]);
   if (!queue.length) return null;
   const pauseKey = `queue-pause-${session.id}`;
+  const moveKey = `queue-move:${session.id}`;
+  const moveDisabled = !connected || pending.has(moveKey);
+  const dragFrom = drag ? queue.findIndex(item => item.id === drag.itemId) : -1;
+  const move = (from: number, to: number, expectedOrder: string[], button?: HTMLButtonElement) => {
+    if (moveDisabled || !canMoveQueuedPrompt(queue, from, to)) return;
+    const { id: itemId } = queue[from];
+    const targetId = queue[to].id;
+    if (button && document.activeElement === button) focusedMove.current = { button, itemId, from };
+    void perform(moveKey, async () => {
+      try {
+        await runSessionCommand(moveKey, { itemId, targetId, expectedOrder }, async commandId => {
+          const result = await window.workbench.moveQueuedPrompt(session.id, itemId, targetId, expectedOrder, commandId);
+          if (result !== 'moved') throw new SessionCommandRejectedError(t(result === 'queue-changed' ? 'chat.queueOrderChanged' : 'chat.queueMoveBlocked'));
+        });
+      } catch (error) {
+        if (focusedMove.current?.button === button) focusedMove.current = null;
+        throw error;
+      }
+    });
+  };
+  const dropTarget = (event: DragEvent<HTMLOListElement>) => {
+    if (!event.dataTransfer.types.includes(queuedPromptDragType) || !(event.target instanceof Element)) return -1;
+    const row = event.target.closest<HTMLElement>('li[data-queue-id]');
+    return queue.findIndex(item => item.id === row?.dataset.queueId);
+  };
   return <section className="prompt-queue" aria-label={t('chat.queueTitle')}>
     <header>
       <button disabled={!connected || pending.has(pauseKey)} onClick={() => void perform(pauseKey,
@@ -687,13 +722,56 @@ function PromptQueue({ session, provider, pending, perform, connected, sessions,
     </header>
     {session.queuePaused && <p className="queue-paused"><Pause size={12} />{t('chat.queuePaused')}{session.queueHoldReason && <span>{session.queueHoldReason}</span>}</p>}
     {!session.queuePaused && !queue[0].edit && session.waitingForProject && <p className="queue-paused" role="status"><Clock3 size={12} />{t('chat.sideQuestion.waiting')}</p>}
-    <ol>{queue.map(item => <QueuedPromptRow key={item.id} item={item} sessionId={session.id} provider={provider}
-      connected={connected} pending={pending} perform={perform} sessions={sessions} openSession={openSession} />)}</ol>
+    <ol onDragOver={event => {
+      if (!drag) return;
+      const to = dropTarget(event);
+      const valid = !moveDisabled && canMoveQueuedPrompt(queue, dragFrom, to);
+      if (valid) {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+      }
+      const targetId = valid ? queue[to].id : undefined;
+      if (drag.targetId !== targetId) setDrag({ ...drag, targetId });
+    }} onDragLeave={event => {
+      if (drag?.targetId && !(event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget))) {
+        setDrag({ ...drag, targetId: undefined });
+      }
+    }} onDrop={event => {
+      if (!drag || event.dataTransfer.getData(queuedPromptDragType) !== drag.itemId) return;
+      event.preventDefault();
+      move(dragFrom, dropTarget(event), drag.expectedOrder);
+      setDrag(undefined);
+    }}>{queue.map((item, index) => {
+      const canMoveUp = canMoveQueuedPrompt(queue, index, index - 1);
+      const canMoveDown = canMoveQueuedPrompt(queue, index, index + 1);
+      const position = formatNumber(index + 1);
+      const upLabel = t('chat.queueMoveUp', { position });
+      const downLabel = t('chat.queueMoveDown', { position });
+      const moveBy = (offset: number, button: HTMLButtonElement) => move(index, index + offset, queue.map(item => item.id), button);
+      const controls = (canMoveUp || canMoveDown) && <span className="queue-reorder-controls">
+        <span className="queue-drag-handle" aria-hidden="true" title={t('chat.queueDrag')} draggable={!moveDisabled}
+          onDragStart={event => {
+            if (moveDisabled) { event.preventDefault(); return; }
+            event.dataTransfer.setData(queuedPromptDragType, item.id);
+            event.dataTransfer.effectAllowed = 'move';
+            setDrag({ itemId: item.id, expectedOrder: queue.map(item => item.id) });
+          }} onDragEnd={() => setDrag(undefined)}><GripVertical size={14} /></span>
+        <button type="button" aria-label={upLabel} title={upLabel} aria-disabled={moveDisabled || !canMoveUp}
+          onClick={event => moveBy(-1, event.currentTarget)}><ArrowUp size={13} aria-hidden="true" /></button>
+        <button type="button" aria-label={downLabel} title={downLabel} aria-disabled={moveDisabled || !canMoveDown}
+          onClick={event => moveBy(1, event.currentTarget)}><ArrowDown size={13} aria-hidden="true" /></button>
+      </span>;
+      const drop = drag?.targetId === item.id && canMoveQueuedPrompt(queue, dragFrom, index) ? (dragFrom < index ? 'after' : 'before') : undefined;
+      return <li key={item.id} data-queue-id={item.id} data-queue-drop={drop}>
+        <QueuedPromptRow item={item} sessionId={session.id} provider={provider} reorderControls={controls}
+          connected={connected} pending={pending} perform={perform} sessions={sessions} openSession={openSession} />
+      </li>;
+    })}</ol>
   </section>;
 }
 
-function QueuedPromptRow({ sessionId, item, provider, connected, pending, perform, sessions, openSession }:
-  Omit<QueueProps, 'session'> & { sessionId: string; item: SessionQueueItem }) {
+function QueuedPromptRow({ sessionId, item, provider, connected, pending, perform, sessions, openSession, reorderControls }:
+  Omit<QueueProps, 'session'> & { sessionId: string; item: SessionQueueItem; reorderControls: ReactNode }) {
   const { t } = useTranslation('workspace');
   const [acquired, setAcquired] = useState<{ id: string; revision: number; input: PromptInput }>();
   const key = `queue-item-${item.id}`;
@@ -709,7 +787,7 @@ function QueuedPromptRow({ sessionId, item, provider, connected, pending, perfor
   });
   const remove = () => runSessionCommand(`queue-remove:${sessionId}:${item.id}`, { revision: edit?.revision ?? revision, editId: edit?.id },
     commandId => window.workbench.removeQueuedPrompt(sessionId, item.id, edit?.revision ?? revision, commandId, edit?.id));
-  return <li data-queue-id={item.id}>
+  return <>
     {item.agentSource && <AgentMessageAttribution source={item.agentSource} sessions={sessions} openSession={openSession} />}
     {(item.edit || edit) && <p className="queue-edit-hold" role="status">{t('chat.queueEditHeld')}</p>}
     {editingElsewhere && <p className="queue-edit-hold" role="alert">{t('chat.queueEditMoved')}</p>}
@@ -723,13 +801,13 @@ function QueuedPromptRow({ sessionId, item, provider, connected, pending, perfor
         <small>{item.modelId ? modelName(provider, item.modelId) : t('chat.runtimeDefault')}{item.settings?.effort ? ` · ${item.settings.effort}` : ''}</small>
         <AttachmentChips attachments={item.input.attachments ?? []} />
       </div>}
-      <div className="queue-item-actions">{!item.agentSource && <button disabled={disabled} onClick={begin}>
+      <div className="queue-item-actions">{reorderControls}{!item.agentSource && <button disabled={disabled} onClick={begin}>
         {t(item.edit ? 'chat.resumeQueuedEdit' : 'chat.editQueued')}
       </button>}
         {!item.edit && <button disabled={disabled} onClick={() => void perform(key, remove)}>{t('chat.removeQueued')}</button>}
       </div>
     </>}
-  </li>;
+  </>;
 }
 
 function QueuedPromptEditor({ sessionId, itemId, editId, initial, current, connected, disabled, perform, remove }: {

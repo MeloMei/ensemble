@@ -287,6 +287,13 @@
 .chat-pane .queue-item-content p { max-height: 65px; overflow: auto; margin: 0; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
 .chat-pane .queue-item-content small { display: block; margin-top: 4px; color: var(--dim); font-size: 10px; }
 .chat-pane .queue-item-actions { display: flex; gap: 12px; margin-top: 5px; }
+.chat-pane .queue-reorder-controls { display: inline-flex; align-items: center; gap: 3px; }
+.chat-pane .queue-reorder-controls button, .chat-pane .queue-drag-handle { display: grid; place-items: center; width: 23px; height: 23px; border-radius: 4px; }
+.chat-pane .queue-reorder-controls button[aria-disabled="true"] { color: var(--dim); cursor: default; }
+.chat-pane .queue-drag-handle { color: var(--muted); }
+.chat-pane .queue-drag-handle[draggable="true"] { cursor: grab; }
+.chat-pane .prompt-queue li[data-queue-drop="before"] { box-shadow: 0 -2px var(--accent); }
+.chat-pane .prompt-queue li[data-queue-drop="after"] { box-shadow: 0 2px var(--accent); }
 .chat-pane .queue-edit-hold { margin: 0 0 5px; color: var(--warning); }
 .chat-pane .queue-paused { flex-wrap: wrap; margin: 8px 0 0; color: var(--warning); line-height: 1.6; }
 .chat-pane .queue-paused > span { width: 100%; color: var(--dim); }
