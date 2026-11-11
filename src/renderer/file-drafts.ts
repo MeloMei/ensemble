@@ -7,7 +7,9 @@ interface FileDraft {
   workspaceName: string;
   editVersion: number;
   autoSaveBlock?: 'discard' | { error: string };
+  diskStatus?: 'changed' | 'missing' | 'unreadable';
 }
+type DiskObservation = FileContent | 'missing' | 'unreadable';
 type WriteFile = (input: { path: string; content: string; revision: string }) => Promise<FileContent>;
 interface AutoSaveOptions { delay: number; write: (workspaceId: string, input: Parameters<WriteFile>[0]) => Promise<FileContent> }
 
@@ -61,6 +63,31 @@ export class FileDraftStore {
     return entry;
   }
 
+  observeDisk(workspaceId: string, expected: FileContent, observation: DiskObservation): void {
+    const key = this.key(workspaceId, expected.path);
+    const current = this.entries.get(key);
+    if (!current || current.original !== expected || this.saves.has(key)) return;
+
+    let diskStatus: FileDraft['diskStatus'];
+    if (typeof observation === 'string') {
+      diskStatus = observation;
+    } else if (observation.path !== expected.path) {
+      return;
+    } else if (observation.revision !== expected.revision) {
+      if (current.text === expected.content) {
+        this.open({ id: workspaceId, name: current.workspaceName }, observation, current);
+        return;
+      }
+      diskStatus = 'changed';
+    }
+
+    if (current.diskStatus === diskStatus) return;
+    const entry = { ...current, diskStatus };
+    this.entries.set(key, entry);
+    this.scheduleAutoSave(key, entry);
+    this.publish();
+  }
+
   edit(workspaceId: string, path: string, text: string): void {
     const key = this.key(workspaceId, path);
     const current = this.require(workspaceId, path);
@@ -95,7 +122,7 @@ export class FileDraftStore {
         throw failure;
       }
       const latest = this.require(workspaceId, path);
-      this.entries.set(key, { ...latest, original: written, autoSaveBlock: undefined,
+      this.entries.set(key, { ...latest, original: written, autoSaveBlock: undefined, diskStatus: undefined,
         text: latest.editVersion === submitted.editVersion ? written.content : latest.text });
       this.publish();
       return written;
@@ -115,7 +142,8 @@ export class FileDraftStore {
   private scheduleAutoSave(key: string, entry: FileDraft): void {
     this.cancelAutoSave(key);
     const options = this.autoSave;
-    if (!options || !this.autoSaveEnabled || entry.autoSaveBlock || entry.text === entry.original.content || this.saves.has(key)) return;
+    if (!options || !this.autoSaveEnabled || entry.autoSaveBlock || entry.diskStatus
+      || entry.text === entry.original.content || this.saves.has(key)) return;
     const { workspaceId, original: { path } } = entry;
     this.autoSaveTimers.set(key, setTimeout(() => {
       void this.save(workspaceId, path, input => options.write(workspaceId, input)).then(() => {

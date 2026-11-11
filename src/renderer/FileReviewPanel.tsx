@@ -1,7 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import { formatDate, renderDisplayText } from '../shared/i18n';
 import type { DisplayText } from '../shared/display-text';
-import { useContext, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { FileCode2, Files, GitBranch, GitCompareArrows, GitPullRequest, LoaderCircle, Maximize2, MessageSquare, Minimize2, PanelRight, RefreshCw, Save, Search, Timer, WrapText, X } from 'lucide-react';
 import { z } from 'zod';
 import type { FileContent, FileDiff, FileEntry, GitCommitPreview, GitMutation, GitState, PullRequestReview, Session, Workspace } from '../shared/types';
@@ -12,6 +12,7 @@ import { WorkspaceFileTree } from './WorkspaceFileTree';
 import { FileDraftStore } from './file-drafts';
 import { diffRangeLines, reviewFeedback, reviewNoteSchema, type DiffNoteDraft, type ReviewNote } from './review-notes';
 import { IconButton, Modal, type Perform } from './ui';
+import { useFileDiskCheck } from './useFileDiskCheck';
 import { WorkspaceFileNavigation, type FileReference } from './workspace-file-reference';
 import './FileReviewPanel.css';
 
@@ -55,8 +56,9 @@ function revealSelectedDiff(layout: HTMLDivElement, inline: boolean) {
   }
 }
 
-export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [], onFeedback, onEditProject }: {
-  workspace: Workspace; refreshKey: string; perform: Perform; sessions?: Session[]; onFeedback?(text: string): void; onEditProject?(): void;
+export function FileReviewPanel({ workspace, refreshKey, perform, visible = true, sessions = [], onFeedback, onEditProject }: {
+  workspace: Workspace; refreshKey: string; perform: Perform; visible?: boolean; sessions?: Session[];
+  onFeedback?(text: string): void; onEditProject?(): void;
 }) {
   const { t } = useTranslation('workspace');
   const navigation = useContext(WorkspaceFileNavigation);
@@ -90,11 +92,17 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
   const directoryGeneration = useRef(0);
   const fileGeneration = useRef(0);
   const operations = useRef(0);
+  const diskCheckBlocked = useCallback(() => operations.current > 0 || (editor.current?.isComposing() ?? false), []);
   const reviewLayout = useRef<HTMLDivElement>(null);
   const responsiveDiff = view === 'changes' && selected?.mode === 'diff' && !expanded;
   const selectedChangeIndex = responsiveDiff ? git?.changes.findIndex(change => change.path === selected.path) ?? -1 : -1;
   const dirty = !!file && draft !== file.content;
-  const saveError = dirty && typeof buffer?.autoSaveBlock === 'object' ? buffer.autoSaveBlock.error : undefined;
+  const editorOpen = view !== 'pr' && selected?.mode === 'content' && selected.path === file?.path;
+  const diskStatus = editorOpen ? buffer?.diskStatus : undefined;
+  const diskNotice = diskStatus === 'changed' ? 'workspace:files.changedDraft'
+    : diskStatus === 'missing' ? (dirty ? 'workspace:files.missingDraft' : 'workspace:files.missing')
+    : diskStatus === 'unreadable' ? (dirty ? 'workspace:files.unreadableDraft' : 'workspace:files.unreadable') : undefined;
+  const saveError = !diskStatus && dirty && typeof buffer?.autoSaveBlock === 'object' ? buffer.autoSaveBlock.error : undefined;
   const notice: FileNotice = error || (saveError && editorPreferences.autoSave
     ? { key: 'workspace:editor.autoSavePaused', values: { error: saveError } } : saveError ?? '');
   const currentNotes = notes.workspaceId === workspace.id ? notes.items : [];
@@ -105,6 +113,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
   const unstageable = checked.filter(change => change.staged).map(change => change.path);
 
   useLayoutEffect(() => { fileDrafts.setAutoSave(editorPreferences.autoSave); }, [editorPreferences.autoSave]);
+  useFileDiskCheck(fileDrafts, workspace.id, visible && editorOpen && !operationBusy ? file?.path : undefined, diskCheckBlocked);
 
   const toggleEditorPreference = (preference: keyof EditorPreferences) => {
     const next = { ...editorPreferences, [preference]: !editorPreferences[preference] };
@@ -164,28 +173,29 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
     if (mode === 'content') {
       if (force) fileDrafts.suspendAutoSaveForDiscard(workspace.id, filePath);
       const cached = fileDrafts.get(workspace.id, filePath);
-      let contents: FileContent;
-      try {
-        const read = await window.workbench.readFile(workspace.id, filePath);
-        if (read === null) {
-          if (token !== fileGeneration.current) return;
-          if (!force) throw new Error(t('files.missing'));
-          if (cached && !fileDrafts.discard(workspace.id, filePath, cached)) throw new Error(t('files.changedDraft'));
-          setSelected(null); setLoadedPath(null); setDiff(null); setExpanded(false);
-          return;
-        }
-        contents = read;
-      }
-      catch (failure) {
-        const retained = fileDrafts.get(workspace.id, filePath);
-        if (force || !retained || (retained.text === retained.original.content && !fileDrafts.isSaving(workspace.id, filePath))) throw failure;
-        contents = retained.original;
-        setError({ key: 'workspace:files.unreadableDraft' });
-      }
+      let contents: FileContent | null | undefined;
+      let failure: unknown;
+      try { contents = await window.workbench.readFile(workspace.id, filePath); }
+      catch (error) { failure = error; }
       if (token !== fileGeneration.current) return;
-      const current = fileDrafts.open(workspace, contents, cached, force);
+
+      if (contents === null && force) {
+        if (cached && !fileDrafts.discard(workspace.id, filePath, cached)) throw new Error(t('files.changedDraft'));
+        setSelected(null); setLoadedPath(null); setDiff(null); setExpanded(false);
+        return;
+      }
+      if (contents) {
+        const current = fileDrafts.open(workspace, contents, cached, force);
+        if (force && current.original !== contents) throw new Error(t('files.changedDraft'));
+        if (!force && cached && current.original === cached.original) fileDrafts.observeDisk(workspace.id, cached.original, contents);
+      } else {
+        const retained = fileDrafts.get(workspace.id, filePath);
+        if (force || !retained || (retained.text === retained.original.content && !fileDrafts.isSaving(workspace.id, filePath))) {
+          throw contents === null ? new Error(t('files.missing')) : failure;
+        }
+        if (cached) fileDrafts.observeDisk(workspace.id, cached.original, contents === null ? 'missing' : 'unreadable');
+      }
       setLoadedPath(filePath); setDiff(null);
-      if (current === cached && current.original.revision !== contents.revision) setError({ key: 'workspace:files.changedDraft' });
     } else {
       const patch = await window.workbench.fileDiff(workspace.id, filePath);
       if (token !== fileGeneration.current) return;
@@ -303,6 +313,7 @@ export function FileReviewPanel({ workspace, refreshKey, perform, sessions = [],
       {git?.available && <button className="review-text-button" disabled={!!busy || dirty} onClick={() => run('preview', async () => setPreview(await window.workbench.gitCommitPreview(workspace.id)))}>{t('files.commitPreview')}</button>}
     </div>}
     {notice && <div className="pane-note error-text" role="alert">{typeof notice === 'string' ? notice : renderDisplayText('', notice)}</div>}
+    {diskNotice && <div className="pane-note error-text" role="status" data-file-disk-status={diskStatus}>{renderDisplayText('', { key: diskNotice })}</div>}
     {busy && <div className="review-busy" role="status"><LoaderCircle className="spin" size={12} />{t('files.processing')}</div>}
     <WorkspaceFileTree key={workspaceKey} workspaceId={workspace.id}
       workspaceKey={workspaceKey} entries={tree?.entries ?? emptyEntries} revision={tree?.revision ?? 0}

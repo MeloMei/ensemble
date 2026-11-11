@@ -624,6 +624,134 @@ const cases: Record<string, () => Promise<void>> = {
       else localStorage.setItem(storageKey, previous);
     }
   },
+  'FILE-DISK: the visible file adopts disk changes or keeps its conflicting draft': async () => {
+    const key = 'ensemble.file-editor';
+    const preferences = localStorage.getItem(key);
+    localStorage.setItem(key, JSON.stringify({ autoSave: true }));
+    const visibility = Object.getOwnPropertyDescriptor(document, 'visibilityState');
+    const focus = Object.getOwnPropertyDescriptor(document, 'hasFocus');
+    let visible = false;
+    let focused = true;
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visible ? 'visible' : 'hidden' });
+    Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => focused });
+    const wait = (ms: number) => act(async () => { await new Promise(resolve => setTimeout(resolve, ms)); });
+    const setVisibility = (next: boolean) => { visible = next; document.dispatchEvent(new Event('visibilitychange')); };
+    const checkNow = () => act(async () => { setVisibility(false); setVisibility(true); await tick(); });
+    const path = 'watched-file.txt', other = 'other-watched-file.txt';
+    const original = Array.from({ length: 120 }, (_, index) => `File line ${index + 1}`).join('\n');
+    const file = (path: string, revision: string, content: string): FileContent => ({ path, revision, content, language: 'text', size: content.length });
+    const project = { ...workspace, id: 'file-disk' };
+    let disk: FileContent | null = file(path, 'r0', original);
+    let denied = false;
+    const delayed = deferred<FileContent>();
+    let holdRead = false;
+    const reads: string[] = [];
+    const writes: Array<{ path: string; content: string; revision: string }> = [];
+    window.workbench = {
+      listFiles: async () => [path, other].map(path => ({ path, name: path, kind: 'file', size: 0 })),
+      gitState: async () => ({ available: false }),
+      readFile: async (_id: string, selected: string) => {
+        reads.push(selected);
+        if (selected === other) return file(other, 'other', 'Other file');
+        if (holdRead) return delayed.promise;
+        if (denied) throw new Error('EACCES fixture');
+        return disk;
+      },
+      writeFile: async (_id: string, input: typeof writes[number]) => {
+        writes.push(input);
+        throw new Error('File changed on disk; reload before saving');
+      },
+      setUnsavedFiles: () => {},
+    } as unknown as Window['workbench'];
+    const show = (path: string, panelVisible = true) => render(<div style={{ display: 'flex', width: 360, height: 520 }}>
+      <WorkspaceFileNavigation.Provider value={{ cwd: project.cwd, open: () => {}, consume: () => {}, request: { workspaceId: project.id, path, line: 1 } }}>
+        <FileReviewPanel workspace={project} refreshKey="disk" perform={perform} visible={panelVisible} />
+      </WorkspaceFileNavigation.Provider>
+    </div>);
+    const view = () => {
+      const dom = document.querySelector<HTMLElement>('.review-editor .cm-editor');
+      return dom ? EditorView.findFromDOM(dom) : null;
+    };
+    const notice = () => document.querySelector('.file-review-panel [data-file-disk-status]');
+    try {
+      await show(path);
+      const editor = view();
+      assert(editor, 'CodeMirror did not open the watched file');
+      await act(async () => {
+        const anchor = editor.state.doc.line(50).from + 5;
+        editor.dispatch({ selection: { anchor }, effects: EditorView.scrollIntoView(anchor, { y: 'start' }) });
+        await tick();
+      });
+      await waitFor(() => editor.scrollDOM.scrollTop > 300, 'The fixture did not scroll to the selected line');
+      const anchorText = () => editor.state.doc.lineAt(editor.lineBlockAtHeight(editor.scrollDOM.scrollTop).from).text;
+      const previousTop = anchorText();
+      await checkNow();
+      disk = file(path, 'r1', `Inserted above\r\n${original.replaceAll('\n', '\r\n')}`);
+      await wait(3100);
+      await waitFor(() => editor.state.sliceDoc() === disk?.content, 'The clean file did not load the external edit on a scheduled check');
+      const selection = editor.state.selection.main.head;
+      assert(view() === editor && selection === editor.state.doc.line(51).from + 5 && editor.state.lineBreak === '\r\n',
+        'Updating a clean file lost the editor, cursor or disk line endings');
+      await waitFor(() => anchorText() === previousTop, 'Updating a clean file moved the viewport away from the same text');
+
+      await act(async () => { editor.dispatch({ changes: { from: editor.state.doc.length, insert: ' local draft' } }); await tick(); });
+      const draft = editor.state.sliceDoc();
+      disk = file(path, 'r2', 'External draft conflict');
+      await checkNow();
+      assert(notice()?.textContent === translate('workspace:files.changedDraft') && editor.state.sliceDoc() === draft,
+        'A changed file replaced the draft or omitted the conflict notice');
+      await wait(1100);
+      assert(writes.length === 0, 'Auto Save attempted to write a known conflict');
+      await click('workspace:common.save');
+      assert(writes[0]?.revision === 'r1' && writes[0]?.content === draft && editor.state.sliceDoc() === draft,
+        'Manual Save did not use the retained original revision');
+      await click('workspace:files.reloadDiscard');
+      assert(editor.state.sliceDoc() === 'External draft conflict' && !notice(), 'Reload did not adopt the disk version');
+
+      await act(async () => { editor.dispatch({ changes: { from: 0, insert: 'Unwritten ' } }); await tick(); });
+      disk = null;
+      await checkNow();
+      const missing = notice();
+      assert(missing?.textContent === translate('workspace:files.missingDraft') && editor.state.sliceDoc() === 'Unwritten External draft conflict',
+        'A missing file cleared the dirty buffer or hid the deletion');
+      await checkNow();
+      assert(notice() === missing, 'Repeated deletion checks replaced the notice');
+      denied = true;
+      await checkNow();
+      assert(notice()?.textContent === translate('workspace:files.unreadableDraft'), 'An unreadable file was reported as deleted');
+      denied = false;
+      disk = file(path, 'r3', 'Restored file');
+      await click('workspace:files.reloadDiscard');
+
+      holdRead = true;
+      await checkNow();
+      await show(other);
+      assert(view()?.state.sliceDoc() === 'Other file', 'An old disk check blocked switching files');
+      const readsBefore = reads.length;
+      await checkNow();
+      assert(reads.length === readsBefore, 'A second disk check started while the old request was pending');
+      await act(async () => { delayed.resolve(file(path, 'old-result', 'Old check result')); await tick(); });
+      assert(view()?.state.sliceDoc() === 'Other file' && !notice(), 'A stale disk response updated the current editor');
+      await show(other, false);
+      const hiddenReads = reads.length;
+      await checkNow();
+      assert(reads.length === hiddenReads, 'A hidden editor triggered a disk check');
+      await show(other);
+      focused = false;
+      window.dispatchEvent(new Event('blur'));
+      await wait(3100);
+      assert(reads.length === hiddenReads, 'An inactive window kept checking the disk');
+      focused = true;
+      window.dispatchEvent(new Event('focus'));
+      await waitFor(() => reads.length === hiddenReads + 1, 'The disk check did not resume when the window regained focus');
+    } finally {
+      delayed.resolve(file(path, 'cleanup', original));
+      setVisibility(false);
+      if (visibility) Object.defineProperty(document, 'visibilityState', visibility); else Reflect.deleteProperty(document, 'visibilityState');
+      if (focus) Object.defineProperty(document, 'hasFocus', focus); else Reflect.deleteProperty(document, 'hasFocus');
+      if (preferences === null) localStorage.removeItem(key); else localStorage.setItem(key, preferences);
+    }
+  },
   'SIDE-QUESTION: selected answers and Trace titles support a reliable independent follow-up': async () => {
     const response: Message = { id: 'side-answer', role: 'assistant', text: 'An earlier sentence. Quote just this. An extra sentence.', createdAt: session.createdAt };
     const event: Message = { id: 'side-trace', role: 'activity', text: 'Trace title', createdAt: session.createdAt,
