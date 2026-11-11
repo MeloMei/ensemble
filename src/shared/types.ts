@@ -295,8 +295,10 @@ export interface SessionQueueItem {
   agentSource?: AgentMessageSource;
   revision?: number;
   edit?: { id: string; draft?: PromptInput; draftRevision?: number; lease?: { ownerId: string; expiresAt: number } };
+  steeringUnconfirmed?: true;
 }
 export type QueuedPromptMoveResult = 'moved' | 'queue-changed' | 'blocked';
+export type QueuedPromptSteerResult = 'sent' | 'rejected' | 'unconfirmed';
 export interface SessionCommandReceipt { commandId: string; kind: string; result: unknown; createdAt: string }
 export interface DiagnosticEntry {
   seq: number; at: string; layer: 'provider' | 'engine' | 'command' | 'transport'; kind: string;
@@ -383,6 +385,8 @@ export interface WorkbenchAPI {
   finishQueuedPromptEdit(id: string, itemId: string, editId: string, input?: PromptInput): Promise<void>;
   removeQueuedPrompt(id: string, itemId: string, revision: number, commandId?: string, editId?: string): Promise<void>;
   moveQueuedPrompt(id: string, itemId: string, targetId: string, expectedOrder: string[], commandId?: string): Promise<QueuedPromptMoveResult>;
+  interruptForQueuedPrompt(id: string, itemId: string, expectedOrder: string[], attemptId: string, commandId: string): Promise<QueuedPromptMoveResult>;
+  steerQueuedPrompt(id: string, itemId: string, revision: number, attemptId: string, commandId: string): Promise<QueuedPromptSteerResult>;
   setSessionQueuePaused(id: string, paused: boolean): Promise<void>;
   reconcileSessionDelivery(id: string): Promise<void>;
   providerHealth(cwd?: string): Promise<ProviderInfo[]>;

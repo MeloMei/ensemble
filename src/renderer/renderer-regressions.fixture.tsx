@@ -3835,6 +3835,40 @@ const cases: Record<string, () => Promise<void>> = {
     assert(!button('workspace:chat.sendTask').disabled, 'Removing an oversized attachment did not restore sending');
     assert(errors.length === 0, errors.join('\n'));
   },
+  'QUEUE-DISPATCH: next, current-turn send and explicit interrupt use the intended item': async () => {
+    const requests: string[][] = [];
+    Object.assign(window, { workbench: {
+      commandReceipt: async () => undefined,
+      moveQueuedPrompt: async (_id: string, itemId: string, targetId: string) => {
+        requests.push(['next', itemId, targetId]); return 'moved';
+      },
+      steerQueuedPrompt: async (_id: string, itemId: string, _revision: number, attemptId: string) => {
+        requests.push(['steer', itemId, attemptId]); return 'sent';
+      },
+      interruptForQueuedPrompt: async (_id: string, itemId: string, order: string[], attemptId: string) => {
+        requests.push(['interrupt', itemId, ...order, attemptId]); return 'moved';
+      },
+    } });
+    const queued: Session = { ...session, status: 'running', attempts: [
+      { id: 'active-attempt', status: 'running', prompt: 'active', userMessageId: 'active-message', startedAt: session.createdAt },
+    ], queue: ['one', 'two'].map(id => ({ id, commandId: id, input: { text: id }, createdAt: session.createdAt, updatedAt: session.updatedAt })) };
+    await render(chat({ session: queued, provider: { ...provider, capabilities: { ...provider.capabilities, steer: true } } }));
+    const action = (container: ParentNode, key: string) => {
+      const control = [...container.querySelectorAll('button')].find(item => item.textContent?.trim() === translate(`workspace:chat.${key}`));
+      assert(control, `Missing queue action ${key}`);
+      return act(async () => { control.click(); await tick(); });
+    };
+    const row = document.querySelector('[data-queue-id="two"]')!;
+    await action(row, 'queueNext'); await settle();
+    await action(row, 'queueSteer'); await settle();
+    await action(row, 'queueInterrupt');
+    assert(requests.map(request => request.join(':')).join(',') === 'next:two:one,steer:two:active-attempt',
+      'Priority or steering was misrouted, or interrupt ran without confirmation');
+    const modal = document.querySelector('dialog[open]');
+    assert(modal, 'Interrupt did not ask for confirmation');
+    await action(modal, 'queueInterrupt'); await settle();
+    assert(requests.at(-1)?.join(':') === 'interrupt:two:one:two:active-attempt', 'Interrupt did not carry the selected attempt and order');
+  },
   'UX2-CHAT2: editing an oversized queued draft requires removing excess files before saving': async () => {
     const attachments = Array.from({ length: 5 }, (_, index) => ({ id: `queued-limit-${index}`, name: `file-${index}.txt`, kind: 'text' as const, ownedPath: `/file-${index}.txt`, mimeType: 'text/plain', size: 4, sha256: 'a'.repeat(64) }));
     const writes: unknown[] = [];

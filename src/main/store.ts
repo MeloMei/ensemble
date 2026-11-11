@@ -89,6 +89,7 @@ const savedSchema = record({
     queue: z.array(z.object({ id: z.string(), commandId: z.string(), input: promptInputSchema, modelId: z.string().optional(),
       agentSource: agentSourceSchema.optional(),
       revision: z.number().int().nonnegative().optional(),
+      steeringUnconfirmed: z.literal(true).optional(),
       edit: z.object({ id: z.string(), draft: promptInputSchema.optional(), draftRevision: z.number().int().positive().optional(),
         lease: z.object({ ownerId: z.string(), expiresAt: z.number().int().nonnegative() }).strict().optional() }).strict().optional(),
       settings: z.object({ effort: z.string().optional(), permission: sessionPermissionSchema.optional(), skillIds: z.array(z.string()).optional() }).strict().optional(), createdAt: z.string(), updatedAt: z.string() }).strict()).optional(),

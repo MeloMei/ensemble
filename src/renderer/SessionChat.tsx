@@ -5,7 +5,7 @@ import { formatDate, formatNumber, renderDisplayText } from '../shared/i18n';
 import { sessionComposerActivity } from '../shared/session-composer-activity';
 import { validQuestionAnswers } from '../shared/question-answers';
 import { ATTACHMENT_LIMITS, attachmentLimitIssue, supportsPromptAttachment } from '../shared/prompt-attachments';
-import { canMoveQueuedPrompt } from '../shared/prompt-queue';
+import { canMoveQueuedPrompt, canSteerQueuedPrompt } from '../shared/prompt-queue';
 import { draftPromptText, EVIDENCE_EXCERPT_LIMIT, hasPromptInput } from '../shared/draft-evidence';
 import { PROMPT_TEXT_LIMIT } from '../shared/types';
 import { Fragment, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type FormEvent, type ReactNode, type Ref } from 'react';
@@ -701,6 +701,10 @@ const queuedPromptDragType = 'application/x-ensemble-queued-prompt';
 
 function PromptQueue({ session, provider, pending, perform, connected, sessions, openSession }: QueueProps) {
   const { t } = useTranslation('workspace');
+  const [interrupt, setInterrupt] = useState<{ itemId: string; attemptId: string; order: string[] }>();
+  const interruptKey = `queue-interrupt:${session.id}`;
+  const steerKey = `queue-steer:${session.id}`;
+  const activeAttempt = activeStatuses.has(session.status) ? session.attempts?.at(-1)?.id : undefined;
   const queue = session.queue ?? [];
   const [drag, setDrag] = useState<{ itemId: string; expectedOrder: string[]; targetId?: string }>();
   const focusedMove = useRef<{ button: HTMLButtonElement; itemId: string; from: number }>(null);
@@ -746,7 +750,9 @@ function PromptQueue({ session, provider, pending, perform, connected, sessions,
     </header>
     {session.queuePaused && <p className="queue-paused"><Pause size={12} />{t('chat.queuePaused')}{session.queueHoldReason && <span>{session.queueHoldReason}</span>}</p>}
     {!session.queuePaused && !queue[0].edit && session.waitingForProject && <OperationFeedback className="queue-paused">{t('chat.sideQuestion.waiting')}</OperationFeedback>}
-    {(pending.has(moveKey) || pending.has(pauseKey)) && <OperationFeedback state="progress">{t('chat.queueUpdating')}</OperationFeedback>}
+    {(pending.has(moveKey) || pending.has(pauseKey) || pending.has(steerKey)) && <OperationFeedback state="progress">
+      {t(pending.has(steerKey) ? 'chat.queueSteering' : 'chat.queueUpdating')}
+    </OperationFeedback>}
     <ol onDragOver={event => {
       if (!drag) return;
       const to = dropTarget(event);
@@ -787,11 +793,41 @@ function PromptQueue({ session, provider, pending, perform, connected, sessions,
           onClick={event => moveBy(1, event.currentTarget)}><ArrowDown size={13} aria-hidden="true" /></button>
       </span>;
       const drop = drag?.targetId === item.id && canMoveQueuedPrompt(queue, dragFrom, index) ? (dragFrom < index ? 'after' : 'before') : undefined;
+      const order = queue.map(queued => queued.id);
+      const first = canMoveQueuedPrompt(queue, index, 0);
+      const canInterrupt = activeAttempt && !session.queuePaused && !item.agentSource && !item.edit && !item.steeringUnconfirmed && (!index || first);
+      const canSteer = activeAttempt && session.status === 'running' && provider?.capabilities.steer && canSteerQueuedPrompt(item);
+      const dispatchDisabled = moveDisabled || pending.has(interruptKey) || pending.has(steerKey);
+      const actions = <>
+        {first && <button type="button" disabled={dispatchDisabled} onClick={event => move(index, 0, order, event.currentTarget)}>{t('chat.queueNext')}</button>}
+        {canSteer && <button type="button" disabled={dispatchDisabled} onClick={() => void perform(steerKey, async () => {
+          const revision = item.revision ?? 0;
+          await runSessionCommand(`${steerKey}:${item.id}`, { revision, activeAttempt }, async commandId => {
+            const result = await window.workbench.steerQueuedPrompt(session.id, item.id, revision, activeAttempt, commandId);
+            if (result === 'rejected') throw new SessionCommandRejectedError(t('chat.queueSteerRejected'));
+          });
+        })}>{t('chat.queueSteer')}</button>}
+        {canInterrupt && <button type="button" disabled={dispatchDisabled}
+          onClick={() => setInterrupt({ itemId: item.id, attemptId: activeAttempt, order })}>{t('chat.queueInterrupt')}</button>}
+      </>;
       return <li key={item.id} data-queue-id={item.id} data-queue-drop={drop}>
-        <QueuedPromptRow item={item} sessionId={session.id} provider={provider} reorderControls={controls}
+        <QueuedPromptRow item={item} sessionId={session.id} provider={provider} reorderControls={<>{controls}{actions}</>}
           connected={connected} pending={pending} perform={perform} sessions={sessions} openSession={openSession} />
       </li>;
     })}</ol>
+    {interrupt && <Modal title={t('chat.queueInterrupt')} subtitle={t('chat.queueInterruptConfirm')} busy={pending.has(interruptKey)}
+      onClose={() => setInterrupt(undefined)}>
+      <div className="modal-actions">
+        <button type="button" className="button" autoFocus onClick={() => setInterrupt(undefined)}>{t('common.cancel')}</button>
+        <button type="button" className="button danger" disabled={!connected || pending.has(interruptKey)} onClick={() => void perform(interruptKey, async () => {
+          await runSessionCommand(interruptKey, interrupt, async commandId => {
+            const result = await window.workbench.interruptForQueuedPrompt(session.id, interrupt.itemId, interrupt.order, interrupt.attemptId, commandId);
+            if (result !== 'moved') throw new SessionCommandRejectedError(t(result === 'queue-changed' ? 'chat.queueOrderChanged' : 'chat.queueInterruptBlocked'));
+          });
+          setInterrupt(undefined);
+        })}>{t('chat.queueInterrupt')}</button>
+      </div>
+    </Modal>}
   </section>;
 }
 
@@ -816,6 +852,8 @@ function QueuedPromptRow({ sessionId, item, provider, connected, pending, perfor
     {item.agentSource && <AgentMessageAttribution source={item.agentSource} sessions={sessions} openSession={openSession} />}
     {(item.edit || edit) && <OperationFeedback className="queue-edit-hold">{t('chat.queueEditHeld')}</OperationFeedback>}
     {editingElsewhere && <OperationFeedback className="queue-edit-hold" state="error">{t('chat.queueEditMoved')}</OperationFeedback>}
+    {item.steeringUnconfirmed && !pending.has(`queue-steer:${sessionId}`) &&
+      <OperationFeedback className="queue-edit-hold" state="error">{t('chat.queueSteerUnconfirmed')}</OperationFeedback>}
     {(edit || editingElsewhere) && acquired && <QueuedPromptEditor key={acquired.id} sessionId={sessionId} itemId={item.id}
       editId={acquired.id} initial={acquired.input} current={Boolean(edit)} connected={connected} disabled={disabled} perform={action => void perform(key, async () => {
         await action();
@@ -827,7 +865,7 @@ function QueuedPromptRow({ sessionId, item, provider, connected, pending, perfor
         <AttachmentChips attachments={item.input.attachments ?? []} />
         <PromptSkillChips skills={item.input.skills} />
       </div>}
-      <div className="queue-item-actions">{reorderControls}{!item.agentSource && <button disabled={disabled} onClick={begin}>
+      <div className="queue-item-actions">{reorderControls}{!item.agentSource && !item.steeringUnconfirmed && <button disabled={disabled} onClick={begin}>
         {t(item.edit ? 'chat.resumeQueuedEdit' : 'chat.editQueued')}
       </button>}
         {!item.edit && <button disabled={disabled} onClick={() => void perform(key, remove)}>{t('chat.removeQueued')}</button>}

@@ -289,7 +289,7 @@
 .chat-pane .prompt-queue li { padding-left: 3px; }
 .chat-pane .queue-item-content p { max-height: 65px; overflow: auto; margin: 0; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
 .chat-pane .queue-item-content small { display: block; margin-top: 4px; color: var(--dim); font-size: var(--font-size-10); }
-.chat-pane .queue-item-actions { display: flex; gap: 12px; margin-top: 5px; }
+.chat-pane .queue-item-actions { display: flex; flex-wrap: wrap; gap: 8px 12px; margin-top: 5px; }
 .chat-pane .queue-reorder-controls { display: inline-flex; align-items: center; gap: 3px; }
 .chat-pane .queue-reorder-controls button, .chat-pane .queue-drag-handle { display: grid; place-items: center; width: 23px; height: 23px; border-radius: 4px; }
 .chat-pane .queue-reorder-controls button[aria-disabled="true"] { color: var(--dim); cursor: default; }
