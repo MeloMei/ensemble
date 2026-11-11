@@ -31,7 +31,8 @@ export function hasPromptInput(input: PromptInput): boolean {
 export function samePromptDraft(draft: PromptInput | undefined, input: PromptInput): boolean {
   return draft?.text.trim() === input.text.trim()
     && JSON.stringify(draft.attachments ?? []) === JSON.stringify(input.attachments ?? [])
-    && JSON.stringify(draft.evidence ?? []) === JSON.stringify(input.evidence ?? []);
+    && JSON.stringify(draft.evidence ?? []) === JSON.stringify(input.evidence ?? [])
+    && JSON.stringify(draft.skills ?? []) === JSON.stringify(input.skills ?? []);
 }
 
 export function localPreviewUrl(value: string): URL | undefined {

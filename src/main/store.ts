@@ -10,6 +10,7 @@ import { moveSession, moveStep, moveWorkflow } from './lifecycle';
 import { recordSessionAttention } from './attention';
 import { workspacePathContains } from './workspace-path';
 import { draftEvidenceListSchema } from './draft-evidence-schema';
+import { promptSkillListSchema } from './prompt-skill-schema';
 import {
   collaborationEventInputSchema, collaborationReceiptSchema, collaborationStateSchema, emptyCollaborationState,
   type CollaborationEvent, type CollaborationEventInput, type CollaborationReceipt, type CollaborationState,
@@ -47,7 +48,7 @@ const record = <T extends z.ZodRawShape>(shape: T) => z.object(shape).passthroug
 const sessionStatus = z.enum(['idle', 'queued', 'running', 'waiting_approval', 'waiting_children', 'completed', 'failed', 'cancelled', 'interrupted']);
 const stepStatus = z.enum(['pending', 'running', 'completed', 'failed', 'blocked', 'cancelled']);
 const attachmentSchema = record({ id: z.string(), name: z.string(), kind: z.enum(['image', 'text']), mimeType: z.string(), size: z.number(), sha256: z.string(), ownedPath: z.string() });
-const promptInputSchema = record({ text: z.string(), attachments: z.array(attachmentSchema).optional(), evidence: draftEvidenceListSchema.optional() });
+const promptInputSchema = record({ text: z.string(), attachments: z.array(attachmentSchema).optional(), evidence: draftEvidenceListSchema.optional(), skills: promptSkillListSchema.optional() });
 const agentSourceSchema = z.object({ sessionId: z.string(), title: z.string(), providerId: z.string(), reply: z.literal(true).optional() }).strict();
 const sessionSettingsSchema = record({ effort: z.string().optional(), permission: sessionPermissionSchema.optional(), skillIds: z.array(z.string()).optional() });
 const usageSchema = record({
@@ -64,7 +65,7 @@ const eventSchema = record({
 const messageSchema = record({
   id: z.string(), role: z.enum(['user', 'assistant', 'activity']), text: z.string(), createdAt: z.string(),
   attachments: z.array(attachmentSchema).optional(), nativeTurnId: z.string().optional(), event: eventSchema.optional(),
-  evidence: draftEvidenceListSchema.optional(), originalPrompt: z.string().optional(),
+  evidence: draftEvidenceListSchema.optional(), skills: promptSkillListSchema.optional(), originalPrompt: z.string().optional(),
   agentSource: agentSourceSchema.optional(),
   runtimeSwitch: record({ fromProviderId: z.string(), toProviderId: z.string(), permissionResetToReview: z.literal(true).optional() }).optional(),
   delivery: z.object({ id: z.string(), clientUserMessageId: z.string(), status: z.enum(['pending', 'accepted', 'rejected', 'unknown']),

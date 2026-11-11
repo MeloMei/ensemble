@@ -17,13 +17,13 @@ import { ComposerModelPicker } from './ComposerModelPicker';
 import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
-  Activity, Archive, ArrowDown, ArrowUp, ArrowUpLeft, Check, ChevronDown,
+  Activity, Archive, ArrowDown, ArrowUp, ArrowUpLeft, BookOpen, Check, ChevronDown,
   CircleAlert, CircleStop, Clock3, CornerDownLeft, FileText, FolderOpen,
   GitCompareArrows, GitFork, GripVertical, Image, ListChecks, LoaderCircle, MessageCircle, PanelsTopLeft,
   Paperclip, Pause, Play, Plus, Search, ShieldCheck, TerminalSquare, Users, X, ArrowRightLeft,
 } from 'lucide-react';
 import type {
-  AgentMessageSource, Approval, DraftEvidence, DraftEvidenceSource, Message, ProcessEvent, PromptAttachment, PromptInput, ProviderInfo, Session, SessionQueueItem, SessionSkillAssignmentReceipt, SkillInfo, UsageRecord,
+  AgentMessageSource, Approval, DraftEvidence, DraftEvidenceSource, Message, ProcessEvent, PromptAttachment, PromptInput, PromptSkill, ProviderInfo, Session, SessionQueueItem, SessionSkillAssignmentReceipt, SkillInfo, UsageRecord,
 } from '../shared/types';
 import { BusyIcon, IconButton, Modal, ModelField, ProviderSelect, Status, defaultModelId, modelName, pathName, validModelSelection, type Perform } from './ui';
 import { SPRING_SNAPPY } from './vendor/open-claude-ui/ClaudeMotionPresets';
@@ -47,6 +47,7 @@ import { permissionTiersFor, sessionPermissionSchema } from '../shared/session-p
 import { SideQuestion, SideQuestionAction, useAnswerQuestionSelection, type SideQuestionOrigin } from './SideQuestion';
 import { DraftEvidenceCards } from './DraftEvidence';
 import { useWorkspaceFileMention, WorkspaceFileMention } from './WorkspaceFileMention';
+import { SlashCompletion, useSlashCompletion } from './SlashCompletion';
 import './SessionChat.css';
 
 interface SessionChatProps {
@@ -68,6 +69,7 @@ interface SessionChatProps {
   onMessageOpened?: (request: NonNullable<SessionChatProps['messageOpen']>) => void;
   onOpenForkSource?: (sessionId: string, messageId?: string) => void;
   workspaceId?: string;
+  onOpenSkillSettings?: () => void;
   onChooseEvidence?: (reference: DraftEvidence) => void;
   onOpenEvidence?: (source: DraftEvidenceSource) => void;
 }
@@ -519,6 +521,18 @@ function AttachmentChips({ attachments, onRemove }: {
   </div>{preview && <ImageAttachmentPreview key={preview.id} attachment={preview} onClose={() => setPreview(undefined)} />}</>;
 }
 
+function PromptSkillChips({ skills, onRemove }: { skills?: PromptSkill[]; onRemove?: (id: string) => void }) {
+  const { t } = useTranslation('workspace');
+  if (!skills?.length) return null;
+  return <div className="attachments-strip" role="group" aria-label={t('chat.slashDraftSkills')}>
+    {skills.map(skill => <span className="attachment-chip" key={skill.id} title={skill.name}>
+      <BookOpen size={14} aria-hidden="true" /><span>{skill.name}</span>
+      {onRemove && <button className="attachment-remove" type="button" aria-label={t('chat.removePromptSkill', { name: skill.name })}
+        onClick={() => onRemove(skill.id)}><X size={12} /></button>}
+    </span>)}
+  </div>;
+}
+
 function ImageAttachmentPreview({ attachment, onClose }: { attachment: PromptAttachment; onClose: () => void }) {
   const { t } = useTranslation('workspace');
   const [image, setImage] = useState('');
@@ -808,6 +822,7 @@ function QueuedPromptRow({ sessionId, item, provider, connected, pending, perfor
       {!editingElsewhere && <div className="queue-item-content"><p>{item.input.text || t('chat.queuedAttachments')}</p>
         <small>{item.modelId ? modelName(provider, item.modelId) : t('chat.runtimeDefault')}{item.settings?.effort ? ` · ${item.settings.effort}` : ''}</small>
         <AttachmentChips attachments={item.input.attachments ?? []} />
+        <PromptSkillChips skills={item.input.skills} />
       </div>}
       <div className="queue-item-actions">{reorderControls}{!item.agentSource && <button disabled={disabled} onClick={begin}>
         {t(item.edit ? 'chat.resumeQueuedEdit' : 'chat.editQueued')}
@@ -894,6 +909,8 @@ function QueuedPromptEditor({ sessionId, itemId, editId, initial, current, conne
       onChange={event => change({ ...input, text: event.target.value })} />
     <AttachmentChips attachments={input.attachments ?? []} onRemove={!current || disabled || leaseError ? undefined : id =>
       change({ ...input, attachments: input.attachments?.filter(attachment => attachment.id !== id) })} />
+    <PromptSkillChips skills={input.skills} onRemove={!current || disabled || leaseError ? undefined : id =>
+      change({ ...input, skills: input.skills?.filter(skill => skill.id !== id) })} />
     <DraftEvidenceCards evidence={input.evidence} onRemove={disabled ? undefined : id =>
       change({ ...input, evidence: input.evidence?.filter(reference => reference.id !== id) })} />
     <AttachmentLimitNotice issue={issue} />
@@ -997,7 +1014,7 @@ const expandedPromptsBySession = new Map<string, ReadonlySet<string>>();
 
 export function SessionChat({
   session, provider, providers, perform, pending, draft, draftError, onDraftChange, sessions = [], openSession, connected = true, readOnly = false,
-  attentionOpen, onAttentionOpened, messageOpen, onMessageOpened, onOpenForkSource, workspaceId, onChooseEvidence, onOpenEvidence,
+  attentionOpen, onAttentionOpened, messageOpen, onMessageOpened, onOpenForkSource, workspaceId, onOpenSkillSettings, onChooseEvidence, onOpenEvidence,
 }: SessionChatProps) {
   const { t } = useTranslation('workspace');
   const [showActivity, setShowActivity] = useState(false);
@@ -1089,6 +1106,28 @@ export function SessionChat({
   const selectedRuntime = runtimeSelection?.from === session.providerId ? runtimeSelection : undefined;
   const switchingRuntime = Boolean(selectedRuntime?.requested || pending.has(runtimeSwitchKey));
   const runtimeChangePending = Boolean(selectedRuntime || switchingRuntime);
+  const slash = useSlashCompletion({
+    workspaceId, enabled: !readOnly && connected && historyReady && !busy && !session.archived,
+    commands: provider?.available && !runtimeChangePending ? session.runtimeCommands : undefined,
+    skills: draft.skills, canOpenSettings: Boolean(onOpenSkillSettings),
+    onPick: (text, skill, openSettings) => {
+      const current = currentDraft.current;
+      const next = { ...current, text, ...(skill ? { skills: [...(current.skills ?? []), skill] } : {}) };
+      if (onDraftChange(next, current) === false) return false;
+      if (openSettings) onOpenSkillSettings?.();
+    },
+  });
+  const updateCompletion = (input: HTMLTextAreaElement) => {
+    if (composing.current) return;
+    slash.update(input);
+    fileMention.update(input);
+  };
+  const closeCompletion = (input: HTMLTextAreaElement) => {
+    slash.close(input, false);
+    fileMention.close(input, false);
+  };
+  const completionAttributes = slash.open ? slash.attributes(slash.items.length)
+    : fileMention.open ? fileMention.attributes(fileMention.matches.length) : undefined;
   const unresolvedDelivery = session.messages.some(message => message.delivery?.status === 'unknown' || message.delivery?.status === 'pending');
   const canRequestRuntime = !readOnly && !session.archived && connected && historyReady
     && !active && !session.queue?.length && !session.approvals.length && !unresolvedDelivery && !busy && !settingsBusy;
@@ -1694,6 +1733,7 @@ export function SessionChat({
                         onExpandedChange={expanded => { markReadingInput(); pauseForNavigation(); setPromptExpanded(message.id, expanded); }}
                         expandLabel={t('chat.expandPrompt')} collapseLabel={t('chat.collapsePrompt')} />}
                       {message.attachments && <AttachmentChips attachments={message.attachments} />}
+                      <PromptSkillChips skills={message.skills} />
                       <DraftEvidenceCards evidence={message.evidence} onOpen={onOpenEvidence} />
                     </div>
                     <DeliveryState message={message} sessionId={session.id} connected={connected} readOnly={readOnly} pending={pending} perform={perform} />
@@ -1762,7 +1802,8 @@ export function SessionChat({
         </section>
       </CollapsibleRegion>
       {!readOnly && <div className="composer-area">
-        <WorkspaceFileMention mention={fileMention} onPick={file => { if (composer.current) fileMention.insert(composer.current, file); }} />
+        {slash.open ? <SlashCompletion completion={slash} onPick={item => { if (composer.current) slash.insert(composer.current, item); }} />
+          : <WorkspaceFileMention mention={fileMention} onPick={file => { if (composer.current) fileMention.insert(composer.current, file); }} />}
         <div className="composer-frame">
           {historyReady && <ComposerDock session={session} provider={provider} pending={pending} perform={perform}
             connected={connected} active={active} children={children} sessions={sessions} openSession={openSession} openNativeAgent={openDockAgent} />}
@@ -1774,15 +1815,19 @@ export function SessionChat({
             }} />
           <AttachmentChips attachments={attachments}
             onRemove={busy || !historyReady ? undefined : id => onDraftChange({ ...currentDraft.current, attachments: attachments.filter(attachment => attachment.id !== id) })} />
+          <PromptSkillChips skills={draft.skills} onRemove={busy || !historyReady ? undefined : id => {
+            const current = currentDraft.current;
+            onDraftChange({ ...current, skills: current.skills?.filter(skill => skill.id !== id) }, current);
+          }} />
           <textarea ref={composer} aria-label={t('chat.taskContent')} value={draft.text} rows={3} maxLength={PROMPT_TEXT_LIMIT} disabled={busy || !historyReady}
-            aria-autocomplete={workspaceId ? 'list' : undefined} aria-controls={fileMention.open ? fileMention.id : undefined}
-            aria-activedescendant={fileMention.open && fileMention.matches.length ? `${fileMention.id}-${fileMention.selected}` : undefined}
-            onChange={event => { changeComposerText(event.target.value); if (!composing.current) fileMention.update(event.currentTarget); }}
+            aria-autocomplete={workspaceId ? 'list' : undefined} {...completionAttributes}
+            onChange={event => { changeComposerText(event.target.value); updateCompletion(event.currentTarget); }}
             placeholder={active ? t('chat.nextPromptPlaceholder') : t('chat.promptPlaceholder')}
-            onSelect={event => { if (!composing.current) fileMention.update(event.currentTarget); }}
-            onBlur={event => fileMention.close(event.currentTarget)}
-            onCompositionStart={event => { composing.current = true; fileMention.close(event.currentTarget); }}
-            onCompositionEnd={event => { composing.current = false; fileMention.update(event.currentTarget); }}
+            onFocus={event => updateCompletion(event.currentTarget)}
+            onSelect={event => updateCompletion(event.currentTarget)}
+            onBlur={event => closeCompletion(event.currentTarget)}
+            onCompositionStart={event => { composing.current = true; closeCompletion(event.currentTarget); }}
+            onCompositionEnd={event => { composing.current = false; updateCompletion(event.currentTarget); }}
             onPaste={event => {
               const file = [...event.clipboardData.files].find(item => clipboardImageExtensions[item.type]);
               if (!file) return;
@@ -1795,7 +1840,8 @@ export function SessionChat({
                 `Screenshot.${clipboardImageExtensions[file.type]}`, new Uint8Array(await file.arrayBuffer()))], 'clipboard');
             }}
             onKeyDown={event => {
-              if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229 || fileMention.keyDown(event)) return;
+              if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229
+                || (slash.open ? slash.keyDown(event) : fileMention.keyDown(event))) return;
               if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault();
                 send();

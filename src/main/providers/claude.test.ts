@@ -67,6 +67,7 @@ createInterface({ input: process.stdin }).on('line', line => {
   }
   if (frame.type !== 'user') return;
   send({ type: 'system', subtype: 'init', model: 'fixture', cwd: process.cwd(),
+    slash_commands: ['review:changes', '/model', 'review:changes'],
     permissionMode: permissionMode === 'manual' || mode === 'wrong-permission-mode' ? 'default' : permissionMode });
   if (mode === 'platform-tool') { host('platform', 'mcp__workbench__get_worker', { sessionId: 'child' }); return; }
   if (mode === 'approval') {
@@ -153,6 +154,7 @@ test('Claude text reconciliation keeps one native message item and ordered text 
   process.env.CLAUDE_ADAPTER_FIXTURE_MODE = 'stream';
   const provider = await createClaudeProvider(); assert.equal(provider.info.available, true);
   const turn = context(); await provider.run(turn);
+  assert.deepEqual(turn.events.find(event => event.type === 'runtime-commands')?.commands.map(command => command.name), ['review:changes', 'model']);
   const text = turn.events.filter(event => event.type === 'text');
   assert.deepEqual(text.map(event => event.text), ['Hello ', 'Hello world']);
   assert.equal(new Set(text.map(event => event.itemId)).size, 1);

@@ -43,6 +43,7 @@ import { ApplicationUpdateGuard } from './application-update-guard';
 import { draftPromptText, localPreviewUrl } from '../shared/draft-evidence';
 import { draftEvidenceListSchema, draftEvidenceSchema } from './draft-evidence-schema';
 import type { DraftEvidence } from '../shared/types';
+import { promptSkillListSchema } from './prompt-skill-schema';
 
 const idSchema = z.string().min(1).max(200);
 const cwdSchema = z.string().min(1).max(4096);
@@ -56,7 +57,7 @@ const sessionUpdateSchema = z.object({
   messageTarget: z.object({ sessionId: idSchema, enabled: z.boolean() }).strict().optional(),
 }).strict();
 // Older oversized drafts stay editable until the user removes the excess files.
-const draftInputSchema = z.object({ text: z.string().max(PROMPT_TEXT_LIMIT), attachments: z.array(attachmentMetadataSchema).max(8).optional(), evidence: draftEvidenceListSchema.optional() }).strict();
+const draftInputSchema = z.object({ text: z.string().max(PROMPT_TEXT_LIMIT), attachments: z.array(attachmentMetadataSchema).max(8).optional(), evidence: draftEvidenceListSchema.optional(), skills: promptSkillListSchema.optional() }).strict();
 const promptInputSchema = draftInputSchema.refine(input => !attachmentLimitIssue(input.attachments ?? []), {
   path: ['attachments'], message: `每轮最多 ${ATTACHMENT_LIMITS.count} 个附件，总大小最多 ${ATTACHMENT_LIMITS.totalBytes / 1024 / 1024} MiB。`,
 }).refine(input => draftPromptText(input).length <= PROMPT_TEXT_LIMIT, { path: ['text'], message: '任务和引用合计超过文本长度限制。' });
@@ -142,8 +143,9 @@ export async function createWorkbenchService(options: {
     engine.setTurnEnricher(async (session, prompt, userMessageId) => {
       const attemptId = session.attempts?.at(-1)?.id;
       if (!attemptId) throw new Error('缺少当前任务身份。');
-      const prepared = await runtimeSettings.enrich(session, prompt);
-      const loaded = await attachments.load(session.messages.find(message => message.id === userMessageId)?.attachments ?? []);
+      const message = session.messages.find(item => item.id === userMessageId);
+      const prepared = await runtimeSettings.enrich(session, prompt, message?.skills?.map(skill => skill.id));
+      const loaded = await attachments.load(message?.attachments ?? []);
       const issued = collaboration.issue({ sessionId: session.id, attemptId });
       return { ...prepared, attachments: loaded, mcpServers: [...prepared.mcpServers, issued.config], cleanup: issued.cleanup };
     });

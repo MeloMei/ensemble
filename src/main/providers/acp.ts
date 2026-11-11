@@ -10,10 +10,11 @@ import type { AcpConfigChoice, AcpLaunchSpec, AcpRuntimeDescriptor } from './acp
 import { abortError, asError } from './json-rpc';
 import { signalProcessTree, watchOutputDrain } from './process-tree';
 import { attachmentText, emitProcess, processStatus, processText } from './provider-events';
+import { normalizeRuntimeCommands } from './runtime-commands';
 import { answerFormElicitation } from './form-elicitation';
 import { PRODUCT_ID, PRODUCT_NAME, PRODUCT_VERSION } from '../../shared/app-identity';
 import { SESSION_PERMISSION_TIERS } from '../../shared/session-permissions';
-import type { ApprovalInput, ProviderInfo, ProviderModel } from '../../shared/types';
+import type { ApprovalInput, ProviderInfo, ProviderModel, RuntimeCommand } from '../../shared/types';
 
 type Options = acp.SessionConfigOption[];
 type SessionConfiguration = {
@@ -176,6 +177,7 @@ class AcpSession {
   private usage?: acp.UsageUpdate;
   private fatal?: Error;
   private nativeId?: string;
+  private pendingCommands = new Map<string, RuntimeCommand[]>();
   private prompting = false;
   closed = false;
 
@@ -192,7 +194,11 @@ class AcpSession {
     if (context.signal.aborted || this.closing) throw abortError();
     const app = acp.client({ name: PRODUCT_ID })
       .onNotification(acp.methods.client.session.update, event => {
-        try { this.update(event.params); }
+        try {
+          const { sessionId, update } = event.params;
+          if (update.sessionUpdate === 'available_commands_update') this.updateCommands(sessionId, update);
+          else this.update(event.params);
+        }
         catch (error) {
           if (!this.descriptor.redact) throw error;
           this.connection.close(new Error('ACP 运行时返回了无效的会话更新。'));
@@ -286,6 +292,17 @@ class AcpSession {
       }
     }
     if (selected) this.current?.emit({ type: 'activity', text: `ACP 模型：${selected.name}；${this.descriptor.name} ${this.descriptor.version}` });
+  }
+
+  private updateCommands(sessionId: string, update: acp.AvailableCommandsUpdate): void {
+    if (this.nativeId && sessionId !== this.nativeId) return;
+    if (!this.current && !this.pendingCommands.has(sessionId) && this.pendingCommands.size >= 8) return;
+    const commands = normalizeRuntimeCommands(update.availableCommands.map(command => ({
+      name: command.name, description: command.description, inputHint: command.input?.hint,
+    })), this.descriptor.redact);
+    if (this.current) {
+      if (!this.current.signal.aborted) this.current.emit({ type: 'runtime-commands', commands });
+    } else this.pendingCommands.set(sessionId, commands);
   }
 
   private update(event: acp.SessionNotification): void {
@@ -431,6 +448,9 @@ class AcpSession {
       if (context.signal.aborted || this.closing) throw abortError();
       context.emit({ type: 'external-id', id: this.nativeId! });
       this.current = context;
+      const commands = this.pendingCommands.get(this.nativeId!);
+      this.pendingCommands.clear();
+      if (commands) context.emit({ type: 'runtime-commands', commands });
       this.text.clear(); this.tools.clear(); this.segments = 0; this.usage = undefined; this.fatal = undefined;
       await this.configure(options, context.session.modelId ?? this.descriptor.defaultModelId);
       if (context.signal.aborted || this.closing) throw abortError();

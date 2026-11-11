@@ -46,6 +46,7 @@ export class SnapshotProjection {
       const summary = { ...metadata, messageCount: session.messages.length,
         attempts: session.attempts?.slice(-32).map(attempt => ({ ...attempt, prompt: '' })),
         draft: watched ? session.draft : undefined,
+        runtimeCommands: watched ? session.runtimeCommands : undefined,
         queue: watched ? session.queue : session.queue?.map(item => ({ ...item, input: { text: '' } })),
         composerActivity: watched ? sessionComposerActivity(session.messages) : undefined,
         latestTrace: trace && traceTitle ? {

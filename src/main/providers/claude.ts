@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import type { ApprovalInput, ProviderModel } from '../../shared/types';
 import type { DisplayText } from '../../shared/display-text';
 import { SESSION_PERMISSION_TIERS } from '../../shared/session-permissions';
+import { normalizeRuntimeCommands } from './runtime-commands';
 import { createNdjsonDecoder } from './ndjson';
 import { signalProcessTree } from './process-tree';
 import type { ProviderAdapter, TurnContext } from './types';
@@ -405,6 +406,9 @@ async function runClaude(binary: string, context: TurnContext): Promise<void> {
           if (frame.subtype === 'init') {
             const reportedMode = frame.permissionMode === 'default' ? 'manual' : frame.permissionMode;
             if (typeof reportedMode === 'string' && reportedMode !== permissionMode) throw new Error(`Claude 未启用所选权限模式（期望 ${permissionMode}，收到 ${reportedMode}）`);
+            if (frame.session_id === sessionId && Array.isArray(frame.slash_commands)) context.emit({ type: 'runtime-commands', commands: normalizeRuntimeCommands(
+              frame.slash_commands.flatMap(name => typeof name === 'string' ? [{ name }] : []),
+            ) });
             if (typeof frame.model === 'string') context.emit({ type: 'activity', text: `Claude 原生模型：${frame.model}` });
           }
           if (frame.subtype === 'session_state_changed') {
