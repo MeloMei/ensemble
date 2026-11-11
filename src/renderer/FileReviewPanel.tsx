@@ -11,6 +11,7 @@ import { FileEditorTabs } from './FileEditorTabs';
 import { DiffReview } from './DiffReview';
 import { GitHistory } from './GitHistory';
 import { GitBranchControl } from './GitBranchControl';
+import { GitSyncControl } from './GitSyncControl';
 import { WorkspaceFileTree } from './WorkspaceFileTree';
 import { FileDraftStore } from './file-drafts';
 import { diffRangeLines, reviewFeedback, reviewNoteSchema, type DiffNoteDraft, type ReviewNote } from './review-notes';
@@ -399,6 +400,8 @@ export function FileReviewPanel({ workspace, refreshKey, perform, visible = true
       : <span>{t('files.notGitLabel')}</span>}
       {view === 'changes' && <BranchComparison workspaceId={workspace.id} />}
       {view === 'changes' && git?.available && <GitHistory workspaceId={workspace.id} />}
+      {view === 'changes' && git?.available && <GitSyncControl workspaceId={workspace.id} pullBlocked={fileDrafts.hasUnsettledEdits() || !!git.changes.length}
+        onPull={() => run('refresh', async () => { await refresh(); if (selected) await load(selected.path, selected.mode, true); })} />}
       {git?.available && <button className="review-text-button" disabled={!!busy || hasUnsavedFiles} onClick={() => run('preview', async () => setPreview(await window.workbench.gitCommitPreview(workspace.id)))}>{t('files.commitPreview')}</button>}
     </div>}
     {notice && <div className="pane-note error-text" role="alert">{typeof notice === 'string' ? notice : renderDisplayText('', notice)}</div>}

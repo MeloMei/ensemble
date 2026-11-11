@@ -227,7 +227,7 @@ export async function createWorkbenchService(options: {
 
 
     const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>();
-    const workspaceMutations = new Set(['workbench:create-terminal', 'workbench:write-file', 'workbench:git-mutate', 'workbench:git-commit', 'workbench:change-git-branch',
+    const workspaceMutations = new Set(['workbench:create-terminal', 'workbench:write-file', 'workbench:git-mutate', 'workbench:git-commit', 'workbench:change-git-branch', 'workbench:sync-git',
       'workbench:save-skill', 'workbench:save-mcp-settings', 'workbench:test-mcp-server']);
     const handle = (channel: string, handler: (event: unknown, ...args: unknown[]) => unknown) => {
       handlers.set(channel, (event, ...args) => workspaceMutations.has(channel)
@@ -460,6 +460,12 @@ export async function createWorkbenchService(options: {
     });
     handle('workbench:git-history', (_event, id, query, allBranches, limit) =>
       workspaceFiles.gitHistory(workspaceCwd(id), z.string().trim().max(256).parse(query), z.boolean().parse(allBranches), z.number().int().min(1).max(500).parse(limit)));
+    handle('workbench:git-sync-state', (_event, id) => workspaceFiles.gitSyncState(workspaceCwd(id)));
+    handle('workbench:sync-git', (_event, id, input) => {
+      const cwd = workspaceCwd(id);
+      const request = z.object({ action: z.enum(['fetch', 'pull', 'push']), remote: z.string().min(1).max(256), expectedBranch: z.string().min(1).max(4096) }).strict().parse(input);
+      return engine.withProjectMutation(cwd, () => workspaceFiles.syncGit(cwd, request));
+    });
     handle('workbench:git-commit-files', (_event, id, sha) => workspaceFiles.gitCommitFiles(workspaceCwd(id), idSchema.parse(sha)));
     handle('workbench:git-commit-diff', (_event, id, sha, path) => workspaceFiles.gitCommitDiff(workspaceCwd(id), idSchema.parse(sha), cwdSchema.parse(path)));
     handle('workbench:write-file', (_event, id, input) => workspaceFiles.write(workspaceCwd(id), z.object({ path: cwdSchema, content: z.string().max(1_048_576), revision: idSchema }).strict().parse(input)));

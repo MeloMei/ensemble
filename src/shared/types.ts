@@ -146,6 +146,12 @@ export interface GitHistoryCommit {
 }
 export interface GitHistory { commits: GitHistoryCommit[]; limited: boolean }
 export interface GitBranchChange { action: 'switch' | 'create'; name: string; expectedBranch: string }
+export interface GitSyncState {
+  branch: string | null;
+  remotes: string[];
+  upstream?: { remote: string; ref: string; ahead?: number; behind?: number };
+}
+export interface GitSyncRequest { action: 'fetch' | 'pull' | 'push'; remote: string; expectedBranch: string }
 export interface FileDiff { path: string; patch: string; binary: boolean; truncated: boolean; revision?: string }
 
 export interface AgentMessageSource { sessionId: string; title: string; providerId: string; reply?: true }
@@ -407,6 +413,8 @@ export interface WorkbenchAPI {
   gitBranchRefs(workspaceId: string): Promise<string[]>;
   gitBranchComparison(workspaceId: string, targetRef: string): Promise<GitBranchComparison>;
   changeGitBranch(workspaceId: string, change: GitBranchChange): Promise<GitState>;
+  gitSyncState(workspaceId: string): Promise<GitSyncState>;
+  syncGit(workspaceId: string, request: GitSyncRequest): Promise<GitSyncState>;
   gitHistory(workspaceId: string, query: string, allBranches: boolean, limit: number): Promise<GitHistory>;
   gitCommitFiles(workspaceId: string, sha: string): Promise<string[]>;
   gitCommitDiff(workspaceId: string, sha: string, path: string): Promise<FileDiff>;

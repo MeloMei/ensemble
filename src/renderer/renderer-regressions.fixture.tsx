@@ -2399,6 +2399,27 @@ const cases: Record<string, () => Promise<void>> = {
     assert(JSON.stringify(calls) === JSON.stringify([[currentProject.id], [currentProject.id, remote], [currentProject.id, local], [currentProject.id, remote]]),
       'Branch comparison used a different workspace or did not send the full selected ref');
   },
+  'GIT-SYNC: publish targets the selected remote and displays the configured upstream': async () => {
+    const operations: { action: string; remote: string; expectedBranch: string }[] = [];
+    window.workbench = {
+      listFiles: async () => [], setUnsavedFiles: () => {},
+      gitState: async () => ({ available: true, branch: 'topic', changes: [] }),
+      gitSyncState: async () => ({ branch: 'topic', remotes: ['origin', 'review'] }),
+      syncGit: async (_id: string, request: typeof operations[number]) => {
+        operations.push(request);
+        return { branch: 'topic', remotes: ['origin', 'review'], upstream: { remote: request.remote, ref: 'refs/heads/topic', ahead: 0, behind: 0 } };
+      },
+    } as unknown as Window['workbench'];
+    await render(<FileReviewPanel workspace={{ ...workspace, id: 'git-sync' }} refreshKey="git-sync" perform={perform} />);
+    await settle();
+    await act(async () => { document.querySelector<HTMLButtonElement>('.file-view-tabs button:nth-child(2)')!.click(); await tick(); });
+    await click('workspace:files.gitSync');
+    assert(button('workspace:files.gitSyncPull').disabled, 'Pull was offered before configuring upstream');
+    await chooseOption(button('workspace:files.gitSyncRemote'), 'review');
+    await click('workspace:files.gitSyncPublish');
+    await waitFor(() => document.querySelector('.git-sync-dialog')?.textContent?.includes('topic → review / topic') === true, 'The chosen remote was not displayed');
+    assert(!button('workspace:files.gitSyncPull').disabled && JSON.stringify(operations) === JSON.stringify([{ action: 'push', remote: 'review', expectedBranch: 'topic' }]), 'Publishing used the wrong remote or did not configure upstream');
+  },
   'GIT-BRANCH-CONTROL: create and switch update the current branch after Git reports success': async () => {
     let branch = 'main';
     const operations: string[] = [];

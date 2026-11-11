@@ -75,6 +75,9 @@
 .git-branch-control span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .git-branch-dialog { display: grid; gap: 10px; }
 .git-branch-dialog form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.git-sync-dialog { display: grid; gap: 9px; }
+.git-sync-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.file-branch { flex-wrap: wrap; padding-block: 4px; }
 .review-text-button { margin-left: auto; padding: 5px 0 5px 9px; color: var(--accent); border: 0; background: transparent; font-size: var(--font-size-11); white-space: nowrap; }
 .review-text-button:hover:not(:disabled) { color: var(--text); }
 .file-review-panel button { cursor: pointer; }

@@ -7,7 +7,7 @@ import { constants } from 'node:fs';
 import { lstat, open, opendir, realpath, rename, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { TextDecoder } from 'node:util';
-import type { FileContent, FileDiff, FileEntry, GitBranchChange, GitBranchComparison, GitCommitPreview, GitHistory, GitHistoryCommit, GitMutation, GitState,
+import type { FileContent, FileDiff, FileEntry, GitBranchChange, GitBranchComparison, GitCommitPreview, GitHistory, GitHistoryCommit, GitMutation, GitState, GitSyncRequest, GitSyncState,
   WorkspaceFileMatch, WorkspaceTextMatch, WorkspaceTextSearch } from '../shared/types';
 import { parsePorcelainV1Records, type PorcelainV1Record } from './vendor/orca/porcelain-v1-records';
 
@@ -560,6 +560,56 @@ export class WorkspaceFiles {
       const args = change.action === 'create' ? ['switch', '-c', change.name] : ['switch', '--no-guess', '--', change.name];
       await git(repository, args);
       return this.gitState(root);
+    });
+  }
+
+  async gitSyncState(cwd: string): Promise<GitSyncState> {
+    const repository = await mutationKey(await workspaceRoot(cwd));
+    const [head, configured] = await Promise.all([
+      branchGit(repository, ['symbolic-ref', '-q', 'HEAD'], { allowedCodes: [0, 1] }),
+      branchGit(repository, ['remote']),
+    ]);
+    const remotes = configured.stdout.trim().split('\n').filter(value => value && value !== '.' && !value.startsWith('-'));
+    const current = head.stdout.trim();
+    const branch = current.startsWith('refs/heads/') ? current.slice('refs/heads/'.length) : null;
+    if (!branch) return { branch, remotes };
+    const { stdout } = await branchGit(repository, ['for-each-ref', '--count=1',
+      '--format=%(refname)%00%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream)', '--', current]);
+    const [name, remote, ref, tracking] = stdout.trimEnd().split('\0');
+    if (name !== current || !remotes.includes(remote) || !ref.startsWith('refs/heads/')) return { branch, remotes };
+    const count = await branchGit(repository, ['rev-list', '--left-right', '--count', `HEAD...${tracking}`, '--'], { allowedCodes: [0, 128] });
+    const [ahead, behind] = count.code === 0 ? count.stdout.trim().split(/\s+/).map(Number) : [];
+    return { branch, remotes, upstream: { remote, ref, ahead, behind } };
+  }
+
+  async syncGit(cwd: string, request: GitSyncRequest): Promise<GitSyncState> {
+    const repository = await mutationKey(await workspaceRoot(cwd));
+    return serialized(repository, async () => {
+      const current = await this.gitSyncState(repository);
+      if (!current.branch || current.branch !== request.expectedBranch) throw new Error('The current branch changed; refresh before syncing');
+      if (!current.remotes.includes(request.remote) || (current.upstream && current.upstream.remote !== request.remote)) {
+        throw new Error('The selected Git remote is no longer available for this branch');
+      }
+      const upstream = current.upstream;
+      const local = `refs/heads/${current.branch}`;
+      let args: string[];
+      if (request.action === 'fetch') args = ['fetch', '--no-recurse-submodules', '--', request.remote];
+      else if (request.action === 'pull') {
+        if (!upstream) throw new Error('Set an upstream before pulling');
+        const status = await this.gitState(repository);
+        if (!status.available || status.changes.length) throw new Error('Commit or stash changes before pulling');
+        args = ['pull', '--ff-only', '--no-rebase', '--no-recurse-submodules', '--', request.remote, upstream.ref];
+      } else args = ['push', '--no-recurse-submodules', ...(!upstream ? ['--set-upstream'] : []), '--', request.remote, `${local}:${upstream?.ref ?? local}`];
+      try {
+        await git(repository, args, [0], false, 120_000, { GIT_TERMINAL_PROMPT: '0', GIT_ALLOW_PROTOCOL: 'https:http:ssh:git:file' });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '';
+        if (/authenticat|credential|permission denied/i.test(message)) throw new Error('Git authentication failed. Check this remote’s credentials and try again.');
+        if (/non-fast-forward|rejected|diverg/i.test(message)) throw new Error('The remote branch has diverged. Fetch and review its commits before syncing.');
+        if (error instanceof GitTimeoutError) throw new Error('Git sync timed out. Check the remote and try again.');
+        throw new Error('Git sync failed. Check the remote’s availability and configuration.');
+      }
+      return this.gitSyncState(repository);
     });
   }
 
