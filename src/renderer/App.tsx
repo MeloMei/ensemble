@@ -3,7 +3,7 @@ import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRe
 import {
   Archive, ArrowLeft, ArrowRight, ArrowUpRight, CheckCircle2, ChevronRight, Circle, CircleAlert, CircleDot,
   Camera, GitBranch, Globe, History, Inbox, Layers2, LoaderCircle, MessageSquare,
-  Network, PanelRight, Pin, Plus, Search, Settings2, TerminalSquare, X, LayoutGrid, FolderOpen,
+  Network, PanelLeft, PanelRight, Pin, Plus, Search, Settings2, TerminalSquare, X, LayoutGrid, FolderOpen,
 } from 'lucide-react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { SPRING_SNAPPY, motionPopover } from './vendor/open-claude-ui/ClaudeMotionPresets';
@@ -18,6 +18,7 @@ import { ApplicationUpdateNotice, useApplicationUpdates } from './ApplicationUpd
 import { CommandPalette } from './CommandPalette';
 import { FileReviewPanel } from './FileReviewPanel';
 import { WorkspaceFilePane, useWorkspaceFilePane } from './WorkspaceFilePane';
+import { WorkspaceSidebar, useWorkspaceSidebar } from './WorkspaceSidebar';
 import { SESSION_TAB_DRAG_TYPE, WorkspacePanes } from './WorkspacePanes';
 import { ProjectRowActions, useProjectManagement } from './ProjectManagement';
 import { NewAgentDialog } from './NewAgentDialog';
@@ -71,6 +72,7 @@ function AttentionBadge({ session }: { session: Session }) {
 export function App() {
   const { t } = useTranslation('shell');
   const applicationUpdates = useApplicationUpdates();
+  const sidebar = useWorkspaceSidebar();
   const reducedMotion = useReducedMotion();
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [connection, setConnection] = useState<BackendConnectionState>({ status: 'connecting', synced: false });
@@ -581,8 +583,8 @@ export function App() {
     consume: request => setFileRequest(current => current === request ? undefined : current),
   } : null, [page, workspace?.cwd, workspace?.id, connected, fileRequest]);
 
-  return <WorkspaceFileNavigation.Provider value={fileNavigation}><div className="workbench">
-    <aside className="workspace-sidebar"><div className="sidebar-titlebar"><img className="brand-symbol" src={ensembleLogo} alt="" /><span>{PRODUCT_NAME}<span className="brand-period">.</span></span></div>
+  return <WorkspaceFileNavigation.Provider value={fileNavigation}><div ref={sidebar.container} className="workbench" data-sidebar-collapsed={sidebar.collapsed || undefined}>
+    <WorkspaceSidebar layout={sidebar}><div className="sidebar-titlebar"><img className="brand-symbol" src={ensembleLogo} alt="" /><span>{PRODUCT_NAME}<span className="brand-period">.</span></span></div>
       <CommandPalette projects={workspaces} sessions={sessions} providers={providers} onSelectProject={selectWorkspace} onSelectSession={openSession}
         fileWorkspaceId={fileNavigation ? workspace?.id : undefined} onOpenFile={fileNavigation?.open}
         settings={searchableSettings(t, workspace?.name, activeSession?.title).map(item => ({
@@ -591,6 +593,7 @@ export function App() {
         }))}
         actions={[
           { id: 'new-project', label: t('commandPalette.newProject'), keywords: t('app.newWorkspace'), icon: <Plus size={16} aria-hidden="true" />, run: () => setDialog('workspace') },
+          { id: 'toggle-sidebar', label: t(sidebar.collapsed ? 'app.showSidebar' : 'app.hideSidebar'), icon: <PanelLeft size={16} aria-hidden="true" />, run: sidebar.toggle },
           ...(supportsWindowCapture && connected && sessions.some(session => !session.archived) ? [{
             id: 'capture-window', label: t('app.captureWindow'), icon: <Camera size={16} aria-hidden="true" />,
             run: () => void perform('capture-window', async () => {
@@ -613,7 +616,7 @@ export function App() {
         <button className={page === 'history' ? 'selected' : ''} aria-current={page === 'history' ? 'page' : undefined} onClick={() => setPage('history')}><History size={17} />{t('app.history')}</button><button className={page === 'collaboration' ? 'selected' : ''} aria-current={page === 'collaboration' ? 'page' : undefined} onClick={openCollaboration}><Network size={17} />{t('app.collaboration')}</button><button className={page === 'workflows' ? 'selected' : ''} aria-current={page === 'workflows' ? 'page' : undefined} onClick={() => setPage('workflows')}><GitBranch size={17} />{t('app.workflows')}</button></nav>
       <motion.div className="workspace-sidebar-scroll" layoutScroll>{sidebarItems}</motion.div>
       <div className={`sidebar-connection connection-${connected ? 'connected' : connection.status}`}><i /><span>{connected ? t('app.connected') : t(`connection.${connection.status}`)}</span><small>{t('app.thisMachine')}</small></div><footer className="sidebar-footer"><button onClick={() => setDialog('workspace')}><Plus size={15} />{t('app.addProject')}</button><IconButton label={t('preferences.open')} onClick={() => openSettings()}><Settings2 size={16} /></IconButton></footer>
-    </aside>
+    </WorkspaceSidebar>
 
     <main ref={mainElement} className={`main-workspace ${page === 'workspace' && workspace && rightPane ? 'with-file-panel' : ''}`}
       onFocusCapture={event => {
@@ -623,6 +626,8 @@ export function App() {
         else if (id && target.closest('.message-scroll')) sessionFocus.current.set(id, 'reading');
       }}><header className="workspace-header">
       <div className="workspace-heading">
+        <IconButton id={`${sidebar.id}-toggle`} label={t(sidebar.collapsed ? 'app.showSidebar' : 'app.hideSidebar')}
+          aria-expanded={!sidebar.collapsed} aria-controls={sidebar.id} onClick={sidebar.toggle}><PanelLeft size={16} /></IconButton>
         <div className="visit-history-controls" role="group" aria-label={t('app.visitHistory')}>
           <IconButton label={t('app.visitBack')} title={t('app.visitBackHint')} aria-keyshortcuts="Meta+[" disabled={!visits.canBack} onClick={visits.back}><ArrowLeft size={15} /></IconButton>
           <IconButton label={t('app.visitForward')} title={t('app.visitForwardHint')} aria-keyshortcuts="Meta+]" disabled={!visits.canForward} onClick={visits.forward}><ArrowRight size={15} /></IconButton>

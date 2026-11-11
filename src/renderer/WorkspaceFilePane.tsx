@@ -1,16 +1,12 @@
-import { useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
+import { useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
+import { usePaneResize } from './ui-kit/usePaneResize';
 
 const storageKey = 'ensemble.file-pane-width';
 const defaultWidth = 320;
 const minWidth = 280;
 const maxWidth = 640;
 const minCenterWidth = 560;
-const keyboardStep = 24;
-
-function clampWidth(width: number, limit: number) {
-  return Math.round(Math.min(Math.max(width, minWidth), limit));
-}
 
 function readWidth(): number | undefined {
   try {
@@ -49,7 +45,7 @@ export function useWorkspaceFilePane(enabled: boolean) {
     catch { /* The current window still keeps the preference. */ }
   };
   return { id, columns, requested, setRequested, tooNarrow, visible: requested && !tooNarrow,
-    width: clampWidth(preferredWidth ?? space.defaultWidth, limit), limit, rememberWidth };
+    width: preferredWidth ?? space.defaultWidth, limit, rememberWidth };
 }
 
 export function WorkspaceFilePane({ id, visible, width, limit, onResize, children }: {
@@ -62,68 +58,16 @@ export function WorkspaceFilePane({ id, visible, width, limit, onResize, childre
 }) {
   const { t } = useTranslation('shell');
   const pane = useRef<HTMLDivElement>(null);
-  const drag = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
-  const [dragWidth, setDragWidth] = useState<number>();
-  const currentWidth = clampWidth(dragWidth ?? width, limit);
+  const { currentWidth, handle } = usePaneResize({ width, min: minWidth, max: limit, side: 'right', visible, onResize });
   const style = { width: visible ? currentWidth : 0, '--file-width': `${currentWidth}px` } as CSSProperties;
 
   useLayoutEffect(() => {
-    if (visible) return;
-    if (pane.current?.contains(document.activeElement)) document.getElementById(`${id}-toggle`)?.focus({ preventScroll: true });
-    if (drag.current) {
-      drag.current = null;
-      setDragWidth(undefined);
-    }
+    if (!visible && pane.current?.contains(document.activeElement)) document.getElementById(`${id}-toggle`)?.focus({ preventScroll: true });
   }, [id, visible]);
-
-  const startDrag = (event: PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0 || !event.isPrimary || drag.current) return;
-    event.preventDefault();
-    event.currentTarget.focus({ preventScroll: true });
-    event.currentTarget.setPointerCapture(event.pointerId);
-    drag.current = { pointerId: event.pointerId, startX: event.clientX, startWidth: currentWidth };
-    setDragWidth(currentWidth);
-  };
-  const widthAtPointer = (event: PointerEvent<HTMLDivElement>) => {
-    const start = drag.current;
-    if (!start || start.pointerId !== event.pointerId) return;
-    return clampWidth(start.startWidth + start.startX - event.clientX, limit);
-  };
-  const moveDrag = (event: PointerEvent<HTMLDivElement>) => {
-    const next = widthAtPointer(event);
-    if (next !== undefined) setDragWidth(next);
-  };
-  const finishDrag = (event: PointerEvent<HTMLDivElement>, commit: boolean) => {
-    const start = drag.current;
-    if (!start || start.pointerId !== event.pointerId) return;
-    const next = widthAtPointer(event);
-    drag.current = null;
-    setDragWidth(undefined);
-    if (visible && commit && next !== undefined && event.clientX !== start.startX && next !== start.startWidth) onResize(next);
-  };
-  const resizeByKey = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (drag.current) return;
-    let next: number;
-    switch (event.key) {
-      case 'ArrowLeft': next = currentWidth + keyboardStep; break;
-      case 'ArrowRight': next = currentWidth - keyboardStep; break;
-      case 'Home': next = minWidth; break;
-      case 'End': next = limit; break;
-      default: return;
-    }
-    event.preventDefault();
-    next = clampWidth(next, limit);
-    if (next !== currentWidth) onResize(next);
-  };
 
   return <div ref={pane} className="file-panel-transition" style={style} inert={!visible} aria-hidden={!visible}>
     <div id={id} className="file-pane-content">{children}</div>
-    <div className="split-handle file-pane-handle" role="separator" aria-label={t('app.resizeFiles')}
-      aria-controls={id} aria-orientation="vertical" aria-valuemin={minWidth} aria-valuemax={limit}
-      aria-valuenow={currentWidth} aria-valuetext={t('app.fileWidthPixels', { width: currentWidth })}
-      tabIndex={visible ? 0 : -1} data-dragging={dragWidth !== undefined}
-      onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={event => finishDrag(event, true)}
-      onPointerCancel={event => finishDrag(event, false)} onLostPointerCapture={event => finishDrag(event, false)}
-      onKeyDown={resizeByKey} />
+    <div {...handle} className="split-handle file-pane-handle" aria-label={t('app.resizeFiles')}
+      aria-controls={id} aria-valuetext={t('app.paneWidthPixels', { width: currentWidth })} />
   </div>;
 }
