@@ -51,13 +51,13 @@
   display: block;
   overflow: hidden;
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--font-size-10);
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 .composer-model-heading h2 {
   overflow: hidden;
-  font-size: 13px;
+  font-size: var(--font-size-13);
   font-weight: 600;
   line-height: 1.4;
   white-space: nowrap;
@@ -82,7 +82,7 @@
   padding: 6px 8px;
   border-radius: var(--radius-control);
   text-align: start;
-  font-size: 12px;
+  font-size: var(--font-size-12);
 }
 .composer-model-disclosure {
   color: var(--muted);
@@ -137,7 +137,7 @@
   padding: 6px 0;
   border: 0;
   background: transparent;
-  font-size: 12px;
+  font-size: var(--font-size-12);
 }
 .composer-model-search > input:focus {
   box-shadow: none;
@@ -171,7 +171,7 @@
 }
 .composer-model-option small, .composer-model-empty {
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--font-size-10);
 }
 .composer-model-option > svg {
   flex-shrink: 0;
@@ -185,12 +185,4 @@
 }
 @keyframes composer-model-picker-out {
   to { opacity: 0; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .composer-model-picker[data-state],
-  .composer-model-catalog-content,
-  .composer-model-disclosure > svg {
-    animation: none;
-    transition: none;
-  }
 }

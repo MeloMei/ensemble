@@ -5,6 +5,10 @@ export type SettingsSection = 'general' | 'providers' | 'project' | 'session';
 export const settingsTargets = [
   { id: 'language', section: 'general', label: 'preferences.language', keywords: '语言 中文 English locale' },
   { id: 'theme', section: 'general', label: 'preferences.theme', keywords: '外观 深色 浅色 dark light appearance' },
+  { id: 'text-size', section: 'general', label: 'preferences.textSize', keywords: '外观 字体 字号 font scale appearance' },
+  { id: 'code-font', section: 'general', label: 'preferences.codeFont', keywords: '外观 字体 代码 等宽 monospace editor appearance' },
+  { id: 'code-size', section: 'general', label: 'preferences.codeSize', keywords: '外观 字号 代码 等宽 monospace editor appearance' },
+  { id: 'reduce-motion', section: 'general', label: 'preferences.reduceMotion', keywords: '外观 动效 动画 辅助功能 animation accessibility appearance' },
   { id: 'updates', section: 'general', label: 'settings.search.updates', keywords: '更新 版本 version upgrade' },
   { id: 'notification-enabled', section: 'general', label: 'settings.notifications.enabled', keywords: '通知 桌面 desktop banner alerts' },
   { id: 'notification-backgroundOnly', section: 'general', label: 'settings.notifications.backgroundOnly', keywords: '通知 后台 background foreground' },

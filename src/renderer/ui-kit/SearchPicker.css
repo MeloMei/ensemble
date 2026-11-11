@@ -3,7 +3,7 @@
   display: block;
   margin-bottom: 6px;
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--font-size-12);
 }
 .search-picker-field {
   display: flex;
@@ -39,7 +39,7 @@
 .search-picker-section {
   padding: 7px 8px 4px;
   color: var(--dim);
-  font-size: 11px;
+  font-size: var(--font-size-11);
 }
 .search-picker-option {
   display: flex;
@@ -70,7 +70,7 @@
 .search-picker-copy small {
   margin-top: 2px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--font-size-10);
 }
 .search-picker-check { flex-shrink: 0; color: var(--accent); }
 .search-picker-status {

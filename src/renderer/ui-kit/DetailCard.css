@@ -9,7 +9,7 @@
   background: var(--surface-overlay);
   box-shadow: var(--shadow-popover);
   backdrop-filter: blur(12px);
-  font-size: 12px;
+  font-size: var(--font-size-12);
   line-height: 1.5;
   overflow-wrap: anywhere;
   transform-origin: var(--radix-tooltip-content-transform-origin);
@@ -22,4 +22,3 @@
 .ui-detail-card[data-state=closed] { animation: ui-detail-card-out var(--duration-fast) var(--ease-out); pointer-events: none; }
 @keyframes ui-detail-card-in { from { opacity: 0; transform: scale(.985); } to { opacity: 1; transform: scale(1); } }
 @keyframes ui-detail-card-out { from { opacity: 1; } to { opacity: 0; } }
-@media (prefers-reduced-motion: reduce) { .ui-detail-card { animation: none !important; } }

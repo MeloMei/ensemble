@@ -51,9 +51,6 @@
   border-radius: var(--radius-control);
   background: var(--surface-raised);
   color: var(--accent);
-  font-size: 12px;
+  font-size: var(--font-size-12);
   font-weight: 600;
-}
-@media (prefers-reduced-motion: reduce) {
-  .split-handle { transition: none; }
 }
