@@ -157,6 +157,8 @@
 .inspector-tabs > button { min-height: 26px; padding: 4px 7px; border-radius: var(--radius-control); color: var(--muted); background: transparent; font-size: 11px; }
 .inspector-tabs > button:hover:not(:disabled) { background: var(--hover); color: var(--text); }
 .inspector-tabs > button.active { background: var(--selected); color: var(--text); font-weight: 550; }
+.inspector-tabs > button.icon-button { width: 26px; height: 26px; padding: 0; }
+.inspector-tabs > button[aria-pressed=true] { color: var(--accent); background: var(--selected); }
 .inspector-tabs > .review-save { display: flex; align-items: center; gap: 4px; margin-left: auto; color: var(--accent); }
 .review-editor { flex: 1; min-height: 180px; overflow: hidden; }
 .review-inspector[hidden], .review-editor[hidden] { display: none; }

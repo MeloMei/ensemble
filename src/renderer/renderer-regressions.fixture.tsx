@@ -19,6 +19,7 @@ import { ProvidersContent, WorkflowEditor, WorkflowView } from './WorkflowViews'
 import { DiagnosticsPanel } from './DiagnosticsPanel';
 import { ManagedWorktreePanel } from './ManagedWorktreePanel';
 import { FileReviewPanel } from './FileReviewPanel';
+import { WorkspaceFileNavigation } from './workspace-file-reference';
 import { SessionChat, SessionSettingsPanel } from './SessionChat';
 import { App } from './App';
 import { FirstTask } from './FirstTask';
@@ -404,6 +405,130 @@ const cases: Record<string, () => Promise<void>> = {
     await click('workspace:files.notesToDraft');
     await waitFor(() => feedback.some(value => value.text.includes('Please check the matched line') &&
       value.text.includes('src/view.ts') && value.text.includes('Diff: working')), 'The anchored note did not reach the active session draft');
+  },
+  'FILE-EDITOR: find, line wrapping and opt-in autosave use the current draft': async () => {
+    const storageKey = 'ensemble.file-editor';
+    const previous = localStorage.getItem(storageKey);
+    localStorage.removeItem(storageKey);
+    const project = { ...workspace, id: 'editor-controls' };
+    const path = 'editor-controls.txt';
+    const original = `needle first\nneedle second\n${'long text '.repeat(100)}`;
+    let disk: FileContent = { path, content: original, size: original.length, language: 'text', revision: 'r0' };
+    let summary: UnsavedFileSummary = { count: 0, names: [] };
+    const writes: Array<{ path: string; content: string; revision: string }> = [];
+    const firstWrite = deferred<void>();
+    const delayedReload = deferred<void>();
+    let reading: Promise<void> | undefined;
+    window.workbench = {
+      listFiles: async () => [{ path, name: path, kind: 'file', size: disk.size }],
+      gitState: async () => ({ available: false }),
+      readFile: async () => { await reading; return disk; },
+      writeFile: async (_id: string, input: typeof writes[number]) => {
+        writes.push(input);
+        if (writes.length === 1) await firstWrite.promise;
+        if (disk.revision !== input.revision) throw new Error('File changed on disk; reload before saving');
+        disk = { ...disk, content: input.content, size: input.content.length, revision: `r${writes.length}` };
+        return disk;
+      },
+      setUnsavedFiles: (value: UnsavedFileSummary) => { summary = value; },
+    } as unknown as Window['workbench'];
+    const show = (key: string) => render(<WorkspaceFileNavigation.Provider value={{
+      cwd: project.cwd, open: () => {}, consume: () => {}, request: { workspaceId: project.id, path, line: 1 },
+    }}><FileReviewPanel key={key} workspace={project} refreshKey="r0" perform={perform} /></WorkspaceFileNavigation.Provider>);
+    const view = () => {
+      const dom = document.querySelector<HTMLElement>('.review-editor .cm-editor');
+      assert(dom, 'The actual CodeMirror editor was not mounted');
+      return EditorView.findFromDOM(dom)!;
+    };
+    const key = (name: string, init: KeyboardEventInit = {}) => act(async () => {
+      document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true, ...init }));
+      await tick();
+    });
+    const edit = (value: string) => act(async () => {
+      const editor = view();
+      editor.dispatch({ changes: { from: editor.state.doc.length, insert: value } });
+      await tick();
+    });
+    const wait = (ms: number) => act(async () => { await new Promise(resolve => setTimeout(resolve, ms)); });
+    const find = 'workspace:editor.find', wrap = 'workspace:editor.wrapLines', autoSave = 'workspace:editor.autoSave';
+    const wraps = () => getComputedStyle(view().contentDOM).whiteSpace === 'break-spaces';
+    try {
+      await show('initial');
+      const editor = view();
+      const shortcut = navigator.platform.startsWith('Mac') ? { metaKey: true } : { ctrlKey: true };
+      button('workspace:files.refresh').focus();
+      await key('f', shortcut);
+      assert(!document.querySelector('.cm-file-find'), 'Find opened when focus was outside the editor');
+      editor.focus();
+      await key('f', shortcut);
+      const field = input('.cm-file-find input');
+      assert(document.activeElement === field, 'Find did not focus the query field');
+      await change(field, 'needle');
+      await key('Enter', { isComposing: true });
+      assert(editor.state.selection.main.empty, 'Find navigated while an input method was composing');
+      await key('Enter');
+      assert(editor.state.selection.main.from === 0 && !editor.state.selection.main.empty, 'Find did not select the first match');
+      await key('Enter');
+      assert(editor.state.selection.main.from === original.indexOf('needle second'), 'Enter did not select the next match');
+      await key('Enter', { shiftKey: true });
+      assert(editor.state.selection.main.from === 0, 'Shift+Enter did not select the previous match');
+      await key('Escape');
+      assert(!document.querySelector('.cm-file-find') && document.activeElement === editor.contentDOM, 'Escape did not return focus to the file');
+      await click(find);
+      assert(document.activeElement === input('.cm-file-find input'), 'The toolbar did not open find');
+      await key('Escape');
+      assert(!wraps(), 'Long lines wrapped before the preference was enabled');
+      await click(wrap);
+      assert(view() === editor && wraps() && editor.state.doc.toString() === original,
+        'Wrap changed the file or remounted CodeMirror');
+      assert(button(autoSave).getAttribute('aria-pressed') === 'false', 'Auto Save was not opt-in');
+      await edit('\nmanual draft');
+      await wait(1100);
+      assert(writes.length === 0 && summary.count === 1, 'Auto Save wrote before consent');
+      await click(autoSave);
+      await wait(450);
+      await edit(' more');
+      await wait(650);
+      assert(writes.length === 0, 'Typing did not restart the idle delay');
+      await waitFor(() => writes.length === 1, 'The editor did not save after the idle delay');
+      assert(writes[0].revision === 'r0' && writes[0].content === `${original}\nmanual draft more` && !editor.state.readOnly,
+        'Auto Save omitted the latest text or revision, or locked editing during the write');
+      await edit(' and newer');
+      await act(async () => { firstWrite.resolve(); await tick(); });
+      assert(disk.revision === 'r1' && editor.state.doc.toString().endsWith(' more and newer') && summary.count === 1,
+        'Completing the first save discarded a newer edit');
+      disk = { ...disk, content: 'External edit', size: 'External edit'.length, revision: 'external' };
+      await waitFor(() => Number(writes.length) === 2 && !!document.querySelector('.file-review-panel [role=alert]'),
+        'A revision conflict was not shown', 130);
+      assert(writes[1].revision === 'r1' && disk.content === 'External edit' && editor.state.doc.toString().endsWith(' more and newer'),
+        'The next save skipped revision validation, overwrote the external edit, or lost the draft');
+      await edit(' after conflict');
+      await wait(1100);
+      assert(Number(writes.length) === 2 && summary.count === 1, 'Auto Save retried a conflicted file');
+      await click('workspace:files.reloadDiscard');
+      assert(view().state.doc.toString() === 'External edit' && Number(summary.count) === 0, 'Reload did not resolve the paused draft');
+      await show('reopened');
+      assert(wraps() && button(autoSave).getAttribute('aria-pressed') === 'true', 'Editor preferences did not persist after reopening');
+      await edit(' discard me');
+      reading = delayedReload.promise;
+      await click('workspace:files.reloadDiscard');
+      await wait(1100);
+      assert(Number(writes.length) === 2 && disk.content === 'External edit', 'Auto Save wrote a draft while Reload was discarding it');
+      delayedReload.resolve();
+      await settle();
+      assert(view().state.doc.toString() === 'External edit' && Number(summary.count) === 0, 'A slow Reload did not discard the draft');
+      await edit(' pending');
+      await click(autoSave);
+      await wait(1100);
+      assert(Number(writes.length) === 2 && summary.count === 1, 'Turning off Auto Save left a delayed write scheduled');
+      await click('workspace:files.reloadDiscard');
+    } finally {
+      firstWrite.resolve();
+      delayedReload.resolve();
+      if (document.querySelector(`button[aria-label="${translate(autoSave)}"][aria-pressed="true"]`)) await click(autoSave);
+      if (previous === null) localStorage.removeItem(storageKey);
+      else localStorage.setItem(storageKey, previous);
+    }
   },
   'SIDE-QUESTION: selected answers and Trace titles support a reliable independent follow-up': async () => {
     const response: Message = { id: 'side-answer', role: 'assistant', text: 'An earlier sentence. Quote just this. An extra sentence.', createdAt: session.createdAt };

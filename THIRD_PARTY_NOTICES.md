@@ -51,7 +51,7 @@ The application update check, bounded SHA-256 download, same-directory staging, 
 
 - `@agentclientprotocol/sdk@1.9.0`: Apache-2.0.
 - `@modelcontextprotocol/sdk@1.32.1`: MIT; Copyright (c) 2024 Anthropic, PBC.
-- CodeMirror packages: MIT; their license files credit Copyright (C) 2018-2021 by Marijn Haverbeke and others.
+- CodeMirror packages, including `@codemirror/search@6.7.2`: MIT; their license files credit Copyright (C) 2018-2021 by Marijn Haverbeke and others.
 - `@xyflow/react@12.12.0`: MIT; Copyright (c) 2019-2025 webkid GmbH. See [licenses/React-Flow-MIT.txt](licenses/React-Flow-MIT.txt).
 - `elkjs@0.12.0`: EPL-2.0, used without modification. See [licenses/ELK-EPL-2.0.md](licenses/ELK-EPL-2.0.md). Corresponding source is available from [kieler/elkjs at 0.12.0](https://github.com/kieler/elkjs/tree/v0.12.0).
 - `framer-motion@11.18.2`: MIT.

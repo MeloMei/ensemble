@@ -94,6 +94,8 @@ On macOS, an open terminal can show TCP listeners owned by its shell or child pr
 
 The **Files** panel edits real project files. Expand folders in place and search the files and folders you have loaded. Parent folders stay within reach as you scroll through their contents. **Changes** supports local Git operations. **PR / CI** displays remote pull request and check information through a read-only interface. The terminal and file editor have their own access to the machine; an agent's read-only setting does not restrict them.
 
+In the file editor, press **⌘F** on macOS or **Ctrl+F** on other platforms to find text in the current file. Press **Enter** or **Shift+Enter** to move between matches and **Escape** to close find. The editor remembers **Wrap lines** and **Auto Save**. Auto Save is off by default. Once enabled, it saves after a pause in typing. If the file has changed on disk, Ensemble keeps the draft and pauses automatic writes for that file.
+
 Drag the file panel’s left edge to resize it, or focus the divider and press the left or right arrow key. Ensemble remembers your preferred width. If the window gets too narrow, it temporarily hides the panel and restores it when there is room.
 
 In a diff, click a line number to leave a note. Drag along the original or modified line numbers, or focus one and press Shift + ↑/↓, to select a range within one hunk. Saved notes can be added to the current agent draft.
