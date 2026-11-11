@@ -152,7 +152,18 @@
 .inspector-title > svg { flex-shrink: 0; color: var(--muted); }
 .inspector-title > span:first-of-type { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--text); }
 .inspector-title .icon-button { width: 24px; height: 24px; flex-shrink: 0; }
-.review-unsaved { flex-shrink: 0; color: var(--warning); font-size: var(--font-size-11); }
+.file-editor-tabs-header { padding-inline-start: 6px; }
+.file-editor-tabs { display: flex; flex: 1; gap: 3px; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
+.file-editor-tab { display: flex; align-items: center; flex: 0 0 auto; min-width: 0; border-radius: var(--radius-control); }
+.file-editor-tab[data-active=true] { background: var(--selected); }
+.file-editor-tab > button { height: 25px; color: var(--muted); border: 0; background: transparent; font-size: var(--font-size-11); }
+.file-editor-tab > button:hover:not(:disabled), .file-editor-tab[data-active=true] > [role=tab] { color: var(--text); }
+.file-editor-tab > [role=tab] { display: flex; align-items: center; gap: 5px; padding: 0 4px 0 7px; }
+.file-editor-tab > [role=tab] > span { max-width: 132px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.file-editor-tab > [role=tab] > i { width: 6px; height: 6px; border-radius: 50%; background: var(--warning); }
+.file-editor-tab > .file-editor-tab-close { display: grid; place-items: center; width: 23px; padding: 0; border-radius: var(--radius-control); }
+.file-editor-tab > .file-editor-tab-close:hover:not(:disabled) { background: var(--hover); }
+.file-editor-tab > button:focus-visible { outline-offset: -2px; }
 .inspector-tabs { display: flex; align-items: center; flex-shrink: 0; flex-wrap: wrap; gap: 2px; padding: 4px 7px; border-bottom: 1px solid var(--border); background: var(--surface); }
 .inspector-tabs > button { min-height: 26px; padding: 4px 7px; border-radius: var(--radius-control); color: var(--muted); background: transparent; font-size: var(--font-size-11); }
 .inspector-tabs > button:hover:not(:disabled) { background: var(--hover); color: var(--text); }
@@ -161,7 +172,7 @@
 .inspector-tabs > button[aria-pressed=true] { color: var(--accent); background: var(--selected); }
 .inspector-tabs > .review-save { display: flex; align-items: center; gap: 4px; margin-left: auto; color: var(--accent); }
 .review-editor { flex: 1; min-height: 180px; overflow: hidden; }
-.review-inspector[hidden], .review-editor[hidden] { display: none; }
+.review-inspector[hidden] { display: none; }
 .review-editor .code-editor-host { height: 100%; }
 .review-diff { flex: 1; overflow: auto; min-height: 140px; padding: 7px 0; color: var(--text); font: var(--code-font-size)/1.75 var(--font-mono); }
 .review-diff-line { --diff-line-bg: var(--editor-bg); display: flex; min-width: max-content; background: var(--diff-line-bg); }

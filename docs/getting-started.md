@@ -98,6 +98,8 @@ In the file editor, press **⌘F** on macOS or **Ctrl+F** on other platforms to 
 
 While the editor is visible in the active window, Ensemble checks the open file for changes on disk. A file with no unsaved edits updates in place. If you have a draft, Ensemble keeps it and shows a notice when the file changes or disappears. Copy your draft before choosing **Reload and discard draft**.
 
+Open several text files to work on them in separate tabs. Each tab keeps its draft, selection, and scroll position when you switch files. When you close a tab with unsaved changes, you can save, discard the draft, or cancel.
+
 Drag the file panel’s left edge to resize it, or focus the divider and press the left or right arrow key. Ensemble remembers your preferred width. If the window gets too narrow, it temporarily hides the panel and restores it when there is room.
 
 In a diff, click a line number to leave a note. Drag along the original or modified line numbers, or focus one and press Shift + ↑/↓, to select a range within one hunk. Saved notes can be added to the current agent draft.

@@ -36,7 +36,7 @@ test('actual renderer components preserve approval, draft, recovery and settings
         builder.onLoad({ filter: /[/\\]CodeEditor\.tsx$/, namespace: 'file' }, () => ({
           contents: `import { CodeEditor as ActualEditor } from './CodeEditor.tsx?actual';
             export function CodeEditor(props) {
-              if (props.location) return <ActualEditor {...props} />;
+              if (props.location || props.position?.current || document.querySelector('[data-test-actual-editor]')) return <ActualEditor {...props} />;
               return <textarea data-test-editor value={props.value} readOnly={props.readOnly} onChange={event => props.onChange(event.target.value)} />;
             }`, loader: 'tsx',
         }));

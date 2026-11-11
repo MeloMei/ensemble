@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { useEffect, useImperativeHandle, useLayoutEffect, useRef, type Ref } from 'react';
+import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, type Ref } from 'react';
 import { Annotation, Compartment, EditorSelection, EditorState, Text, Transaction } from '@codemirror/state';
 import { EditorView, drawSelection, highlightActiveLine, keymap, lineNumbers, runScopeHandlers, type Panel } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
@@ -89,9 +89,19 @@ function fileFindPanel(view: EditorView): Panel {
 }
 
 export interface CodeEditorHandle { find(): void; isComposing(): boolean }
+export interface CodeEditorPosition {
+  current?: {
+    doc: Text;
+    separator: string;
+    selection: EditorSelection;
+    scroll: ReturnType<EditorView['scrollSnapshot']>;
+    location?: FileReference;
+  };
+}
 
-export function CodeEditor({ value, onChange, readOnly = false, wrapLines = false, language = 'text', location, ref }: {
+export function CodeEditor({ value, onChange, readOnly = false, wrapLines = false, language = 'text', location, position, ref }: {
   value: string; onChange(value: string): void; readOnly?: boolean; wrapLines?: boolean; language?: string; location?: FileReference;
+  position?: CodeEditorPosition;
   ref?: Ref<CodeEditorHandle>;
 }) {
   const { t } = useTranslation('workspace');
@@ -103,29 +113,33 @@ export function CodeEditor({ value, onChange, readOnly = false, wrapLines = fals
   const accessibility = useRef(new Compartment());
   const wrapping = useRef(new Compartment());
   const lineEndings = useRef(new Compartment());
-  const editorAccessibility = () => [
+  const editorAccessibility = useMemo(() => [
     EditorView.contentAttributes.of({ 'aria-label': t('editor.label', { language }), spellcheck: 'false' }),
     EditorState.phrases.of({
       'Find in file': t('editor.find'), 'Previous match': t('editor.findPrevious'),
       'Next match': t('editor.findNext'), 'Close find': t('editor.closeFind'),
       'current match': t('editor.currentMatch'), 'on line': t('editor.onLine'),
     }),
-  ];
+  ], [language, t]);
   const changed = useRef(onChange); changed.current = onChange;
-  const initial = useRef(value);
+  const appliedLocation = useRef<FileReference | undefined>(undefined);
+  const initialScroll = useRef<ReturnType<EditorView['scrollSnapshot']> | undefined>(undefined);
   useImperativeHandle(ref, () => ({
     find() { if (editor.current) openSearchPanel(editor.current); },
     isComposing() { return editor.current?.composing ?? false; },
   }), []);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!host.current) return;
-    const separator = lineSeparator(initial.current);
-    const view = new EditorView({ parent: host.current, state: EditorState.create({
-      doc: initial.current,
+    const saved = position?.current;
+    const separator = saved?.separator ?? lineSeparator(value);
+    appliedLocation.current = saved?.location;
+    initialScroll.current = saved?.scroll;
+    const view = new EditorView({ parent: host.current, scrollTo: saved?.scroll, state: EditorState.create({
+      doc: saved?.doc ?? value, selection: saved?.selection,
       extensions: [lineNumbers(), highlightActiveLine(), drawSelection(), history(), search({ createPanel: fileFindPanel }),
         keymap.of([...findKeymap, ...defaultKeymap, ...historyKeymap]), appearance.current.of(editorTheme(theme === 'dark')),
         lineEndings.current.of(EditorState.lineSeparator.of(separator)), permission.current.of([EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)]),
-        accessibility.current.of(editorAccessibility()), wrapping.current.of(wrapLines ? EditorView.lineWrapping : []),
+        accessibility.current.of(editorAccessibility), wrapping.current.of(wrapLines ? EditorView.lineWrapping : []),
         EditorView.updateListener.of(update => {
           if (update.docChanged && !update.transactions.some(transaction => transaction.annotation(remoteUpdate))) {
             changed.current(update.state.sliceDoc());
@@ -133,7 +147,14 @@ export function CodeEditor({ value, onChange, readOnly = false, wrapLines = fals
         })],
     }) });
     editor.current = view;
-    return () => { view.destroy(); editor.current = null; };
+    return () => {
+      if (position) position.current = {
+        doc: view.state.doc, separator: view.state.lineBreak, selection: view.state.selection,
+        scroll: view.scrollSnapshot(), location: appliedLocation.current,
+      };
+      view.destroy();
+      editor.current = null;
+    };
   }, []);
   useEffect(() => {
     editor.current?.dispatch({ effects: permission.current.reconfigure([EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)]) });
@@ -143,14 +164,20 @@ export function CodeEditor({ value, onChange, readOnly = false, wrapLines = fals
   }, [theme]);
   useEffect(() => { editor.current?.requestMeasure(); }, [codeFont, codeSize]);
   useEffect(() => {
-    editor.current?.dispatch({ effects: accessibility.current.reconfigure(editorAccessibility()) });
-  }, [language, t]);
+    const view = editor.current;
+    if (!view || accessibility.current.get(view.state) === editorAccessibility) return;
+    const scroll = view.scrollSnapshot();
+    view.dispatch({ effects: accessibility.current.reconfigure(editorAccessibility) });
+    view.dispatch({ effects: scroll });
+  }, [editorAccessibility]);
   useEffect(() => {
     editor.current?.dispatch({ effects: wrapping.current.reconfigure(wrapLines ? EditorView.lineWrapping : []) });
   }, [wrapLines]);
   useLayoutEffect(() => {
     const view = editor.current;
     if (!view) return;
+    const restoredScroll = initialScroll.current;
+    initialScroll.current = undefined;
     const { state } = view;
     const separator = lineSeparator(value);
     if (state.lineBreak === separator && state.sliceDoc() === value) return;
@@ -159,7 +186,7 @@ export function CodeEditor({ value, onChange, readOnly = false, wrapLines = fals
       .map(change => ({ from: change.fromA, to: change.toA, insert: next.slice(change.fromB, change.toB) })));
     const effects = state.lineBreak === separator ? [] : [lineEndings.current.reconfigure(EditorState.lineSeparator.of(separator))];
     if (!changes.empty) {
-      const scroll = view.scrollSnapshot().map(changes);
+      const scroll = (restoredScroll ?? view.scrollSnapshot()).map(changes);
       if (scroll) effects.push(scroll);
     }
     view.dispatch({ changes, effects,
@@ -167,7 +194,8 @@ export function CodeEditor({ value, onChange, readOnly = false, wrapLines = fals
   }, [value]);
   useEffect(() => {
     const view = editor.current;
-    if (!view || location?.line === undefined) return;
+    if (!view || location?.line === undefined || appliedLocation.current === location) return;
+    appliedLocation.current = location;
     const { doc } = view.state;
     const first = doc.line(Math.min(location.line, doc.lines));
     const start = first.from + Math.min((location.column ?? 1) - 1, first.length);
