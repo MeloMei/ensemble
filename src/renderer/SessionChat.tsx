@@ -49,6 +49,7 @@ import { SideQuestion, SideQuestionAction, useAnswerQuestionSelection, type Side
 import { DraftEvidenceCards } from './DraftEvidence';
 import { useWorkspaceFileMention, WorkspaceFileMention } from './WorkspaceFileMention';
 import { SlashCompletion, useSlashCompletion } from './SlashCompletion';
+import { useComposerDictation } from './ComposerDictation';
 import './SessionChat.css';
 
 interface SessionChatProps {
@@ -61,6 +62,7 @@ interface SessionChatProps {
   draftError?: string;
   onDraftChange: (value: PromptInput, expected?: PromptInput) => void | boolean;
   readOnly?: boolean;
+  dictationActive?: boolean;
   sessions?: Session[];
   openSession: (id: string) => void;
   connected?: boolean;
@@ -1016,6 +1018,7 @@ const expandedPromptsBySession = new Map<string, ReadonlySet<string>>();
 export function SessionChat({
   session, provider, providers, perform, pending, draft, draftError, onDraftChange, sessions = [], openSession, connected = true, readOnly = false,
   attentionOpen, onAttentionOpened, messageOpen, onMessageOpened, onOpenForkSource, workspaceId, onOpenSkillSettings, onChooseEvidence, onOpenEvidence,
+  dictationActive = false,
 }: SessionChatProps) {
   const { t } = useTranslation('workspace');
   const [showActivity, setShowActivity] = useState(false);
@@ -1102,6 +1105,11 @@ export function SessionChat({
   const historyReady = session.historyLoaded !== false;
   const queuesNextTurn = active || session.queuePaused || Boolean(session.queue?.length);
   const busy = pending.has(`send-${session.id}`);
+  const dictation = useComposerDictation({
+    active: dictationActive && !readOnly,
+    canEdit: connected && historyReady && !busy && !session.archived,
+    sessionId: session.id, composer, composing, draft, onDraftChange,
+  });
   const settingsBusy = pending.has(`session-settings-${session.id}`);
   const runtimeSwitchKey = `switch-runtime-${session.id}`;
   const selectedRuntime = runtimeSelection?.from === session.providerId ? runtimeSelection : undefined;
@@ -1854,6 +1862,7 @@ export function SessionChat({
                 onClick={() => importAttachments(() => window.workbench.chooseAttachments(), 'picker')}>
                 {importingAttachments ? <LoaderCircle className="spin" size={16} /> : <Paperclip size={16} />}
               </IconButton>
+              {dictation.controls}
               <span className="composer-divider" />
               {providers && <Tooltip label={runtimeStatus ?? t('chat.runtimeHint')}><span className="composer-runtime">
                 <AppSelect compact side="top" menuClassName="composer-select-menu" label={t('chat.runtime')} icon={<AgentIcon providerId={session.providerId} size={14} />}
@@ -1890,6 +1899,7 @@ export function SessionChat({
           {selectedRuntime?.requested ? <LoaderCircle className="spin" size={13} aria-hidden="true" /> : <Clock3 size={13} aria-hidden="true" />}{runtimeStatus}
         </p>}
         {!connected && <p className="composer-note" role="status"><CircleAlert size={13} />{t('chat.connectionUnavailable')}</p>}
+        {dictation.feedback}
         {sendError && <p className="composer-note" role="alert"><CircleAlert size={13} />{sendError.rejected ? sendError.message : t('chat.sendUnconfirmed', { error: sendError.message })}</p>}
         {draftError && <p className="composer-note" role="alert"><CircleAlert size={13} />{t('chat.draftError', { error: draftError })}<button className="text-button" onClick={() => onDraftChange(draft)}>{t('chat.retrySave')}</button></p>}
         {unsupportedAttachments && <p className="composer-note" role="alert"><CircleAlert size={13} />{t(attachmentsSupported ? 'chat.pluginAttachmentKindsRemove' : 'chat.pluginAttachmentsRemove')}</p>}

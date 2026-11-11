@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { translate as t, i18n } from '../shared/i18n';
-import { useContext, useEffect, useRef, type ButtonHTMLAttributes, type ReactNode, type RefObject } from 'react';
+import { useContext, useEffect, useRef, type ButtonHTMLAttributes, type ReactNode, type Ref, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, Circle, CircleAlert, CircleDot, Clock3, Folder, GitBranch, LoaderCircle, Pause, ShieldQuestion, Square, X } from 'lucide-react';
 import { motion } from 'framer-motion';
@@ -30,7 +30,7 @@ export function Status({ value }: { value: string }) {
   return <span className={`status status-${value}`}><Glyph size={12} aria-hidden="true" />{statusLabel(value)}</span>;
 }
 
-export function IconButton({ label, children, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { label: string; children: ReactNode }) {
+export function IconButton({ label, children, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { label: string; children: ReactNode; ref?: Ref<HTMLButtonElement> }) {
   return <Tooltip label={props.title ?? label}><CdsButton variant="ghost" size="icon" className="icon-button" aria-label={label} {...props}>{children}</CdsButton></Tooltip>;
 }
 

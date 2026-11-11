@@ -1,3 +1,4 @@
+import type { DictationEvent } from '../shared/dictation';
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { Snapshot, UnsavedFileSummary, WorkbenchAPI } from '../shared/types';
 import { DraftWriter } from '../shared/draft-writer';
@@ -215,6 +216,16 @@ const api: WorkbenchAPI = {
   notificationStatus: () => ipcRenderer.invoke('workbench:notification-status'),
   notificationPreferences: () => ipcRenderer.invoke('workbench:notification-preferences'),
   setNotificationPreferences: patch => ipcRenderer.invoke('workbench:set-notification-preferences', patch),
+  dictationStatus: () => ipcRenderer.invoke('workbench:dictation-status'),
+  setDictationLanguage: language => ipcRenderer.invoke('workbench:set-dictation-language', language),
+  startDictation: (id, sessionId) => ipcRenderer.invoke('workbench:start-dictation', id, sessionId),
+  stopDictation: id => ipcRenderer.invoke('workbench:stop-dictation', id),
+  cancelDictation: id => ipcRenderer.invoke('workbench:cancel-dictation', id),
+  onDictationEvent: listener => {
+    const receive = (_event: Electron.IpcRendererEvent, event: DictationEvent) => listener(event);
+    ipcRenderer.on('workbench:dictation-event', receive);
+    return () => ipcRenderer.removeListener('workbench:dictation-event', receive);
+  },
   captureWindow: () => ipcRenderer.invoke('workbench:capture-window'),
   cancelWindowCapture: () => ipcRenderer.invoke('workbench:cancel-window-capture'),
   windowCaptureShortcut: () => ipcRenderer.invoke('workbench:window-capture-shortcut'),
