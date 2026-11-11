@@ -4,7 +4,7 @@ import { isAbsolute, relative, sep } from 'node:path';
 import { z } from 'zod';
 import type {
   AgentMail, AgentMessageSource, ApprovalInput, CollaborationCaller, CreateSessionInput, DraftEvidence, McpServerConfig, PromptInput, ProviderInfo,
-  ParkedSessionRuntime, SendPromptRejectionReason, Session, SessionAttempt, SessionCommandReceipt, SessionContinuationTarget, SessionQueueItem, SessionSettings, SessionSkillAssignment, SessionSkillAssignmentReceipt, SessionStatus, SessionUpdate, SideQuestionInput, SideQuestionReceipt, Snapshot, TerminalInfo, Workflow,
+  ParkedSessionRuntime, QueuedPromptMoveResult, SendPromptRejectionReason, Session, SessionAttempt, SessionCommandReceipt, SessionContinuationTarget, SessionQueueItem, SessionSettings, SessionSkillAssignment, SessionSkillAssignmentReceipt, SessionStatus, SessionUpdate, SideQuestionInput, SideQuestionReceipt, Snapshot, TerminalInfo, Workflow,
   WorkflowInput, Workspace, WorkspaceManagement, WorkspaceSplitInput, WorkspaceTab,
 } from '../shared/types';
 import type { LoadedPromptAttachment, ProviderAdapter, ProviderEvent } from './providers/types';
@@ -20,6 +20,7 @@ import { previousSessionCommand, runSessionCommand, sessionCommandReceipt } from
 import { recordSessionAttention } from './attention';
 import { addDraftEvidence, draftPromptText, hasPromptInput, samePromptDraft } from '../shared/draft-evidence';
 import { attachmentLimitIssue, supportsPromptAttachment } from '../shared/prompt-attachments';
+import { canMoveQueuedPrompt } from '../shared/prompt-queue';
 import { permissionTiersFor } from '../shared/session-permissions';
 import { runtimeHandoff } from './runtime-handoff';
 import { sessionQueueReceipt, sessionTurnOutput } from './session-collaboration';
@@ -989,6 +990,27 @@ export class WorkbenchEngine {
     if (replayed) return;
     this.publish(this.liveSnapshot());
     this.drainSessionQueue(id);
+  }
+
+  moveQueuedPrompt(id: string, itemId: string, targetId: string, expectedOrder: string[], commandId?: string): QueuedPromptMoveResult {
+    this.assertOpen();
+    const session = this.session(id);
+    const { result, replayed } = runSessionCommand<QueuedPromptMoveResult>(this.store, 'queue-move', commandId, { id, itemId, targetId, expectedOrder }, () => {
+      const queue = session.queue ?? [];
+      if (queue.length !== expectedOrder.length || queue.some((item, index) => item.id !== expectedOrder[index])) return 'queue-changed';
+      const from = expectedOrder.indexOf(itemId);
+      const to = expectedOrder.indexOf(targetId);
+      if (!canMoveQueuedPrompt(queue, from, to)) return 'blocked';
+      const [item] = queue.splice(from, 1);
+      queue.splice(to, 0, item);
+      session.updatedAt = now();
+      return 'moved';
+    });
+    if (!replayed && result === 'moved') {
+      this.publish(this.liveSnapshot());
+      this.drainSessionQueue(id);
+    }
+    return result;
   }
 
   setSessionQueuePaused(id: string, paused: boolean): void {

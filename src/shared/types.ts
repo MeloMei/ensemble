@@ -228,6 +228,7 @@ export interface SessionQueueItem {
   revision?: number;
   edit?: { id: string; draft?: PromptInput; draftRevision?: number; lease?: { ownerId: string; expiresAt: number } };
 }
+export type QueuedPromptMoveResult = 'moved' | 'queue-changed' | 'blocked';
 export interface SessionCommandReceipt { commandId: string; kind: string; result: unknown; createdAt: string }
 export interface DiagnosticEntry {
   seq: number; at: string; layer: 'provider' | 'engine' | 'command' | 'transport'; kind: string;
@@ -313,6 +314,7 @@ export interface WorkbenchAPI {
   saveQueuedPromptDraft(id: string, itemId: string, editId: string, revision: number, input: PromptInput): Promise<void>;
   finishQueuedPromptEdit(id: string, itemId: string, editId: string, input?: PromptInput): Promise<void>;
   removeQueuedPrompt(id: string, itemId: string, revision: number, commandId?: string, editId?: string): Promise<void>;
+  moveQueuedPrompt(id: string, itemId: string, targetId: string, expectedOrder: string[], commandId?: string): Promise<QueuedPromptMoveResult>;
   setSessionQueuePaused(id: string, paused: boolean): Promise<void>;
   reconcileSessionDelivery(id: string): Promise<void>;
   providerHealth(cwd?: string): Promise<ProviderInfo[]>;

@@ -240,6 +240,69 @@ test('an edit holds the queue head after the live turn completes, then sends the
   } finally { completeFirst(); await service.shutdown(); await rm(dataPath, { recursive: true, force: true }); }
 });
 
+test('moving queued prompts persists dispatch order and respects stale, edited and Agent queue entries', async () => {
+  const dataPath = await realpath(await mkdtemp(join(tmpdir(), 'workbench-queue-move-')));
+  let targetId: string;
+  const prompts: string[] = [];
+  const options = { dataPath, command: process.execPath, bridgePath: join(dataPath, 'bridge.cjs'), publish() {}, providers: [{
+    info: { id: 'controlled', name: 'Controlled', source: 'plugin' as const, available: true, detail: '', capabilities: { resume: true, approvals: false } },
+    async run(context: import('./providers/types').TurnContext) {
+      if (context.session.id === targetId) prompts.push(context.prompt);
+      else await service.engine.sendSessionMessage({ sessionId: context.session.id, attemptId: context.session.attempts!.at(-1)!.id }, {
+        toSessionId: targetId, requestId: 'agent-queue-request', text: 'Agent message',
+      });
+    },
+  }] };
+  let service = await createWorkbenchService(options);
+  const queue = () => service.engine.getSession(targetId).queue!;
+  const ids = () => queue().map(item => item.id);
+  const send = (text: string) => service.call('workbench:send-prompt', [targetId, { text }]);
+  const move = (from: string, to: string, order: string[], commandId?: string) =>
+    service.call('workbench:move-queued-prompt', [targetId, from, to, order, commandId]);
+  try {
+    const sourceId = await service.engine.createSession({ title: 'Sender', providerId: 'controlled', cwd: dataPath });
+    targetId = await service.engine.createSession({ title: 'Queue', providerId: 'controlled', cwd: dataPath });
+    service.engine.updateSession(sourceId, { messageTarget: { sessionId: targetId, enabled: true } });
+    await service.call('workbench:set-session-queue-paused', [targetId, true]);
+    await send('A'); await send('B');
+    service.engine.sendMessage(sourceId, 'Send Agent message');
+    await service.engine.waitSession(sourceId);
+    assert.equal(queue()[2]?.agentSource?.sessionId, sourceId);
+    await send('C');
+    const stale = ids();
+    await send('D');
+    const initial = ids();
+    const [a, b, agent, c, d] = initial;
+    assert.equal(await move(b, a, stale), 'queue-changed');
+    assert.equal(await move(agent, b, initial), 'blocked');
+    assert.equal(await move(a, c, initial), 'blocked');
+
+    const editId = '00000000-0000-4000-8000-000000000001';
+    const ownerId = '00000000-0000-4000-8000-000000000002';
+    await service.call('workbench:begin-queued-prompt-edit', [targetId, b, 0, editId, ownerId]);
+    assert.equal(await move(a, b, initial), 'blocked');
+    assert.deepEqual(ids(), initial);
+    await service.call('workbench:finish-queued-prompt-edit', [targetId, b, editId, { text: 'Edited B' }]);
+    assert.equal(await move(b, a, initial, 'move-b'), 'moved');
+    const reordered = [b, a, agent, c, d];
+    assert.deepEqual(ids(), reordered);
+    assert.equal(await move(c, d, initial), 'queue-changed');
+    assert.equal(prompts.length, 0);
+
+    await service.shutdown();
+    service = await createWorkbenchService(options);
+    assert.deepEqual(ids(), reordered);
+    assert.equal(await move(b, a, initial, 'move-b'), 'moved');
+    assert.deepEqual(ids(), reordered);
+    await service.call('workbench:set-session-queue-paused', [targetId, false]);
+    await service.engine.waitSession(targetId);
+    assert.deepEqual(service.engine.getSession(targetId).attempts?.map(attempt => attempt.queueItemId), reordered);
+    assert.deepEqual(queue(), []);
+    assert.deepEqual(prompts, ['Edited B', 'A',
+      `Message from Ensemble session "Sender" (session ID ${sourceId}). Reply in this chat so the sender can retrieve your response.\n\nAgent message`, 'C', 'D']);
+  } finally { await service.shutdown(); await rm(dataPath, { recursive: true, force: true }); }
+});
+
 test('one backend owns execution and persists results after a client disconnects', async () => {
   const dataPath = await mkdtemp(join(tmpdir(), 'workbench-backend-'));
   let finish!: () => void;

@@ -84,6 +84,7 @@ const api: WorkbenchAPI = {
   saveQueuedPromptDraft: (id, itemId, editId, revision, input) => ipcRenderer.invoke('workbench:save-queued-prompt-draft', id, itemId, editId, revision, input),
   finishQueuedPromptEdit: (id, itemId, editId, input) => ipcRenderer.invoke('workbench:finish-queued-prompt-edit', id, itemId, editId, input),
   removeQueuedPrompt: (id, itemId, revision, commandId, editId) => ipcRenderer.invoke('workbench:remove-queued-prompt', id, itemId, revision, commandId, editId),
+  moveQueuedPrompt: (id, itemId, targetId, expectedOrder, commandId) => ipcRenderer.invoke('workbench:move-queued-prompt', id, itemId, targetId, expectedOrder, commandId),
   setSessionQueuePaused: (id, paused) => ipcRenderer.invoke('workbench:set-session-queue-paused', id, paused),
   reconcileSessionDelivery: id => ipcRenderer.invoke('workbench:reconcile-session-delivery', id),
   providerHealth: cwd => ipcRenderer.invoke('workbench:provider-health', cwd),
