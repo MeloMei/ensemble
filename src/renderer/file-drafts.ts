@@ -36,6 +36,9 @@ export class FileDraftStore {
     return () => { this.autoSavedListeners.delete(listener); };
   }
   isSaving(workspaceId: string, path: string): boolean { return this.saves.has(this.key(workspaceId, path)); }
+  hasUnsettledEdits(): boolean {
+    return this.saves.size > 0 || [...this.entries.values()].some(draft => draft.text !== draft.original.content);
+  }
 
   setAutoSave(enabled: boolean): void {
     if (this.autoSaveEnabled === enabled) return;

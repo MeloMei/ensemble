@@ -139,3 +139,11 @@
   .workflow-graph-toolbar { flex-wrap: wrap; }
   .attempt-row .session-link { margin-left: 0; }
 }
+.acp-registry-section > input { width: 100%; margin: 10px 0; }
+.acp-registry-list { display: grid; gap: 8px; max-height: 420px; margin: 0; padding: 0; overflow: auto; list-style: none; }
+.acp-registry-list li { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-control); }
+.acp-registry-list li > div { min-width: 0; overflow-wrap: anywhere; }
+.acp-registry-list h3, .acp-registry-list p { margin: 0 0 4px; }
+.acp-registry-list small { color: var(--muted); }
+.acp-registry-list a { display: inline-block; margin-left: 8px; }
+.acp-registry-list button { flex: 0 0 auto; }

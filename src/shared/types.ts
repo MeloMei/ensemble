@@ -22,6 +22,23 @@ export interface CustomAcpInput {
   environment: { key: string; value: string }[];
 }
 
+export interface AcpRegistryInstallation {
+  id: string;
+  version: string;
+  kind: 'binary' | 'npx' | 'uvx';
+}
+
+export interface AcpRegistryEntry {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  source?: string;
+  platforms: string[];
+  distribution?: { kind: AcpRegistryInstallation['kind']; source: string; checksum?: boolean };
+  unavailable?: 'platform' | 'format' | 'npm' | 'uv';
+}
+
 export interface ProviderInfo {
   id: string;
   name: string;
@@ -36,6 +53,7 @@ export interface ProviderInfo {
   models?: ProviderModel[];
   defaultModelId?: string;
   efforts?: string[];
+  acpRegistry?: AcpRegistryInstallation;
 }
 
 export interface RuntimeInstall {
@@ -147,6 +165,13 @@ export interface GitHistoryCommit {
   sha: string; parents: string[]; subject: string; author: string; authoredAt: string; refs: string;
 }
 export interface GitHistory { commits: GitHistoryCommit[]; limited: boolean }
+export interface GitBranchChange { action: 'switch' | 'create'; name: string; expectedBranch: string }
+export interface GitSyncState {
+  branch: string | null;
+  remotes: string[];
+  upstream?: { remote: string; ref: string; ahead?: number; behind?: number };
+}
+export interface GitSyncRequest { action: 'fetch' | 'pull' | 'push'; remote: string; expectedBranch: string }
 export interface FileDiff { path: string; patch: string; binary: boolean; truncated: boolean; revision?: string }
 
 export interface AgentMessageSource { sessionId: string; title: string; providerId: string; reply?: true }
@@ -353,6 +378,8 @@ export interface WorkbenchAPI {
   addCustomAcp(requestId: string, input: CustomAcpInput): Promise<void>;
   cancelCustomAcp(requestId: string): Promise<void>;
   removeCustomAcp(providerId: string): Promise<void>;
+  refreshAcpRegistry(): Promise<AcpRegistryEntry[]>;
+  installAcpRegistry(id: string, version: string): Promise<void>;
   diagnostics(): Promise<DiagnosticEntry[]>;
   exportDiagnostics(): Promise<string>;
   setDiagnosticTracing(enabled: boolean): Promise<void>;
@@ -408,6 +435,9 @@ export interface WorkbenchAPI {
   gitState(workspaceId: string): Promise<GitState>;
   gitBranchRefs(workspaceId: string): Promise<string[]>;
   gitBranchComparison(workspaceId: string, targetRef: string): Promise<GitBranchComparison>;
+  changeGitBranch(workspaceId: string, change: GitBranchChange): Promise<GitState>;
+  gitSyncState(workspaceId: string): Promise<GitSyncState>;
+  syncGit(workspaceId: string, request: GitSyncRequest): Promise<GitSyncState>;
   gitHistory(workspaceId: string, query: string, allBranches: boolean, limit: number): Promise<GitHistory>;
   gitCommitFiles(workspaceId: string, sha: string): Promise<string[]>;
   gitCommitDiff(workspaceId: string, sha: string, path: string): Promise<FileDiff>;

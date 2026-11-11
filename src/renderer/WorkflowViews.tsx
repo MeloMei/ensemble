@@ -2,6 +2,7 @@ import { AgentIcon } from './AgentIcon';
 import { AppSelect } from './AppSelect';
 import { useTranslation } from 'react-i18next';
 import { CustomAcpSettings } from './CustomAcpSettings';
+import { AcpRegistrySettings } from './AcpRegistrySettings';
 import { translate as t, formatDate, renderDisplayText } from '../shared/i18n';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { motion } from 'framer-motion';
@@ -314,7 +315,7 @@ export function ProvidersContent({ snapshot, perform, pending }: ProvidersProps)
     <div className="provider-cards">{health.providers.map(provider => {
       const install = runtimeInstalls.installs.find(item => item.providerId === provider.id);
       return <motion.article className={`provider-card ${!provider.available ? 'unavailable' : ''}`} key={provider.id} variants={motionMessageFadeUp} initial={reducedMotion ? false : 'initial'} animate="animate">
-      <div className="provider-card-heading"><div className="provider-icon"><AgentIcon providerId={provider.id} size={18} /></div><div><h2>{provider.name}</h2><span>{t(provider.source === 'acp' ? 'provider.acpCustom' : provider.source === 'plugin' ? 'provider.plugin' : 'provider.builtin')}</span></div><span className={`availability ${provider.available ? 'available' : ''}`}><span />{provider.available ? t('provider.entryFound') : t('provider.notReady')}</span></div>
+      <div className="provider-card-heading"><div className="provider-icon"><AgentIcon providerId={provider.id} size={18} /></div><div><h2>{provider.name}</h2><span>{provider.acpRegistry ? `${t('provider.acpRegistry')} · ${provider.acpRegistry.version}` : t(provider.source === 'acp' ? 'provider.acpCustom' : provider.source === 'plugin' ? 'provider.plugin' : 'provider.builtin')}</span></div><span className={`availability ${provider.available ? 'available' : ''}`}><span />{provider.available ? t('provider.entryFound') : t('provider.notReady')}</span></div>
       <p className="provider-detail">{renderDisplayText(provider.detail, provider.detailI18n)}</p><ProviderModelSummary provider={provider} />
       <div className="provider-capabilities"><span className={provider.capabilities.resume ? 'supported' : ''}>{provider.capabilities.resume ? <Check size={13} /> : <X size={13} />}{t('provider.continueSession')}{!provider.capabilities.resume && t('provider.unsupportedSuffix')}</span><span className={provider.capabilities.approvals ? 'supported' : ''}><ShieldCheck size={13} />{t(provider.source === 'acp' ? 'provider.acpApprovalRequests' : 'provider.approvals')}{!provider.capabilities.approvals && t('provider.unsupportedSuffix')}</span></div>
       <RuntimeHealth provider={provider} loading={health.loading} />
@@ -323,8 +324,9 @@ export function ProvidersContent({ snapshot, perform, pending }: ProvidersProps)
       {provider.available && (provider.id === 'codex' || provider.id === 'claude') && <RuntimeAccount id={provider.id} name={provider.name} perform={perform} />}
       <ProviderGuides provider={provider} />
       {provider.source === 'acp' && <button type="button" className="button subtle" disabled={pending.has(`remove-acp:${provider.id}`)}
-        onClick={() => void perform(`remove-acp:${provider.id}`, () => window.workbench.removeCustomAcp(provider.id))}>{t('provider.acpRemove')}</button>}
+        onClick={() => void perform(`remove-acp:${provider.id}`, () => window.workbench.removeCustomAcp(provider.id))}>{t(provider.acpRegistry ? 'provider.acpRegistryUninstall' : 'provider.acpRemove')}</button>}
     </motion.article>; })}</div>
+    <AcpRegistrySettings providers={snapshot.providers} />
     <CustomAcpSettings />
     <div className="plugin-section">
       <div className="plugin-section-heading"><div><h2><Plug size={18} />{t('provider.plugin')}</h2><p>{t('provider.pluginsNote')}</p></div><button className="button" onClick={() => void perform('open-plugins', () => window.workbench.openPluginDirectory())}><FolderOpen size={14} />{t('provider.openPluginDirectory')}</button></div>

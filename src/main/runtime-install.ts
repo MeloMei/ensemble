@@ -24,27 +24,31 @@ async function executable(paths: string[]) {
   }
 }
 
-function systemExecutable(name: string, fallback: string[] = []) {
+export function systemExecutable(name: string, fallback: string[] = []) {
   const paths = (process.env.PATH ?? '').split(delimiter).filter(isAbsolute).map(directory => join(directory, name));
   return executable([...paths, ...fallback]);
 }
 
-function runInstaller(command: string, args: string[], cwd: string, signal: AbortSignal) {
+export function runInstaller(command: string, args: string[], cwd: string, signal: AbortSignal, env?: NodeJS.ProcessEnv) {
   return new Promise<'ok' | 'install' | 'timeout'>(resolve => {
     if (signal.aborted) { resolve('install'); return; }
-    const child = spawn(command, args, { cwd, stdio: 'ignore', shell: false, detached: true });
+    const child = spawn(command, args, { cwd, env, stdio: 'ignore', shell: false, detached: true });
     let timedOut = false;
     let force: ReturnType<typeof setTimeout> | undefined;
+    const kill = (signal: NodeJS.Signals) => {
+      try { signalProcessTree(child, signal); }
+      catch { try { child.kill(signal); } catch {} }
+    };
     const stop = () => {
       if (force) return;
-      signalProcessTree(child, 'SIGTERM');
-      force = setTimeout(() => signalProcessTree(child, 'SIGKILL'), 2000);
+      kill('SIGTERM');
+      force = setTimeout(() => kill('SIGKILL'), 2000);
     };
     const timeout = setTimeout(() => { timedOut = true; stop(); }, 5 * 60_000);
     const finish = (code: number | null) => {
       clearTimeout(timeout); clearTimeout(force);
       signal.removeEventListener('abort', stop);
-      if (timedOut || signal.aborted) signalProcessTree(child, 'SIGKILL');
+      if (timedOut || signal.aborted) kill('SIGKILL');
       resolve(timedOut ? 'timeout' : code === 0 ? 'ok' : 'install');
     };
     signal.addEventListener('abort', stop, { once: true });

@@ -23,6 +23,7 @@ import { TerminalManager } from './terminal-manager';
 import { MissingWorkspaceDirectoryError, WorkspaceFiles } from './workspace-files';
 import { RuntimeInstaller } from './runtime-install';
 import { RuntimeAccounts } from './runtime-account';
+import { AcpRegistry } from './acp-registry';
 import type { Snapshot } from '../shared/types';
 import { PROMPT_TEXT_LIMIT, SIDE_QUESTION_LIMIT, SIDE_QUESTION_REFERENCE_LIMIT } from '../shared/types';
 import type { TerminalOutputEvent } from '../shared/backend';
@@ -188,6 +189,12 @@ export async function createWorkbenchService(options: {
     let baseProviders: ProviderAdapter[] = options.providers ?? [];
     let pluginErrors: string[] = [];
     const publishProviders = () => engine.setProviders([...baseProviders, ...installedAcp.adapters()].map(instrument), [], pluginErrors);
+    const acpRegistry = new AcpRegistry(installedAcp, {
+      assertIdle: id => engine.assertProviderIdle(id),
+      publish: publishProviders,
+      dispose: adapter => engine.disposeRemovedProvider(instrument(adapter)),
+    });
+    cleanup.push(() => acpRegistry.close());
     const installer = new RuntimeInstaller(options.dataPath, async id => {
       await refreshProviders();
       return engine.liveSnapshot().providers.some(provider => provider.id === id && provider.available);
@@ -227,7 +234,7 @@ export async function createWorkbenchService(options: {
 
 
     const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>();
-    const workspaceMutations = new Set(['workbench:create-terminal', 'workbench:write-file', 'workbench:git-mutate', 'workbench:git-commit',
+    const workspaceMutations = new Set(['workbench:create-terminal', 'workbench:write-file', 'workbench:git-mutate', 'workbench:git-commit', 'workbench:change-git-branch', 'workbench:sync-git',
       'workbench:save-skill', 'workbench:save-mcp-settings', 'workbench:test-mcp-server']);
     const handle = (channel: string, handler: (event: unknown, ...args: unknown[]) => unknown) => {
       handlers.set(channel, (event, ...args) => workspaceMutations.has(channel)
@@ -307,11 +314,15 @@ export async function createWorkbenchService(options: {
     handle('workbench:cancel-custom-acp', (_event, requestId) => installedAcp.cancel(z.string().uuid().parse(requestId)));
     handle('workbench:remove-custom-acp', async (_event, providerId) => {
       const id = idSchema.parse(providerId);
+      acpRegistry.assertNotInstalling(id);
       engine.assertProviderIdle(id);
       const removed = installedAcp.remove(id);
       publishProviders();
-      await engine.disposeRemovedProvider(instrument(removed));
+      await engine.disposeRemovedProvider(instrument(removed.adapter));
+      await removed.cleanup();
     });
+    handle('workbench:refresh-acp-registry', () => acpRegistry.refresh());
+    handle('workbench:install-acp-registry', (_event, id, version) => acpRegistry.install(idSchema.parse(id), idSchema.parse(version)));
     handle('workbench:runtime-account', (_event, id, refresh) => accounts.state(accountProvider.parse(id), z.boolean().optional().parse(refresh) ?? false));
     handle('workbench:sign-in-runtime', (_event, value, method) => {
       const id = accountProvider.parse(value);
@@ -452,8 +463,22 @@ export async function createWorkbenchService(options: {
     handle('workbench:git-branch-refs', (_event, id) => workspaceFiles.gitBranchRefs(workspaceCwd(id)));
     handle('workbench:git-branch-comparison', (_event, id, targetRef) =>
       workspaceFiles.gitBranchComparison(workspaceCwd(id), z.string().min(1).max(4096).parse(targetRef)));
+    handle('workbench:change-git-branch', (_event, rawId, value) => {
+      const id = idSchema.parse(rawId);
+      if (managedWorktrees!.isManaged(id)) throw new Error('Managed worktrees keep the branch assigned when they are created');
+      const cwd = workspaceCwd(id);
+      const change = z.object({ action: z.enum(['switch', 'create']), name: z.string().min(1).max(256),
+        expectedBranch: z.string().min(1).max(4096) }).strict().parse(value);
+      return engine.withProjectMutation(cwd, () => workspaceFiles.changeGitBranch(cwd, change));
+    });
     handle('workbench:git-history', (_event, id, query, allBranches, limit) =>
       workspaceFiles.gitHistory(workspaceCwd(id), z.string().trim().max(256).parse(query), z.boolean().parse(allBranches), z.number().int().min(1).max(500).parse(limit)));
+    handle('workbench:git-sync-state', (_event, id) => workspaceFiles.gitSyncState(workspaceCwd(id)));
+    handle('workbench:sync-git', (_event, id, input) => {
+      const cwd = workspaceCwd(id);
+      const request = z.object({ action: z.enum(['fetch', 'pull', 'push']), remote: z.string().min(1).max(256), expectedBranch: z.string().min(1).max(4096) }).strict().parse(input);
+      return engine.withProjectMutation(cwd, () => workspaceFiles.syncGit(cwd, request));
+    });
     handle('workbench:git-commit-files', (_event, id, sha) => workspaceFiles.gitCommitFiles(workspaceCwd(id), idSchema.parse(sha)));
     handle('workbench:git-commit-diff', (_event, id, sha, path) => workspaceFiles.gitCommitDiff(workspaceCwd(id), idSchema.parse(sha), cwdSchema.parse(path)));
     handle('workbench:write-file', (_event, id, input) => workspaceFiles.write(workspaceCwd(id), z.object({ path: cwdSchema, content: z.string().max(1_048_576), revision: idSchema }).strict().parse(input)));
@@ -521,7 +546,7 @@ export async function createWorkbenchService(options: {
       async shutdown(): Promise<void> {
         stopDiagnostics();
         await accounts.shutdown();
-        await installer.shutdown();
+        await Promise.all([installer.shutdown(), acpRegistry.close()]);
         const results = await Promise.allSettled([core.close(), terminalManager.shutdown(), engine.shutdown(), collaboration.close(), installedAcp.close()]);
         results.push(...await Promise.allSettled([store.close(), diagnostics.flush()]));
         const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');

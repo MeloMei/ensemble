@@ -49,6 +49,46 @@ test('workspace file access stays inside realpath boundaries, including dangling
   await assert.rejects(files.diff(root, 'outside-directory/missing.txt'), /outside/);
 });
 
+test('Git sync publishes a branch, fetches remote commits and only pulls into a clean checkout', async () => {
+  const root = await repository();
+  const remote = await directory();
+  git(remote, 'init', '-q', '--bare', '-b', 'main');
+  git(root, 'remote', 'add', 'origin', remote);
+  const file = path.join(root, 'file.txt');
+  await writeFile(file, 'seed');
+  git(root, 'add', '.'); git(root, 'commit', '-qm', 'Initial');
+  assert.deepEqual(await files.gitSyncState(root), { branch: 'main', remotes: ['origin'] });
+  const sync = (action: 'fetch' | 'pull' | 'push') => files.syncGit(root, { action, remote: 'origin', expectedBranch: 'main' });
+  assert.deepEqual((await sync('push')).upstream, { remote: 'origin', ref: 'refs/heads/main', ahead: 0, behind: 0 });
+
+  const peer = await directory();
+  git(peer, 'clone', '-q', remote, '.');
+  await writeFile(path.join(peer, 'file.txt'), 'from remote');
+  git(peer, 'commit', '-qam', 'Change remote'); git(peer, 'push', '-q', 'origin', 'main');
+  assert.equal((await sync('fetch')).upstream?.behind, 1);
+  assert.equal(await readFile(file, 'utf8'), 'seed');
+  await writeFile(file, 'local unsaved change');
+  await assert.rejects(sync('pull'), /Commit or stash/);
+  await writeFile(file, 'seed');
+  assert.equal((await sync('pull')).upstream?.behind, 0);
+  assert.equal(await readFile(file, 'utf8'), 'from remote');
+});
+
+test('local branch change creates and switches while rejecting stale and dirty checkouts', async () => {
+  const root = await repository();
+  const folder = path.join(root, 'project');
+  await mkdir(folder);
+  await writeFile(path.join(folder, 'test.txt'), 'seed');
+  git(root, 'add', '.'); git(root, 'commit', '-qm', 'Initial');
+  assert.equal((await files.changeGitBranch(folder, { action: 'create', name: 'feature/test', expectedBranch: 'main' })).branch, 'feature/test');
+  await assert.rejects(files.changeGitBranch(folder, { action: 'switch', name: 'main', expectedBranch: 'old' }), /changed/);
+  await assert.rejects(files.changeGitBranch(folder, { action: 'switch', name: '-force', expectedBranch: 'feature/test' }), /valid/);
+  await writeFile(path.join(root, 'outside.txt'), 'outside changes');
+  await assert.rejects(files.changeGitBranch(folder, { action: 'switch', name: 'main', expectedBranch: 'feature/test' }), /Commit or stash/);
+  await unlink(path.join(root, 'outside.txt'));
+  assert.equal((await files.changeGitBranch(folder, { action: 'switch', name: 'main', expectedBranch: 'feature/test' })).branch, 'main');
+});
+
 test('commit history filters branches and messages and reads committed diffs inside the workspace', async () => {
   const root = await repository();
   const project = path.join(root, 'project');
