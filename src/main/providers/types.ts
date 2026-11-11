@@ -1,4 +1,4 @@
-import type { ApprovalInput, ProviderInfo, Session, PromptAttachment, ProcessEvent, UsageRecord, McpServerConfig, MessageDelivery } from '../../shared/types';
+import type { ApprovalInput, ProviderInfo, Session, PromptAttachment, ProcessEvent, UsageRecord, McpServerConfig, MessageDelivery, RuntimeCommand } from '../../shared/types';
 
 export interface ProviderDeliveryUpdate {
   status: MessageDelivery['status']; nativeThreadId?: string; nativeTurnId?: string; nativeItemId?: string; reason?: string;
@@ -10,6 +10,7 @@ export type ProviderEvent =
   | { type: 'activity'; text: string }
   | { type: 'external-id'; id: string }
   | { type: 'native-turn'; turnId: string }
+  | { type: 'runtime-commands'; commands: RuntimeCommand[] }
   | ({ type: 'delivery' } & ProviderDeliveryUpdate)
   | { type: 'structured'; event: ProcessEvent }
   | { type: 'usage'; usage: UsageRecord };

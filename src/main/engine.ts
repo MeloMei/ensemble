@@ -4,7 +4,7 @@ import { isAbsolute, relative, sep } from 'node:path';
 import { z } from 'zod';
 import type {
   AgentMail, AgentMessageSource, ApprovalInput, CollaborationCaller, CreateSessionInput, DraftEvidence, McpServerConfig, PromptInput, ProviderInfo,
-  ParkedSessionRuntime, QueuedPromptMoveResult, SendPromptRejectionReason, Session, SessionAttempt, SessionCommandReceipt, SessionContinuationTarget, SessionQueueItem, SessionSettings, SessionSkillAssignment, SessionSkillAssignmentReceipt, SessionStatus, SessionUpdate, SideQuestionInput, SideQuestionReceipt, Snapshot, TerminalInfo, Workflow,
+  ParkedSessionRuntime, QueuedPromptMoveResult, RuntimeCommand, SendPromptRejectionReason, Session, SessionAttempt, SessionCommandReceipt, SessionContinuationTarget, SessionQueueItem, SessionSettings, SessionSkillAssignment, SessionSkillAssignmentReceipt, SessionStatus, SessionUpdate, SideQuestionInput, SideQuestionReceipt, Snapshot, TerminalInfo, Workflow,
   WorkflowInput, Workspace, WorkspaceManagement, WorkspaceSplitInput, WorkspaceTab,
 } from '../shared/types';
 import type { LoadedPromptAttachment, ProviderAdapter, ProviderEvent } from './providers/types';
@@ -125,6 +125,7 @@ export class WorkbenchEngine {
   private providerInfo: ProviderInfo[] = [];
   private pluginErrors: string[] = [];
   private active = new Map<string, LogicalTask>();
+  private runtimeCommands = new Map<string, { providerId: string; commands: RuntimeCommand[] }>();
   private providerAccountChanges = new Set<string>();
   private projectClaims = new Map<string, ProjectClaim>();
   private projectMutations = new Set<Promise<unknown>>();
@@ -223,7 +224,11 @@ export class WorkbenchEngine {
   }
 
   liveSnapshot(): Snapshot {
-    return { ...this.store.state, providers: this.providerInfo, dataPath: this.store.path, pluginPath: this.pluginPath, pluginErrors: this.pluginErrors, terminals: this.terminals };
+    const sessions = this.store.state.sessions.map(session => {
+      const catalog = this.runtimeCommands.get(session.id);
+      return catalog?.providerId === session.providerId ? { ...session, runtimeCommands: catalog.commands } : session;
+    });
+    return { ...this.store.state, sessions, providers: this.providerInfo, dataPath: this.store.path, pluginPath: this.pluginPath, pluginErrors: this.pluginErrors, terminals: this.terminals };
   }
 
   snapshot(): Snapshot { return structuredClone(this.liveSnapshot()); }
@@ -528,7 +533,7 @@ export class WorkbenchEngine {
     this.assertOpen();
     const session = this.session(id);
     this.store.atomic(() => {
-      if (input.text || input.attachments?.length || input.evidence?.length) session.draft = structuredClone(input);
+      if (input.text || input.attachments?.length || input.evidence?.length || input.skills?.length) session.draft = structuredClone(input);
       else delete session.draft;
     });
     this.publish(this.liveSnapshot());
@@ -724,6 +729,7 @@ export class WorkbenchEngine {
       session.messages.push({ id: randomUUID(), role: 'activity', text: '', createdAt: session.updatedAt,
         runtimeSwitch: { fromProviderId, toProviderId: targetProviderId, ...(permissionReset ? { permissionResetToReview: true } : {}) } });
     });
+    this.runtimeCommands.delete(id);
     this.publish(this.liveSnapshot());
   }
 
@@ -782,6 +788,7 @@ export class WorkbenchEngine {
       await adapter.rewind(structuredClone(session), message.nativeTurnId);
       session.messages.splice(index);
       session.draft = { text: message.originalPrompt ?? message.text, attachments: structuredClone(message.attachments),
+        ...(message.skills?.length ? { skills: structuredClone(message.skills) } : {}),
         ...(message.evidence?.length ? { evidence: structuredClone(message.evidence) } : {}) };
       session.error = undefined; this.transition(session, 'idle');
       return structuredClone(session.draft);
@@ -790,6 +797,11 @@ export class WorkbenchEngine {
 
   private acceptEvent(session: Session, task: LogicalTask, job: QueuedTurn, turnKey: string, event: ProviderEvent): void {
     if (this.active.get(session.id) !== task || !task.executing || task.turnKey !== turnKey || (task.controller.signal.aborted && event.type !== 'delivery')) return;
+    if (event.type === 'runtime-commands') {
+      this.runtimeCommands.set(session.id, { providerId: session.providerId, commands: event.commands });
+      this.publish(this.liveSnapshot());
+      return;
+    }
     if (event.type === 'external-id') {
       if (session.runtimeContinuity && !this.adapters.get(session.providerId)?.info.capabilities.resume) return;
       if (session.externalId && session.externalId !== event.id) throw new Error('运行时改变了原生会话 id，已停止该任务。');
@@ -1217,6 +1229,7 @@ export class WorkbenchEngine {
     const timestamp = now();
     session.messages.push({ id: userMessageId, role: 'user', text, attachments: structuredClone(input.attachments), createdAt: timestamp,
       ...(agentSource ? { agentSource } : {}),
+      ...(input.skills?.length ? { skills: structuredClone(input.skills) } : {}),
       ...(input.evidence?.length ? { evidence: structuredClone(input.evidence), originalPrompt: input.text } : {}),
       ...(this.adapters.get(session.providerId)?.tracksDelivery ? { delivery: { id: randomUUID(), clientUserMessageId: userMessageId, status: 'pending' as const,
         createdAt: timestamp, updatedAt: timestamp, ...(session.externalId ? { nativeThreadId: session.externalId } : {}) } } : {}) });
@@ -1269,6 +1282,7 @@ export class WorkbenchEngine {
         providerIdentity: { id: adapter.info.id, detail: adapter.info.detail },
         prompt, attachments: (enrichment?.attachments ?? []).map(({ data: _data, text: _text, ...attachment }) => attachment) });
       providerInvoked = true;
+      if (this.runtimeCommands.delete(session.id)) this.publish(this.liveSnapshot());
       await adapter.run({ session: { ...structuredClone(session), modelId: task.modelId, settings: structuredClone(task.settings) }, prompt,
         userMessageId: job.userMessageId, attachments: enrichment?.attachments, mcpServers: enrichment?.mcpServers,
         signal: task.controller.signal,

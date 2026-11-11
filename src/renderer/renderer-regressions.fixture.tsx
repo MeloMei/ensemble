@@ -3386,6 +3386,68 @@ const cases: Record<string, () => Promise<void>> = {
     assertDraft();
     assert(errors.length === 0, errors.join('\n'));
   },
+  'DRAFT-SLASH: native commands and one-turn Skills complete at the cursor without sending': async () => {
+    let sent: PromptInput | undefined;
+    let settingsOpened = 0;
+    const skill = { id: 'workspace-skill', name: 'review', description: 'Review output', path: '/workspace/.agents/skills/review/SKILL.md', scope: 'project', editable: true };
+    window.workbench = {
+      listSkills: async (id: string) => {
+        assert(id === 'slash-workspace', 'Skill discovery used another workspace');
+        return [skill];
+      },
+      sendPrompt: async (_sessionId: string, prompt: PromptInput) => { sent = prompt; },
+    } as unknown as Window['workbench'];
+    function EditableChat() {
+      const [draft, setDraft] = React.useState<PromptInput>({ text: '' });
+      return chat({
+        workspaceId: 'slash-workspace', draft, onDraftChange: setDraft, onOpenSkillSettings: () => { settingsOpened++; },
+        session: { ...session, runtimeCommands: [{ name: 'reset' }, { name: 'resume', inputHint: 'Thread' }] },
+      });
+    }
+    await render(<EditableChat />);
+    const textarea = input('.composer textarea') as HTMLTextAreaElement;
+    await act(async () => { textarea.focus(); await tick(); });
+    const list = () => document.querySelector('.slash-completion [role=listbox]');
+    const key = async (value: string, isComposing = false) => {
+      await act(async () => { textarea.dispatchEvent(new KeyboardEvent('keydown', { key: value, isComposing, bubbles: true, cancelable: true })); await tick(); });
+    };
+    await change(textarea, '/reold the existing argument');
+    await act(async () => {
+      textarea.setSelectionRange(4, 4);
+      for (const type of ['keyDown', 'keyUp']) await rendererInput({ type, key: 'ArrowLeft', code: 'ArrowLeft', windowsVirtualKeyCode: 37 });
+    });
+    await waitFor(() => list()?.querySelectorAll('[role=option]').length === 3, 'Native commands and a Skill were not offered at the cursor');
+    await key('ArrowDown');
+    const selected = textarea.getAttribute('aria-activedescendant');
+    assert(selected && document.getElementById(selected)?.textContent?.includes('/resume'), 'ArrowDown did not announce the next runtime command');
+    await key('Enter', true);
+    assert(String(textarea.value) === '/reold the existing argument' && !sent, 'IME confirmation picked an item or sent the prompt');
+    await key('Enter');
+    assert(String(textarea.value) === '/resume the existing argument' && !sent, 'Runtime completion changed the argument or sent immediately');
+    await change(textarea, '/review');
+    await waitFor(() => Boolean(list()?.textContent?.includes('review')), 'Skill results did not reopen');
+    await key('Escape');
+    assert(!list() && String(textarea.value) === '/review' && !sent, 'Escape changed the draft or sent it');
+    await change(textarea, '/rev');
+    await waitFor(() => Boolean(list()?.textContent?.includes('review')), 'Skill did not return for the edited query');
+    await key('Enter');
+    const removeSkill = () => document.querySelector<HTMLButtonElement>('.composer [aria-label="Remove Skill review"]');
+    assert(String(textarea.value) === '' && removeSkill() && !sent && button('workspace:chat.sendTask').disabled, 'Skill-only selection did not stay as a draft chip');
+    await act(async () => { removeSkill()!.click(); await tick(); });
+    assert(!removeSkill() && !sent, 'Removing a Skill sent the message');
+    await change(textarea, '/manage-s');
+    await waitFor(() => Boolean(list()?.textContent?.includes('/manage-skills')), 'The local Skill settings command is missing');
+    await key('Enter');
+    assert(settingsOpened === 1 && String(textarea.value) === '' && !sent, 'The local command did not only open Skill settings');
+    await change(textarea, '/rev');
+    await waitFor(() => Boolean(list()?.textContent?.includes('review')), 'Skill results did not reopen for sending');
+    await key('Enter');
+    await change(textarea, 'Review this change');
+    await key('Enter');
+    assert(JSON.stringify(sent) === JSON.stringify({ text: 'Review this change', skills: [{ id: skill.id, name: skill.name }] }),
+      'Explicit send dropped the Skill or sent unexpected text');
+    assert(errors.length === 0, errors.join('\n'));
+  },
   'DRAFT-INPUT: file selection and screenshot paste change only the current draft': async () => {
     const queries: string[][] = [];
     let sends = 0;

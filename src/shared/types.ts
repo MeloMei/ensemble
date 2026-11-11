@@ -184,6 +184,7 @@ export interface Message {
   attachments?: PromptAttachment[];
   evidence?: DraftEvidence[];
   originalPrompt?: string;
+  skills?: PromptSkill[];
   nativeTurnId?: string;
   event?: ProcessEvent;
   delivery?: MessageDelivery;
@@ -254,6 +255,7 @@ export interface Session {
   historyCursor?: string;
   historyLoaded?: boolean;
   composerActivity?: SessionComposerActivity;
+  runtimeCommands?: RuntimeCommand[];
   latestTrace?: Pick<ProcessEvent, 'title' | 'status'>;
   queue?: SessionQueueItem[];
   messageTargetIds?: string[];
@@ -502,7 +504,10 @@ export type DraftEvidenceSource = { kind: 'message'; sessionId: string; messageI
   | { kind: 'artifact'; runId: string; artifactId: string }
   | PreviewEvidenceSource;
 export interface DraftEvidence { id: string; label: string; excerpt: string; source: DraftEvidenceSource }
-export interface PromptInput { text: string; attachments?: PromptAttachment[]; evidence?: DraftEvidence[] }
+export interface RuntimeCommand { name: string; description?: string; inputHint?: string }
+export interface PromptSkill { id: string; name: string }
+export const PROMPT_SKILL_LIMIT = 8;
+export interface PromptInput { text: string; attachments?: PromptAttachment[]; evidence?: DraftEvidence[]; skills?: PromptSkill[] }
 export interface CreateSessionInput {
   title: string; providerId: string; cwd: string; modelId?: string; commandId?: string; initialDraft?: PromptInput['text'];
   location?: { workspaceId: string; choice: SessionLocationChoice };

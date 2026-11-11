@@ -181,8 +181,8 @@ export class RuntimeSettings {
     });
   }
 
-  async enrich(session: Session, prompt: string): Promise<{ prompt: string; mcpServers: McpServerConfig[] }> {
-    const skillIds = session.settings?.skillIds ?? [];
+  async enrich(session: Session, prompt: string, promptSkillIds: string[] = []): Promise<{ prompt: string; mcpServers: McpServerConfig[] }> {
+    const skillIds = new Set([...(session.settings?.skillIds ?? []), ...promptSkillIds]);
     const skills = await this.listSkills(session.cwd);
     const selected = [];
     for (const id of skillIds) {
