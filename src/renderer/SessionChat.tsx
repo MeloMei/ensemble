@@ -480,8 +480,9 @@ function ComposerSettings({ session, provider, disabled, saving, perform }: {
   const hint = saving ? t('chat.savingSettings') : t('chat.settingsAfterTask');
   const tiers = permissionTiersFor(provider?.capabilities);
   const permission = session.settings?.permission ?? (tiers.includes('review') ? 'review' : undefined);
-  const permissionLabels = { review: t('chat.reviewPermissionShort'), 'read-only': t('common.readOnly'), 'full-access': t('chat.fullAccessPermission') };
-  const permissionDescriptions = { review: t('chat.reviewPermission'), 'read-only': undefined, 'full-access': t('chat.fullAccessPermissionDescription') };
+  const customAcp = provider?.source === 'acp';
+  const permissionLabels = { review: t(customAcp ? 'shell:provider.acpApprovalRequests' : 'chat.reviewPermissionShort'), 'read-only': t('common.readOnly'), 'full-access': t('chat.fullAccessPermission') };
+  const permissionDescriptions = { review: t(customAcp ? 'shell:provider.acpPermissionNote' : 'chat.reviewPermission'), 'read-only': undefined, 'full-access': t('chat.fullAccessPermissionDescription') };
   const permissionLabel = permission ? permissionLabels[permission] : t('chat.runtimeDefault');
   const change = async (patch: Parameters<typeof window.workbench.updateSession>[1]) => {
     let accepted = false;
