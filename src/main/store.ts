@@ -124,6 +124,7 @@ const savedSchema = record({
       record({ id: z.string(), kind: z.literal('agent'), sessionId: z.string() }),
       record({ id: z.string(), kind: z.literal('terminal'), terminalId: z.string() }),
       record({ id: z.string(), kind: z.literal('preview'), url: z.string() }),
+      record({ id: z.string(), kind: z.literal('browser') }),
     ])), activeTabId: z.string().nullable(), secondaryTabId: z.string().optional(),
     secondaryPlacement: z.enum(['before', 'after']).optional(), splitDirection: z.enum(['horizontal', 'vertical']).optional(), splitRatio: z.number().optional(),
     createdAt: z.string(), updatedAt: z.string(),

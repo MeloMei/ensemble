@@ -8,6 +8,7 @@ import type { AppUpdateState } from './application-updates';
 import type { SessionPermission } from './session-permissions';
 import type { RasterImageMime } from './raster-image';
 import type { WorkspaceFileMutation } from './workspace-file-mutations';
+import type { BrowserBounds, BrowserCommand, BrowserState } from './embedded-browser';
 export type { ProviderCapabilities } from './provider-capabilities';
 
 export type SessionStatus = 'idle' | 'queued' | 'running' | 'waiting_approval' | 'waiting_children' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
@@ -80,7 +81,8 @@ export interface NativeRuntimeAccount {
 export type WorkspaceTab =
   | { id: string; kind: 'agent'; sessionId: string }
   | { id: string; kind: 'terminal'; terminalId: string }
-  | { id: string; kind: 'preview'; url: string };
+  | { id: string; kind: 'preview'; url: string }
+  | { id: string; kind: 'browser' };
 
 export type WorkspaceSplitPlacement = 'before' | 'after';
 export interface WorkspaceSplitInput {
@@ -435,6 +437,11 @@ export interface WorkbenchAPI {
   writeTerminal(terminalId: string, data: string): Promise<void>;
   resizeTerminal(terminalId: string, columns: number, rows: number): Promise<void>;
   stopTerminal(terminalId: string): Promise<void>;
+  createBrowser(workspaceId: string): Promise<void>;
+  browserLayout(tabId: string, bounds: BrowserBounds | null): Promise<BrowserState | undefined>;
+  browserCommand(tabId: string, command: BrowserCommand): Promise<boolean>;
+  onBrowserState(listener: (tabId: string, state: BrowserState) => void): () => void;
+  onBrowserFindShortcut(listener: (tabId: string) => void): () => void;
   createPreview(workspaceId: string, url: string): Promise<void>;
   capturePreviewElement(tabId: string, point: { x: number; y: number }): Promise<{ url: string; selector: string; excerpt: string } | null>;
   displayPreviewAnnotations(tabId: string, annotations: PreviewEvidenceSource[], revealId?: string): Promise<'shown' | 'wrong-page' | 'unavailable' | 'missing-element'>;
