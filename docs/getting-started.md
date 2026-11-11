@@ -158,6 +158,8 @@ bin/workbench daemon status
 
 macOS uses a LaunchAgent when the user is logged into the graphical session. Linux uses a systemd user service. To keep it running after logout on Linux, the account needs systemd lingering enabled. The service restarts the backend after failure. Use `daemon stop`, `daemon start`, `daemon restart`, or `daemon uninstall`. Uninstall leaves all sessions and data in place. `daemon status` reports whether the backend is accepting connections. See `backend.log` on macOS and the systemd user journal on Linux.
 
+On macOS, to receive system notifications after quitting Ensemble, run the backend from the same installed app. To install it as a user service, run `"/Applications/Ensemble.app/Contents/Resources/app/bin/workbench" daemon install` with the same data directory. Then open **Settings → General → Desktop notifications**, turn on **Notify me after quitting Ensemble**, and allow Ensemble Notifications in macOS. Click a notification to reopen its conversation. Source builds made with `build:headless` and Linux backends lack the macOS notification helper.
+
 For an existing desktop data directory, quit Ensemble and run `bin/workbench stop` if its ordinary backend is still running before installing the service. Clients with the same data directory use the service. Uninstall the service before using the desktop app's automatic updater with that data directory.
 
 ## Connect to a remote device

@@ -1,13 +1,14 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startBackend } from './backend-server';
+import { bundledMacNotificationHelper } from './mac-notification-helper';
 
 const index = process.argv.indexOf('--data-dir');
 const dataPath = index >= 0 ? process.argv[index + 1] : process.env.WORKBENCH_DATA_DIR;
 if (!dataPath) throw new Error('后台需要数据目录。');
 const root = dirname(fileURLToPath(import.meta.url));
 const backend = await startBackend({ dataPath, command: process.execPath, bridgePath: join(root, 'mcp-stdio.cjs'),
-  managedService: process.env.WORKBENCH_MANAGED_BACKEND }).catch(error => {
+  managedService: process.env.WORKBENCH_MANAGED_BACKEND, backgroundNotifications: bundledMacNotificationHelper(root) }).catch(error => {
   process.stderr.write(`${String(error)}\n`);
   const code = (error as { cause?: { errcode?: number }; errcode?: number }).cause?.errcode ?? error.errcode;
   process.exit(code === 5 || code === 6 ? 75 : 1);

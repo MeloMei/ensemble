@@ -2066,6 +2066,8 @@ const cases: Record<string, () => Promise<void>> = {
     const watched: string[][] = [];
     let subscriptions = 0, unsubscribed = 0;
     const skillScopes: string[] = [];
+    let notificationPreferences = { enabled: true, backgroundOnly: false, approvals: true, results: true, failures: true, sound: false, afterQuit: false };
+    const afterQuitWrites: boolean[] = [];
     window.workbench = {
       ...applicationUpdateApi,
       snapshot: async () => snapshot, subscribe: () => { subscriptions++; return () => { unsubscribed++; }; },
@@ -2075,6 +2077,13 @@ const cases: Record<string, () => Promise<void>> = {
       listFiles: async () => [], gitState: async () => ({ available: false }), setUnsavedFiles: () => {}, saveSessionDraft: async () => {},
       providerHealth: async () => [provider], listSkills: async (id: string) => { skillScopes.push(id); return []; },
       mcpSettings: async () => ({ content: '{}', revision: 'settings-mcp-0', servers: [] }), notificationStatus: async () => ({ supported: true, state: 'idle' }),
+      notificationPreferences: async () => notificationPreferences,
+      backgroundNotificationStatus: async () => 'not-determined',
+      setBackgroundNotifications: async (enabled: boolean) => {
+        afterQuitWrites.push(enabled);
+        notificationPreferences = { ...notificationPreferences, afterQuit: enabled };
+        return { preferences: notificationPreferences, authorization: 'authorized' };
+      },
     } as unknown as Window['workbench'];
     await render(<LanguageProvider initial={{ preference: 'en', language: 'en' }}><App /></LanguageProvider>);
     await waitFor(() => Boolean(document.querySelector('.composer textarea')) && Boolean(watched.at(-1)?.includes(currentSession.id)), 'The initial workspace did not load its active session');
@@ -2091,6 +2100,13 @@ const cases: Record<string, () => Promise<void>> = {
     await click('shell:preferences.open');
     assert(document.querySelector('.settings-nav') && document.querySelector('.language-settings [role=combobox]')
       && document.querySelector('.appearance-options') && document.querySelector('.application-update-settings'), 'General settings omit a former preferences section');
+    const afterQuit = input('[data-setting-anchor="notification-afterQuit"] input') as HTMLInputElement;
+    await waitFor(() => !afterQuit.disabled, 'The after-quit notification setting did not load.');
+    assert(!afterQuit.checked && afterQuitWrites.length === 0, 'Opening settings opted into background delivery.');
+    await change(afterQuit, true); await settle();
+    assert(afterQuit.checked && afterQuitWrites.join() === 'true', 'The after-quit switch did not opt in explicitly.');
+    await change(afterQuit, false); await settle();
+    assert(!afterQuit.checked && afterQuitWrites.join() === 'true,false', 'Turning off the switch did not opt out.');
     assertWorkspace();
     const settingsModal = document.querySelector<HTMLElement>('.modal:has(.settings-layout)')!;
     const settingsWidth = settingsModal.offsetWidth;

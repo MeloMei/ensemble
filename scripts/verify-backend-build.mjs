@@ -17,6 +17,7 @@ backend.on('error', error => process.stderr.write(`${error.message}\n`));
 try {
   const deadline = Date.now() + 10000;
   let healthy = false;
+  let backgroundNotifications;
   while (!ended && Date.now() < deadline) {
     try {
       const endpoint = JSON.parse(await readFile(join(dataPath, 'backend.json'), 'utf8'));
@@ -24,11 +25,16 @@ try {
         headers: { Authorization: `Bearer ${endpoint.token}` }, signal: AbortSignal.timeout(1000),
       });
       const health = await response.json();
-      if (response.ok && health.ready && health.instanceId === endpoint.instanceId) { healthy = true; break; }
+      if (response.ok && health.ready && health.instanceId === endpoint.instanceId) {
+        backgroundNotifications = health.backgroundNotifications;
+        healthy = true;
+        break;
+      }
     } catch {}
     await delay(100);
   }
   if (!healthy) throw new Error('The built backend did not become healthy.');
+  if (backgroundNotifications !== false) throw new Error('A source backend unexpectedly advertised the macOS notification helper.');
   process.stdout.write('The built backend started and answered an authenticated health check.\n');
 } finally {
   if (!ended) backend.kill('SIGTERM');

@@ -2,6 +2,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { FolderCog, Keyboard, MessageCircle, Monitor, Palette, Plug, Search } from 'lucide-react';
 import type { Session, Snapshot, Workspace } from '../shared/types';
+import type { BackendConnectionState } from '../shared/backend';
 import { AppearanceSettings } from './AppearanceSettings';
 import { DictationSettings } from './DictationSettings';
 import { LanguageOptions } from './language';
@@ -21,7 +22,7 @@ import './SettingsDialog.css';
 
 export type { SettingsSection } from './settings-targets';
 
-export function SettingsDialog({ snapshot, workspace, sessions, session, perform, pending, updates, initialSection, initialTarget, openSession, openSessionLink, onClose }: {
+export function SettingsDialog({ snapshot, workspace, sessions, session, perform, pending, updates, initialSection, initialTarget, openSession, openSessionLink, backendConnection, onClose }: {
   snapshot: Snapshot | null;
   workspace?: Workspace;
   sessions: Session[];
@@ -33,6 +34,7 @@ export function SettingsDialog({ snapshot, workspace, sessions, session, perform
   initialTarget?: SettingsTarget;
   openSession: (id: string) => void;
   openSessionLink?: (sourceId: string, targetId: string) => void;
+  backendConnection?: BackendConnectionState;
   onClose: () => void;
 }) {
   const { t } = useTranslation('shell');
@@ -152,7 +154,7 @@ export function SettingsDialog({ snapshot, workspace, sessions, session, perform
             <div data-setting-anchor="language"><LanguageOptions /></div>
             <DictationSettings />
             <AppearanceSettings />
-            <NotificationSettings perform={perform} />
+            <NotificationSettings perform={perform} backendConnection={backendConnection} />
             <WindowCaptureSettings perform={perform} />
             <div data-setting-anchor="updates"><ApplicationUpdateSettings {...updates} /></div>
           </>}

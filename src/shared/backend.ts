@@ -13,6 +13,8 @@ export interface BackendReply<T = unknown> { result?: T; error?: string; errorCo
 import type { Message, SendPromptRejectionReason, Session, Snapshot } from './types';
 
 export const BACKEND_STREAM_VERSION = 2;
+export const DESKTOP_NOTIFICATIONS_PARAM = 'desktop-notifications';
+export const DESKTOP_FOREGROUND_PARAM = 'desktop-foreground';
 
 export interface BackendStreamError { code: 'FRAME_TOO_LARGE'; limitBytes: number }
 

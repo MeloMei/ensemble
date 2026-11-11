@@ -18,6 +18,7 @@ export const settingsTargets = [
   { id: 'notification-results', section: 'general', label: 'settings.notifications.results', keywords: '通知 结果 完成 completed result' },
   { id: 'notification-failures', section: 'general', label: 'settings.notifications.failures', keywords: '通知 失败 failed error' },
   { id: 'notification-sound', section: 'general', label: 'settings.notifications.sound', keywords: '通知 声音 sound mute' },
+  { id: 'notification-afterQuit', section: 'general', label: 'settings.notifications.afterQuit', keywords: '通知 退出 后台 notifications quit background macOS' },
   { id: 'window-capture', section: 'general', label: 'settings.capture.shortcut', keywords: '截图 窗口 shortcut capture window screenshot' },
   { id: 'providers', section: 'providers', label: 'app.providers', keywords: '运行时 Agent runtime provider' },
   { id: 'remote-devices', section: 'remote', label: 'remote.title', keywords: '远程 设备 remote device ssh' },

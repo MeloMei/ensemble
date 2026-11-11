@@ -38,6 +38,8 @@ test('notifications follow actual transitions once, track delivery failure, and 
     { sessionId: 'one', reason: 'approval', approvalId: 'approval', revision: undefined },
     { sessionId: 'one', reason: 'result', messageId: 'first-result', revision: 1 },
   ]);
+  manager.observe({ sessions: [session('failed')] }, true);
+  assert.equal(notices.length, 3, 'Reconnecting should baseline a failure that happened while the desktop was away.');
   manager.dispose();
 });
 
